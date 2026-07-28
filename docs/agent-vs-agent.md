@@ -1,6 +1,14 @@
 # Agent vs Agent: Multi-Agent Play via Single-Player Puppeteering
 
 > **Status: Proposal** — Design document. Not yet implemented.
+>
+> **Partially superseded — see [Human vs Agent](human-vs-agent.md).** Live testing
+> on 2026-07-28 disproved two assumptions here: (1) Phase 1's model of holding one
+> agent in the human slot while puppeteering another cannot work, because
+> `SetLocalPlayerAndObserver` *swaps* the human designation and the abandoned civ
+> is immediately AI-played; (2) Phase 2's `player_id` parametrization of all 66
+> `build_*` call sites is unnecessary under a turn-boundary handoff. The GameCore
+> vs InGame API tables below remain accurate.
 
 ## Overview
 
