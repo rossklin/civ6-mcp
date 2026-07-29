@@ -1,8 +1,11 @@
 # Human vs Agent: Turn-Boundary Local-Player Handoff
 
-> **Status: Implemented.** Mechanism validated by live experiment (2026-07-28),
-> implemented 2026-07-29 with support for several agent opponents at once.
-> Phase 4's open questions still need a long live game to settle — see
+> **Status: Implemented and validated live.** Mechanism proven 2026-07-28,
+> implemented 2026-07-29 with support for several agent opponents at once, and
+> confirmed the same day in a 4-player game (human Portugal P0, agents Sumeria
+> P1 and Egypt P2, Cree P3 built-in AI) through turn 5 — see
+> [Live multi-agent validation](#live-multi-agent-validation). Blockers,
+> diplomacy, World Congress and save/load under handoff remain untested; see
 > [Remaining unknowns](#remaining-unknowns).
 >
 > Goal: a human plays Civ 6 in the normal UI while one or more MCP-driven
@@ -111,12 +114,19 @@ over is losing the local-player slot. This drives two design points below.
    agent C ─┘   :8765     (one process, one connection, N seats)
 ```
 
-**One server process, one connection.** The FireTuner protocol broadcasts
-`print()` output to every connected client, so two server processes would each
-parse the other's replies. A shared game therefore has to be one server serving
-several MCP clients, which means HTTP rather than stdio (stdio serves exactly
-one client). Setting `CIV_MCP_AGENT_PLAYERS` switches the default transport to
-`streamable-http` for this reason.
+**One server process, one connection — enforced by the game.** FireTuner's
+listener accepts a *single* client. A second process trying to connect to
+127.0.0.1:4318 while another holds it gets `ConnectionRefusedError`
+(`WinError 1225`) — measured on 2026-07-29, with one `civ-mcp` connected and a
+second one starting up. So a shared game cannot be several server processes; it
+has to be one server serving several MCP clients, which means HTTP rather than
+stdio (stdio serves exactly one client). Setting `CIV_MCP_AGENT_PLAYERS`
+switches the default transport to `streamable-http` for this reason.
+
+The practical consequence: **close any other MCP client attached to the game
+before starting the handoff server.** An editor session with `civ6` configured
+from `.mcp.json` counts — it holds the tuner port and the handoff server will
+never reach the game.
 
 **The lifespan is per session, not per process.** The MCP SDK enters the server
 lifespan inside `Server.run()`, which `streamable_http_manager` calls once per
@@ -172,6 +182,12 @@ while the seat holds the slot, since the substituted id *is* the local player.
 
 Turn-ownership probes and the handoff installer pass `perspective=False` so they
 see the real local player.
+
+The rewrite applies to `run_lua` too, which is a trap worth knowing: an agent
+running `print(Game.GetLocalPlayer())` gets *its own seat id* back, not whoever
+actually holds the slot. Consistent with the rule ("reads answer as your civ")
+and correct for gameplay queries, but useless for introspecting the handoff.
+`get_turn_status` and `reinstall_handoff` report the truth.
 
 Caveat: a few InGame APIs are local-player-only (`UI.*`,
 `NotificationManager`), so tools depending on them are degraded while off the
@@ -264,13 +280,25 @@ Play at least the first turn yourself so the game is fully loaded.
 
 ### 2. Start the server
 
+```powershell
+# PowerShell — human is P0, agents play P1 and P2
+$env:CIV_MCP_AGENT_PLAYERS="1,2"; uv run civ-mcp
+```
+
 ```bash
-# human is P0, agents play P1 and P2
+# bash / zsh
 CIV_MCP_AGENT_PLAYERS=1,2 uv run civ-mcp
 ```
 
-The server serves `streamable-http` on `http://127.0.0.1:8765/mcp`, arms the
-handoff hook, and disables the spectator camera (the human owns the camera).
+The server serves `streamable-http` on `http://127.0.0.1:8765/mcp`. It does not
+touch the game yet: because the MCP lifespan is per session, the connection is
+opened and the hook armed when the **first agent connects**, and torn down when
+the last one leaves. So `Handoff armed (hook=True, …)` appears in the log at
+first connection, not at startup. The spectator camera stays off for the whole
+run (the human owns the camera).
+
+The web dashboard also starts, on port 8000 by default. If that port is busy the
+dashboard is skipped with a warning — it is not required to play.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -310,9 +338,25 @@ will do the right thing unprompted.
 Press End Turn in the game as usual. The game will pause on each agent's turn
 while it thinks, then come back to you.
 
+> **Only press End Turn while your own civ is on the clock.** The swap makes the
+> agent's civ genuinely the local player, so the End Turn button ends *its* turn,
+> not yours. Doing it by accident costs that agent the rest of its turn (observed
+> on 2026-07-29); nothing corrupts, and the agent's own queued writes are then
+> refused rather than leaking into the next player's turn, but the civ forfeits
+> its orders. Nothing in Lua can intercept the human's key press, so this is a
+> discipline rather than a guard.
+
 While an agent is on the clock the screen renders that civ's territory and fog.
 This is inherent to swapping the local player and cannot be fixed — only
-tabbed away from.
+tabbed away from. Two related rough edges:
+
+- **Founding a city as an agent raises a modal on the human's screen** with no
+  close button. It clears when play moves on (the popup watcher, or the turn
+  ending), but it is intrusive while it is up. `execute_end_turn` pre-dismisses
+  `ExclusivePopupManager` popups; this panel is evidently not one of them.
+- Whichever civ holds the slot is the one the UI describes, so the on-screen
+  leader is not a reliable indicator of whose turn it is mid-round. Use
+  `get_turn_status`, which reads the real local player.
 
 ## Experimental Evidence
 
@@ -354,6 +398,54 @@ turn 9 began with `local=0`, `P0 human=true active=true`, and P0's units at
 exactly their recorded pre-handoff positions (Scout `(39,14)` mv=3, Warrior
 `(37,17)` mv=2). The AI did not touch the human's civ.
 
+## Live multi-agent validation
+
+Run on 2026-07-29: 4-player game, human Portugal (P0), agents Sumeria (P1) and
+Egypt (P2) each on their own MCP session, Cree (P3) built-in AI. Played from
+turn 1 to turn 5.
+
+The handoff ring buffer (`turn|activated|local before|after|result`) over turns
+2–5, read back with `reinstall_handoff`:
+
+```
+2|0|2|0|ok    3|0|2|0|ok    4|0|2|0|ok    5|0|2|0|ok
+2|1|0|1|ok    3|1|0|1|ok    4|1|0|1|ok
+2|2|1|2|ok    3|2|1|2|ok    4|2|1|2|ok
+```
+
+Ten consecutive switches, every one `ok`, always the cycle `0 → 1 → 2 → 0` with
+the turn counter incrementing only on the wrap. No missed switches, no
+duplicated listeners, no drift.
+
+Confirmed in the same run:
+
+- **The hook installs over the tuner** for a three-player managed set, with no
+  mod. This was the one assumption that could have invalidated everything.
+- **Per-seat reads while off the clock.** With P0 holding the slot,
+  `get_game_overview` on the P1 session reported Sumeria and on the P2 session
+  reported Egypt, each with its own unit list and exploration percentage
+  (18 vs 31 tiles). The `Game.GetLocalPlayer()` rewrite does what it claims.
+- **Writes work for a swapped-in seat.** `found_city` (Uruk at 51,19; Thebes at
+  40,13), `fortify`, `set_city_production`, `set_research` all succeeded through
+  `RequestOperation` while the agent held the slot.
+- **The gate holds.** `unit_action` off the clock was refused with the current
+  turn owner. When a seat's queued commands arrived late (after the human ended
+  that agent's turn by mistake), they were refused rather than leaking orders
+  into the next player's turn.
+- **Deferred turn reports span the right turns.** P2 produced `1→2`, `2→3`,
+  `3→4` on consecutive reacquisitions; P1 produced `1→2` then `3→4`, the gap
+  being exactly the turn the human ended on its behalf.
+- **The built-in AI is unaffected.** Cree founded its city on turn 1 and kept
+  playing normally; the hook ignores unmanaged players.
+- **Two sessions share one context.** Refcounted lifespan logged
+  `MCP session opened (1 active)` → `(2 active)` and one shared connection.
+- **Destructive tools refused.** `load_game_save` was refused for a seated
+  agent even on its own turn.
+
+Bugs this run found and fixed: the web dashboard's `sys.exit(1)` on a port clash
+escaping as `SystemExit` and killing the whole ASGI app, and the per-session
+lifespan described above.
+
 ## Rejected Approaches
 
 **Multiplayer / hotseat — impossible.** FireTuner's listener is disabled for all
@@ -361,9 +453,10 @@ multiplayer modes. Reported behavior: the tuner connects at the main menu and
 disconnects the moment a hotseat game loads. This is deliberate anti-cheat with
 no known config override.
 
-**One MCP server process per agent — unsafe.** The tuner broadcasts `print()`
-output to all connected clients, so each server would parse the others'
-replies. Also collides on the web dashboard port and the autosave name.
+**One MCP server process per agent — impossible.** The tuner listener is
+single-client: the second process gets `ConnectionRefusedError` and never
+reaches the game at all. (Even if it could connect, the processes would collide
+on the web dashboard port and the autosave name.)
 
 **Switching the local player to answer a read — actively harmful.** It hands
 the currently active player's turn to the built-in AI. Textual rewriting of
@@ -406,27 +499,39 @@ accurate and useful.
 
 ## Remaining unknowns
 
-These need a long live game to settle. None of them block play.
+The mechanism itself is settled — see
+[Live multi-agent validation](#live-multi-agent-validation). What is left needs a
+longer game, since these only arise after the opening turns. None of them block
+play.
 
-1. **Does the AI still choose an agent civ's research and production?** The
-   hook catches unit actions, but it is unverified whether the engine commits
-   research/production selections for an agent's civ before `PlayerTurnStarted`
-   fires. Test: read P1's current research and city build queue at the moment of
-   handoff and check whether they were set without agent involvement. If they
-   are, the agent must overwrite them each turn.
-2. **Diplomacy.** A civ that becomes human mid-game may be approached
+1. **End-turn blockers under handoff.** Not one fired in turns 1–5, so the
+   blocker-resolution machinery is untested in this mode. The first will be a
+   completed civic (Code of Laws) or tech needing a next choice; era changes,
+   governor points and policy slots follow. This is the highest-value next test,
+   because `end_turn`'s blocker path is the most intricate code the handoff
+   touches.
+2. **Does the AI still choose an agent civ's research and production?**
+   Suggestive but not conclusive so far: P1's research stayed on the Animal
+   Husbandry the agent picked across four turns. Test properly by reading an
+   agent's research and build queue at the moment of handoff, *before* the agent
+   acts. If the engine pre-commits them, agents must overwrite every turn.
+3. **Diplomacy.** A civ that becomes human mid-game may be approached
    differently by other AIs. AI-initiated diplomacy sessions targeting an agent
    route through `get_pending_diplomacy` / `respond_to_diplomacy` during that
    agent's window, but AI-to-AI diplomacy between two agent civs has no API.
-3. **Fairness.** Agents have gamecore read access to the entire map regardless
+4. **Fairness.** Agents have gamecore read access to the entire map regardless
    of their own visibility, and so can see the human's state. Accepted for now;
    enforcing fog of war requires visibility checks in the query layer.
-4. **Save/load.** Confirm a game saved mid-handoff (an agent holding the human
+5. **Save/load.** Confirm a game saved mid-handoff (an agent holding the human
    slot) reloads sanely, and that the local player on load is the human. The
    keeper re-arms the hook after a load either way.
-5. **Longevity.** The demonstration covered one full cycle. Run 20+ turns with
-   two agents to check for drift, leaked handlers, or state corruption.
-6. **World Congress with several human-slot civs.** WC fires synchronously
+6. **Longevity.** Four full rounds with two agents showed no drift or leaked
+   handlers. Still worth 20+ turns, where era changes and unit counts grow.
+7. **The city-founding modal.** Founding a city as an agent raises a modal on
+   the human's screen with no close button; it clears only when play moves
+   on. Cosmetic but intrusive. A targeted fix would explicitly close the
+   production panel in the seated `end_turn` path.
+8. **World Congress with several human-slot civs.** WC fires synchronously
    inside `ACTION_ENDTURN`; with multiple seats voting in the same session the
    ordering has not been exercised.
 

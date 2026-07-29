@@ -200,6 +200,9 @@ then run the server with the agents' player ids:
 ```bash
 # you are P0; agents play P1 and P2
 CIV_MCP_AGENT_PLAYERS=1,2 uv run civ-mcp
+
+# PowerShell
+$env:CIV_MCP_AGENT_PLAYERS="1,2"; uv run civ-mcp
 ```
 
 This serves MCP over HTTP at `http://127.0.0.1:8765/mcp` — a shared game needs

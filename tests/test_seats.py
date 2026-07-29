@@ -361,3 +361,43 @@ class TestSharedLifespan:
         asyncio.run(scenario())
         assert len(opened) == 2
         assert len(closed) == 2
+
+
+# ---------------------------------------------------------------------------
+# Web dashboard startup
+# ---------------------------------------------------------------------------
+
+
+class TestWebApiIsNonFatal:
+    """uvicorn calls sys.exit(1) when it cannot bind. SystemExit is a
+    BaseException, so an uncaught one in this background task takes the whole
+    MCP server down with it — which is what happened when a second civ-mcp
+    process clashed on port 8000."""
+
+    def test_bind_failure_does_not_propagate(self):
+        class Exiting:
+            async def serve(self):
+                raise SystemExit(1)
+
+        asyncio.run(server._serve_web_api(Exiting(), 8000))
+
+    def test_other_errors_do_not_propagate(self):
+        class Broken:
+            async def serve(self):
+                raise OSError("boom")
+
+        asyncio.run(server._serve_web_api(Broken(), 8000))
+
+    def test_cancellation_still_propagates(self):
+        class Cancelled:
+            async def serve(self):
+                raise asyncio.CancelledError
+
+        async def scenario():
+            try:
+                await server._serve_web_api(Cancelled(), 8000)
+            except asyncio.CancelledError:
+                return True
+            return False
+
+        assert asyncio.run(scenario())

@@ -315,6 +315,29 @@ def _build_emitter(run_id: str | None = None) -> TelemetryEmitter:
     return emitter
 
 
+async def _serve_web_api(uvi_server: uvicorn.Server, port: int) -> None:
+    """Run the web dashboard, treating a failure to start as non-fatal.
+
+    The dashboard is a convenience, not part of playing the game. uvicorn calls
+    ``sys.exit(1)`` when it cannot bind, and ``SystemExit`` is a BaseException —
+    left uncaught in a background task it tears down the whole ASGI app, taking
+    the MCP server with it. A port clash (another civ-mcp process, or anything
+    else on 8000) must not do that.
+    """
+    try:
+        await uvi_server.serve()
+    except SystemExit:
+        log.warning(
+            "Web dashboard could not bind port %d — something else is using it. "
+            "Continuing without the dashboard; set CIV_MCP_WEB_PORT to change it.",
+            port,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.warning("Web dashboard stopped unexpectedly", exc_info=True)
+
+
 @asynccontextmanager
 async def _open_app_context() -> AsyncIterator[AppContext]:
     """Build the process-wide server context: connection, seats, background services.
@@ -410,14 +433,14 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
             )
         keeper.start()
 
-    # Start the web dashboard API as a background task
+    # Start the web dashboard API as a background task.
     web_port = int(os.environ.get("CIV_MCP_WEB_PORT", "8000"))
     web_app = create_app(gs)
     uvi_config = uvicorn.Config(
         web_app, host="0.0.0.0", port=web_port, log_level="info"
     )
     uvi_server = uvicorn.Server(uvi_config)
-    api_task = asyncio.create_task(uvi_server.serve())
+    api_task = asyncio.create_task(_serve_web_api(uvi_server, web_port))
     log.info("Web API starting on http://0.0.0.0:%d", web_port)
 
     try:
