@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
-from civ_mcp import game_launcher, heartbeat
+from civ_mcp import game_launcher, handoff, heartbeat, seats as seats_mod
 from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
@@ -30,8 +30,10 @@ from civ_mcp.diary import (
     read_diary_entries as _read_diary_entries,
 )
 from civ_mcp.game_state import GameState
+from civ_mcp.handoff import HandoffConfig, HandoffKeeper
 from civ_mcp.logger import GameLogger
 from civ_mcp.map_capture import MapCapture
+from civ_mcp.seats import Seat, SeatRegistry
 from civ_mcp.spatial import SpatialTracker
 from civ_mcp.spectator import CameraController, PopupWatcher
 from civ_mcp.telemetry import (
@@ -46,6 +48,10 @@ from civ_mcp.web_api import create_app
 
 log = logging.getLogger(__name__)
 
+# Read once at import: the seat layout is fixed for the life of the process,
+# and tool registration depends on whether handoff mode is on.
+HANDOFF_CONFIG = HandoffConfig.from_env()
+
 
 @dataclass
 class AppContext:
@@ -56,6 +62,12 @@ class AppContext:
     spatial: SpatialTracker
     map_capture: MapCapture
     watchdog: GameOverWatchdog
+    # Human-vs-agent handoff. In classic single-agent mode `seats` is an empty
+    # registry whose default seat wraps the fields above, so every accessor
+    # resolves exactly as before.
+    seats: SeatRegistry
+    handoff_config: HandoffConfig
+    keeper: HandoffKeeper | None = None
 
 
 async def _auto_boot(conn: GameConnection, save_name: str) -> None:
@@ -284,11 +296,13 @@ async def _auto_boot(conn: GameConnection, save_name: str) -> None:
         log.debug("Auto-boot: save verification failed", exc_info=True)
 
 
-@asynccontextmanager
-async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    conn = GameConnection()
+def _build_emitter(run_id: str | None = None) -> TelemetryEmitter:
+    """Emitter wired to the configured sinks.
 
-    # Telemetry emitter — routes events to local JSONL + optional cloud sink
+    Each agent seat gets its own emitter (and therefore its own run id and its
+    own set of JSONL files), so two agents in the same game do not interleave
+    diary rows or fight over the sink's game binding.
+    """
     emitter = TelemetryEmitter()
     emitter.add_sink(LocalSink())
     cloud_bucket = os.environ.get("CIV_MCP_TELEMETRY_BUCKET")
@@ -297,7 +311,20 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     alert_webhook = os.environ.get("CIV_MCP_ALERT_WEBHOOK")
     if alert_webhook:
         emitter.add_sink(AlertSink(alert_webhook))
-    emitter.start()
+    emitter.start(run_id=run_id)
+    return emitter
+
+
+@asynccontextmanager
+async def _open_app_context() -> AsyncIterator[AppContext]:
+    """Build the process-wide server context: connection, seats, background services.
+
+    Entered once per process — see :func:`lifespan`.
+    """
+    conn = GameConnection()
+
+    # Telemetry emitter — routes events to local JSONL + optional cloud sink
+    emitter = _build_emitter()
     heartbeat.init(emitter.run_id)
     # Bind eval identity so the orchestrator can match running games to jobs
     eval_model = os.environ.get("CIV_MCP_AGENT_MODEL", "")
@@ -315,27 +342,83 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     spatial = SpatialTracker(emitter)
     map_capture = MapCapture(emitter)
     gs = GameState(conn)
+    gs.spatial = spatial
     log.info("Game logger session: %s", logger.session_id)
+
+    # Human-vs-agent handoff: one server, one connection, several agent seats
+    # alongside a human playing in the game UI.
+    cfg = HANDOFF_CONFIG
+    seat_emitters: list[TelemetryEmitter] = []
+
+    def _seat_factory(player_id: int) -> Seat:
+        seat_emitter = _build_emitter(f"{emitter.run_id}_p{player_id}")
+        seat_emitters.append(seat_emitter)
+        return seats_mod.build_seat(player_id, conn, seat_emitter)
+
+    registry = SeatRegistry(
+        default=Seat(
+            player_id=cfg.human_id,
+            game=gs,
+            logger=logger,
+            spatial=spatial,
+            map_capture=map_capture,
+            label="default",
+        ),
+        agent_ids=cfg.agent_ids,
+        human_id=cfg.human_id,
+        factory=_seat_factory if cfg.agent_ids else None,
+    )
+    if cfg.enabled:
+        log.info(
+            "Handoff mode: human=P%d, agent seats=%s",
+            cfg.human_id,
+            ", ".join(f"P{p}" for p in cfg.agent_ids),
+        )
 
     # Auto-boot: launch game + load save when running as eval
     save_file = os.environ.get("CIV_MCP_SAVE_FILE")
     if save_file:
         await _auto_boot(conn, save_file)
 
-    # Spectator-mode background services (camera tracking + popup auto-dismiss)
+    # Spectator-mode background services (camera tracking + popup auto-dismiss).
+    # In handoff mode the human owns the camera — hopping it to whatever an
+    # agent is looking at would make their game unplayable.
     camera = CameraController(conn)
     popup_watcher = PopupWatcher(conn)
     watchdog = GameOverWatchdog(gs, logger)
-    camera.start()
+    if not cfg.enabled:
+        camera.start()
     popup_watcher.start()
     watchdog.start()
 
-    # Start the web dashboard API as a background task (port 8000)
+    keeper: HandoffKeeper | None = None
+    if cfg.enabled:
+        keeper = HandoffKeeper(conn, cfg)
+        try:
+            own = await keeper.ensure_installed(force=True)
+            log.info(
+                "Handoff armed (hook=%s, local=P%s, turn=%s)",
+                own.handler_installed,
+                own.local_player,
+                own.turn,
+            )
+        except Exception:
+            log.warning(
+                "Could not arm the handoff hook yet — the keeper will retry "
+                "once the game is reachable",
+                exc_info=True,
+            )
+        keeper.start()
+
+    # Start the web dashboard API as a background task
+    web_port = int(os.environ.get("CIV_MCP_WEB_PORT", "8000"))
     web_app = create_app(gs)
-    uvi_config = uvicorn.Config(web_app, host="0.0.0.0", port=8000, log_level="info")
+    uvi_config = uvicorn.Config(
+        web_app, host="0.0.0.0", port=web_port, log_level="info"
+    )
     uvi_server = uvicorn.Server(uvi_config)
     api_task = asyncio.create_task(uvi_server.serve())
-    log.info("Web API starting on http://0.0.0.0:8000")
+    log.info("Web API starting on http://0.0.0.0:%d", web_port)
 
     try:
         yield AppContext(
@@ -346,9 +429,23 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             spatial=spatial,
             map_capture=map_capture,
             watchdog=watchdog,
+            seats=registry,
+            handoff_config=cfg,
+            keeper=keeper,
         )
     finally:
         await emitter.close()
+        for seat_emitter in seat_emitters:
+            await seat_emitter.close()
+        if keeper is not None:
+            await keeper.stop()
+            # Leaving the hook armed with nobody driving the agent civs would
+            # halt the game on their turn with no way to continue. Disarm and
+            # give the slot back so the human's game keeps working.
+            try:
+                await handoff.hand_back(conn, cfg)
+            except Exception:
+                log.debug("Handoff teardown failed", exc_info=True)
         await watchdog.stop()
         await camera.stop()
         await popup_watcher.stop()
@@ -357,35 +454,216 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         await conn.disconnect()
 
 
+# The MCP SDK enters the server lifespan once per *client session*, which for
+# streamable-http means once per connected agent. A shared game needs exactly
+# one connection, one seat registry and one web dashboard, so the context is
+# built on the first session and reused, then torn down when the last one goes.
+_shared_ctx: AppContext | None = None
+_shared_stack: Any = None
+_shared_refs: int = 0
+_shared_lock: asyncio.Lock | None = None
+
+
+@asynccontextmanager
+async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    """Hand every client session the same process-wide context."""
+    global _shared_ctx, _shared_stack, _shared_refs, _shared_lock
+    from contextlib import AsyncExitStack
+
+    if _shared_lock is None:
+        _shared_lock = asyncio.Lock()
+    async with _shared_lock:
+        if _shared_ctx is None:
+            _shared_stack = AsyncExitStack()
+            _shared_ctx = await _shared_stack.enter_async_context(_open_app_context())
+        _shared_refs += 1
+        ctx = _shared_ctx
+        log.info("MCP session opened (%d active)", _shared_refs)
+    try:
+        yield ctx
+    finally:
+        async with _shared_lock:
+            _shared_refs -= 1
+            log.info("MCP session closed (%d active)", _shared_refs)
+            if _shared_refs <= 0:
+                stack, _shared_stack = _shared_stack, None
+                _shared_ctx, _shared_refs = None, 0
+                if stack is not None:
+                    await stack.aclose()
+
+
+_INSTRUCTIONS = (
+    "Read game state and issue commands to a running Civ 6 game. "
+    "Call get_game_overview first to orient yourself."
+)
+
+if HANDOFF_CONFIG.enabled:
+    _INSTRUCTIONS = (
+        "Read game state and issue commands to a running Civ 6 game. This game "
+        "is shared: a human plays one civ in the game's own UI and one or more "
+        "agents play rival civs through this server, taking turns in order.\n"
+        "Start by calling get_seats() and then claim_seat(player_id=N) — every "
+        "other tool is refused until you hold a seat. Then call "
+        "get_game_overview() to orient yourself.\n"
+        "Read tools always answer for your own civ, including while other "
+        "players are taking their turns, so you can scout and plan off the "
+        "clock. Write tools work only during your own turn. After end_turn(), "
+        "call wait_for_turn() to block until your next turn — it returns a "
+        "report of everything that changed while you waited."
+    )
+
 mcp = FastMCP(
     "Civilization VI",
-    instructions="Read game state and issue commands to a running Civ 6 game. Call get_game_overview first to orient yourself.",
+    instructions=_INSTRUCTIONS,
     lifespan=lifespan,
 )
 
 
+def _app(ctx: Context) -> AppContext:
+    return ctx.request_context.lifespan_context
+
+
+def _get_seat(ctx: Context) -> Seat:
+    """Seat this MCP session drives, defaulting to the single-agent seat.
+
+    Also publishes the seat's player id as the read perspective for the rest of
+    this tool call, so queries answer for the caller's own civ even while
+    another player holds the local-player slot.  Every state accessor funnels
+    through here, so no tool can accidentally read as the wrong player.
+    """
+    app = _app(ctx)
+    seat = app.seats.resolve(seats_mod.session_key(ctx))
+    if app.seats.enabled and seat is not app.seats.default:
+        seats_mod.set_view_player(seat.player_id)
+    return seat
+
+
 def _get_game(ctx: Context) -> GameState:
-    return ctx.request_context.lifespan_context.game
+    return _get_seat(ctx).game
 
 
 def _get_logger(ctx: Context) -> GameLogger:
-    return ctx.request_context.lifespan_context.logger
+    return _get_seat(ctx).logger
 
 
 def _get_camera(ctx: Context) -> CameraController:
-    return ctx.request_context.lifespan_context.camera
+    return _app(ctx).camera
 
 
 def _get_spatial(ctx: Context) -> SpatialTracker:
-    return ctx.request_context.lifespan_context.spatial
+    return _get_seat(ctx).spatial
 
 
 def _get_map_capture(ctx: Context) -> MapCapture:
-    return ctx.request_context.lifespan_context.map_capture
+    return _get_seat(ctx).map_capture
 
 
 def _get_watchdog(ctx: Context) -> GameOverWatchdog:
-    return ctx.request_context.lifespan_context.watchdog
+    return _app(ctx).watchdog
+
+
+# ---------------------------------------------------------------------------
+# Turn-ownership gating (handoff mode only)
+# ---------------------------------------------------------------------------
+
+# Tools that stay open regardless of whose turn it is: seat management, turn
+# status, and the diary (a read of local files).
+_GATE_EXEMPT: frozenset[str] = frozenset(
+    {
+        "claim_seat",
+        "release_seat",
+        "get_seats",
+        "get_turn_status",
+        "wait_for_turn",
+        "reinstall_handoff",
+        "get_diary",
+    }
+)
+
+# Tools an agent must never call in handoff mode: they reload or kill the game
+# out from under the human and the other agents.
+_HANDOFF_FORBIDDEN: frozenset[str] = frozenset(
+    {
+        "load_save",
+        "load_game_save",
+        "load_save_from_menu",
+        "restart_and_load",
+        "kill_game",
+        "launch_game",
+    }
+)
+
+
+def _write_tool_names() -> frozenset[str]:
+    """Tools that change game state — everything not flagged read-only."""
+    names = set()
+    for tool in mcp._tool_manager.list_tools():
+        ann = tool.annotations
+        if ann is not None and ann.readOnlyHint:
+            continue
+        names.add(tool.name)
+    return frozenset(names - _GATE_EXEMPT)
+
+
+async def _check_turn_gate(
+    ctx: Context, tool_name: str, params: dict[str, Any]
+) -> str | None:
+    """Refuse writes from a seat that is not on the clock.
+
+    Returns an error message to hand back to the agent, or None to proceed.
+    Read tools are always allowed: the human and the agents can see each
+    other's state in this design, and an agent that cannot look around while
+    off the clock cannot plan.
+    """
+    app = _app(ctx)
+    if not app.seats.enabled:
+        return None  # classic single-agent mode — unchanged
+    seat = app.seats.resolve(seats_mod.session_key(ctx))
+    if tool_name in _GATE_EXEMPT:
+        return None
+    if seat is app.seats.default:
+        available = ", ".join(f"P{p}" for p in app.handoff_config.agent_ids)
+        return (
+            "You have not claimed a seat yet. This game is shared between a "
+            f"human player and the agent seats {available}. "
+            "Call get_seats() to see which civ is yours, then "
+            "claim_seat(player_id=N) before doing anything else."
+        )
+    if tool_name in _HANDOFF_FORBIDDEN:
+        return (
+            f"{tool_name} is disabled in a shared human-vs-agent game — it "
+            "would reload or kill the game for the human and every other "
+            "agent. Ask the operator if the game needs recovering."
+        )
+    if tool_name not in _WRITE_TOOLS:
+        return None
+    if tool_name == "run_lua" and params.get("context") != "ingame":
+        return None  # gamecore run_lua is a read
+
+    own = await handoff.try_ownership(_get_game(ctx).conn)
+    if own.local_player is None:
+        # Game unreachable — let the call through so the agent sees the real
+        # connection error rather than a misleading "not your turn".
+        return None
+    if own.local_player == seat.player_id:
+        return None
+    return (
+        f"Not your turn — {tool_name} refused. "
+        f"{handoff.describe_ownership(own, app.handoff_config, seat.player_id)}\n"
+        "Read tools still answer for your empire, so keep scouting and "
+        "planning. Call wait_for_turn() to block until you are on the clock."
+    )
+
+
+def _forbidden_in_handoff(ctx: Context, tool_name: str) -> str | None:
+    """Guard for lifecycle tools that do not route through :func:`_logged`."""
+    app = _app(ctx)
+    if not app.seats.enabled:
+        return None
+    return (
+        f"{tool_name} is disabled in a shared human-vs-agent game — it would "
+        "kill or reload the game for the human and every other agent."
+    )
 
 
 def _param_summary(params: dict[str, Any]) -> str:
@@ -418,6 +696,15 @@ async def _logged(
     """Run a tool function with timing, error handling, and logging."""
     logger = _get_logger(ctx)
     turn = logger._turn or "?"
+    try:
+        refusal = await _check_turn_gate(ctx, tool_name, params)
+    except Exception:
+        log.debug("Turn-gate check failed, allowing call", exc_info=True)
+        refusal = None
+    if refusal is not None:
+        log.info("[T%s] %s(%s) GATED", turn, tool_name, _param_summary(params))
+        await logger.log_error(tool_name, refusal)
+        return refusal
     start = time.monotonic()
     try:
         result = await fn()
@@ -500,6 +787,192 @@ async def _logged(
     except Exception:
         pass
     return result
+
+
+# ---------------------------------------------------------------------------
+# Seats and turn ownership (human-vs-agent mode)
+# ---------------------------------------------------------------------------
+# These tools exist only when the server was started with
+# CIV_MCP_AGENT_PLAYERS set; main() removes them otherwise.
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_seats(ctx: Context) -> str:
+    """List the players in this shared game and which agent seats are free.
+
+    This game has a human playing in the Civ 6 UI plus one or more agent
+    seats. Call this first, then claim_seat(player_id=N) to take your civ.
+    """
+    app = _app(ctx)
+    cfg = app.handoff_config
+    registry = app.seats
+    conn = app.game.conn
+    roster = await handoff.get_roster(conn, cfg.managed_ids)
+
+    def _name(pid: int) -> str:
+        civ, leader, alive = roster.get(pid, ("?", "?", True))
+        dead = "" if alive else " [ELIMINATED]"
+        return f"{civ} ({leader}){dead}"
+
+    mine = registry.for_session(seats_mod.session_key(ctx))
+    lines = [f"Human player: P{cfg.human_id} {_name(cfg.human_id)} — plays in the UI"]
+    lines.append("Agent seats:")
+    for seat in registry.seats:
+        marker = " <-- YOURS" if seat is mine else ""
+        held = "claimed" if seat.claimed else "FREE"
+        client = f" by {seat.client_name}" if seat.claimed and seat.client_name else ""
+        lines.append(
+            f"  P{seat.player_id} {_name(seat.player_id)} — {held}{client}{marker}"
+        )
+    if mine is None:
+        lines.append("")
+        lines.append("You hold no seat. Call claim_seat(player_id=N) to take one.")
+
+    own = await handoff.try_ownership(conn)
+    lines.append("")
+    if own.local_player in roster:
+        on_clock = f"P{own.local_player} {_name(own.local_player)}"
+    elif own.local_player is None:
+        on_clock = "unknown"
+    else:
+        on_clock = f"P{own.local_player} (built-in AI)"
+    lines.append(f"Turn {own.turn} — on the clock: {on_clock}")
+    if not own.handler_installed:
+        lines.append(
+            "WARNING: the turn-handoff hook is not armed. Turns will not pass "
+            "to agent seats until reinstall_handoff() is called."
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def claim_seat(ctx: Context, player_id: int) -> str:
+    """Take control of an agent seat for the rest of this session.
+
+    Args:
+        player_id: Player id of the civ you will play. See get_seats().
+
+    Every other tool is refused until you claim a seat. Once claimed, read
+    tools answer for your civ at all times — including while other players are
+    taking their turns — and write tools work only during your own turn.
+    """
+    app = _app(ctx)
+    key = seats_mod.session_key(ctx)
+    if key is None:
+        return "Could not identify this MCP session; cannot bind a seat."
+    seat, message = app.seats.claim(player_id, key, seats_mod.client_name(ctx))
+    if seat is None:
+        return message
+    roster = await handoff.get_roster(app.game.conn, (player_id,))
+    if player_id in roster:
+        civ, leader, _alive = roster[player_id]
+        seat.label = f"{civ} ({leader})"
+        who = f"P{player_id} — {civ} led by {leader}"
+    else:
+        who = f"P{player_id} (the game is not reachable yet, so its civ is unknown)"
+    own = await handoff.try_ownership(app.game.conn)
+    return (
+        f"You are playing {who}.\n"
+        f"{handoff.describe_ownership(own, app.handoff_config, player_id)}\n"
+        "Read tools answer for your empire at all times. Write tools (moving "
+        "units, production, research, diplomacy, end_turn) work only on your "
+        "turn. Use wait_for_turn() to block until you are on the clock; it "
+        "returns a report of everything that changed while you waited."
+    )
+
+
+@mcp.tool()
+async def release_seat(ctx: Context) -> str:
+    """Give up your seat so another client can take over this civ."""
+    key = seats_mod.session_key(ctx)
+    if key is None:
+        return "Could not identify this MCP session."
+    seat = _app(ctx).seats.release(key)
+    if seat is None:
+        return "You did not hold a seat."
+    return f"Released P{seat.player_id}."
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_turn_status(ctx: Context) -> str:
+    """Check whether it is your turn, without blocking.
+
+    Use this to decide between acting now and continuing to scout/plan.
+    """
+    app = _app(ctx)
+    seat = app.seats.resolve(seats_mod.session_key(ctx))
+    own = await handoff.try_ownership(app.game.conn)
+    if seat is app.seats.default:
+        return (
+            f"Turn {own.turn}, on the clock: P{own.local_player}. "
+            "You hold no seat — call get_seats() then claim_seat(player_id=N)."
+        )
+    text = handoff.describe_ownership(own, app.handoff_config, seat.player_id)
+    if own.local_player is None:
+        return (
+            f"{text} The game may not have a save loaded yet — ask the human, "
+            "or call wait_for_turn() to wait for it."
+        )
+    if own.local_player == seat.player_id:
+        return f"{text} Give your orders, then call end_turn()."
+    return (
+        f"{text} Write tools are refused; read tools still answer for your "
+        "empire. Call wait_for_turn() to block until your turn starts."
+    )
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
+    """Block until it is your turn, then report what changed while you waited.
+
+    Args:
+        timeout_seconds: How long to wait before returning. Capped at 600.
+
+    Returns the full turn report for the round that just finished — snapshot
+    diff, threats, notifications and empire warnings — so this is the natural
+    companion to end_turn(): end your turn, study the map while others play,
+    then call wait_for_turn() to pick up your next turn with a briefing.
+
+    If the wait times out it returns the current turn status instead; just call
+    it again. Nothing is lost by timing out.
+    """
+    app = _app(ctx)
+    seat = app.seats.resolve(seats_mod.session_key(ctx))
+    if seat is app.seats.default:
+        return (
+            "You hold no seat — call get_seats() then claim_seat(player_id=N) "
+            "before waiting for a turn."
+        )
+    timeout = max(1.0, min(float(timeout_seconds), 600.0))
+    return await _logged(
+        ctx,
+        "wait_for_turn",
+        {"timeout_seconds": timeout},
+        lambda: handoff.wait_for_turn(seat.game, seat, app.handoff_config, timeout),
+    )
+
+
+@mcp.tool()
+async def reinstall_handoff(ctx: Context) -> str:
+    """Re-arm the turn-handoff hook after a save load or game restart.
+
+    The hook lives in the game's scripting state and is destroyed whenever a
+    save loads. A background keeper re-arms it automatically; this forces it
+    immediately and reports the diagnostic log.
+    """
+    app = _app(ctx)
+    if app.keeper is None:
+        return "Handoff mode is not enabled on this server."
+    own = await app.keeper.ensure_installed(force=True)
+    events = await handoff.read_log(app.game.conn)
+    lines = [
+        f"Handoff re-armed. Turn {own.turn}, local player P{own.local_player}, "
+        f"managed players: {', '.join(f'P{p}' for p in own.managed) or 'none'}."
+    ]
+    if events:
+        lines.append("Recent handoffs (turn|activated|local before|after|result):")
+        lines.extend(f"  {e}" for e in events[-10:])
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1802,6 +2275,13 @@ async def end_turn(
     """
     gs = _get_game(ctx)
 
+    # Check turn ownership up front. _logged() gates too, but the diary is
+    # written before it runs, and a refused end_turn must not leave a diary
+    # entry claiming the turn was played.
+    refusal = await _check_turn_gate(ctx, "end_turn", {})
+    if refusal is not None:
+        return refusal
+
     reflections = {
         "tactical": tactical,
         "strategic": strategic,
@@ -1936,7 +2416,11 @@ async def end_turn(
                 log.warning("Diary: failed to write entry", exc_info=True)
 
     # Advance the turn
-    result = await _logged(ctx, "end_turn", {}, gs.end_turn)
+    _seat = _get_seat(ctx)
+    _seated = _app(ctx).seats.enabled and _seat is not _app(ctx).seats.default
+    result = await _logged(
+        ctx, "end_turn", {}, lambda: gs.end_turn(_seat if _seated else None)
+    )
 
     # ---------------------------------------------------------------
     # Auto-recover from AI turn hangs (transparent to agent).
@@ -1944,9 +2428,24 @@ async def end_turn(
     # stuck after ~39s of polling with no blockers found.
     # Recovery: restart_and_load the MCP autosave, reconnect, retry
     # up to _MAX_HANG_RETRIES times with escalating waits.
+    #
+    # Never in handoff mode: recovery kills and reloads the game, which would
+    # throw away the human's session and every other agent's turn. The operator
+    # decides what to do about a hang in a shared game.
     # ---------------------------------------------------------------
     _MAX_HANG_RETRIES = 3
     _HANG_EXTRA_WAIT = [0, 15, 30]  # extra seconds before retry per attempt
+
+    if result.startswith("HANG:") and _seated:
+        log.warning("HANG in handoff mode — not auto-restarting a shared game")
+        _, _hang_turn, _hang_save = result.split("|", 1)[0].split(":")
+        return (
+            f"The game stopped responding at turn {_hang_turn} and did not "
+            "hand the turn on. Auto-recovery is disabled in a shared "
+            "human-vs-agent game because it would reload the game for "
+            "everyone. Tell the human — they can reload "
+            f"'{_hang_save}' from the game's own menu."
+        )
 
     if result.startswith("HANG:") and not gs._hang_retry_active:
         parts = result.split("|", 1)
@@ -2788,6 +3287,9 @@ async def kill_game(ctx: Context) -> str:
     Only kills Civ 6 processes. Waits ~10 seconds for Steam to deregister
     so the game can be relaunched cleanly.
     """
+    blocked = _forbidden_in_handoff(ctx, "kill_game")
+    if blocked:
+        return blocked
     return await game_launcher.kill_game()
 
 
@@ -2802,6 +3304,9 @@ async def launch_game(ctx: Context) -> str:
     NOTE: FireTuner connection is NOT available at the main menu.
     Only in-game MCP tools work after a save is loaded.
     """
+    blocked = _forbidden_in_handoff(ctx, "launch_game")
+    if blocked:
+        return blocked
     return await game_launcher.launch_game()
 
 
@@ -2820,6 +3325,9 @@ async def load_save_from_menu(ctx: Context, save_name: str | None = None) -> str
 
     Requires pyobjc: uv pip install 'civ6-mcp[launcher]'
     """
+    blocked = _forbidden_in_handoff(ctx, "load_save_from_menu")
+    if blocked:
+        return blocked
     return await game_launcher.load_save_from_menu(save_name)
 
 
@@ -2840,6 +3348,9 @@ async def restart_and_load(ctx: Context, save_name: str | None = None) -> str:
 
     After completion, wait ~10 seconds then call get_game_overview to verify.
     """
+    blocked = _forbidden_in_handoff(ctx, "restart_and_load")
+    if blocked:
+        return blocked
     gs = _get_game(ctx)
     identity_before = gs._game_identity
 
@@ -2900,6 +3411,20 @@ async def _narrate(
     return narrate_fn(data)
 
 
+# Computed once, after every @mcp.tool has been registered above.
+_WRITE_TOOLS: frozenset[str] = _write_tool_names()
+
+# Tools that only make sense when several agents share one game.
+_HANDOFF_TOOLS = (
+    "get_seats",
+    "claim_seat",
+    "release_seat",
+    "get_turn_status",
+    "wait_for_turn",
+    "reinstall_handoff",
+)
+
+
 def main():
     """Entry point for the MCP server."""
     import signal
@@ -2920,4 +3445,25 @@ def main():
     if os.environ.get("CIV_MCP_DISABLE_LUA"):
         mcp._tool_manager.remove_tool("run_lua")
 
-    mcp.run(transport="stdio")
+    if not HANDOFF_CONFIG.enabled:
+        for name in _HANDOFF_TOOLS:
+            mcp._tool_manager.remove_tool(name)
+
+    # stdio serves exactly one client. A human-vs-agent game needs several
+    # agents on one connection to the game, so that setup runs over HTTP:
+    # the FireTuner protocol broadcasts print() output to every connected
+    # client, so two server processes would each parse the other's replies.
+    transport = os.environ.get("CIV_MCP_TRANSPORT", "").strip() or (
+        "streamable-http" if HANDOFF_CONFIG.enabled else "stdio"
+    )
+    if transport != "stdio":
+        mcp.settings.host = os.environ.get("CIV_MCP_HTTP_HOST", "127.0.0.1")
+        mcp.settings.port = int(os.environ.get("CIV_MCP_HTTP_PORT", "8765"))
+        log.info(
+            "Serving MCP over %s at http://%s:%d/mcp",
+            transport,
+            mcp.settings.host,
+            mcp.settings.port,
+        )
+
+    mcp.run(transport=transport)

@@ -7,20 +7,57 @@ import logging
 from typing import TYPE_CHECKING
 
 import civ_mcp.narrate as nr
-from civ_mcp import lua as lq
+from civ_mcp import handoff, lua as lq
 from civ_mcp.connection import LuaError
 from civ_mcp.game_lifecycle import cleanup_old_autosaves, save_game
 
 if TYPE_CHECKING:
     from civ_mcp.game_state import GameState
+    from civ_mcp.seats import Seat
 
 log = logging.getLogger(__name__)
+
+
+async def _seat_released(gs: GameState, seat: Seat | None) -> bool:
+    """True when a seated agent's civ no longer holds the local-player slot.
+
+    Under the human-vs-agent handoff the turn counter does not move when an
+    agent ends its turn — play passes to the next civ in the same round.  The
+    signal that the agent's turn is genuinely over is losing the human slot.
+    """
+    if seat is None:
+        return False
+    try:
+        ownership = await handoff.get_ownership(gs.conn)
+    except Exception:
+        log.debug("Seat-release probe failed", exc_info=True)
+        return False
+    return (
+        ownership.local_player is not None and ownership.local_player != seat.player_id
+    )
+
+
+async def _poll_advanced(
+    gs: GameState, turn_before: int | None, seat: Seat | None
+) -> tuple[int | None, bool]:
+    """One advancement probe. Returns ``(turn_now, advanced)``.
+
+    "Advanced" means the game turn incremented, or — for a seated agent — the
+    agent handed the human slot on to the next player.
+    """
+    turn_now = await _get_turn_number(gs)
+    if turn_now is not None and turn_before is not None and turn_now > turn_before:
+        return turn_now, True
+    if await _seat_released(gs, seat):
+        return turn_now, True
+    return turn_now, False
 
 
 async def _check_mid_turn_diplomacy(
     gs: GameState,
     lua: str,
     turn_before: int | None,
+    seat: Seat | None = None,
 ) -> tuple[str | None, bool]:
     """Probe for AI diplomatic proposals during end_turn polling.
 
@@ -65,13 +102,8 @@ async def _check_mid_turn_diplomacy(
                 advanced = False
                 for _ in range(10):
                     await asyncio.sleep(2.0)
-                    turn_after = await _get_turn_number(gs)
-                    if (
-                        turn_after is not None
-                        and turn_before is not None
-                        and turn_after > turn_before
-                    ):
-                        advanced = True
+                    _, advanced = await _poll_advanced(gs, turn_before, seat)
+                    if advanced:
                         break
                 if advanced:
                     return None, True  # turn advanced, caller handles snapshot
@@ -489,8 +521,14 @@ def _check_save_scumming(gs: GameState) -> tuple[list[lq.TurnEvent], bool]:
     return events, False
 
 
-async def execute_end_turn(gs: GameState) -> str:
-    """End the turn with snapshot-diff event detection."""
+async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
+    """End the turn with snapshot-diff event detection.
+
+    ``seat`` is set in human-vs-agent handoff mode, where several agents share
+    one game.  Ending a seat's turn does not advance the game turn — it hands
+    the local-player slot to the next civ — so advancement is detected by the
+    seat losing the slot, and the turn report is deferred until it comes back.
+    """
     # 0a. Run aborted due to save scumming — refuse to advance
     if gs._run_aborted:
         return (
@@ -1166,13 +1204,8 @@ async def execute_end_turn(gs: GameState) -> str:
     # Phase 1: Quick check (4s) — turn sometimes advances within 1-2s
     for _ in range(8):
         await asyncio.sleep(0.5)
-        turn_after = await _get_turn_number(gs)
-        if (
-            turn_after is not None
-            and turn_before is not None
-            and turn_after > turn_before
-        ):
-            advanced = True
+        turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
+        if advanced:
             break
 
     # Phase 2: Slow polling (5 min) — AI can take 1-5 min on large maps,
@@ -1217,13 +1250,8 @@ async def execute_end_turn(gs: GameState) -> str:
         ]:
             await asyncio.sleep(delay)
             cumulative_wait += delay
-            turn_after = await _get_turn_number(gs)
-            if (
-                turn_after is not None
-                and turn_before is not None
-                and turn_after > turn_before
-            ):
-                advanced = True
+            turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
+            if advanced:
                 break
             # Check for game-over during longer polling intervals.
             # An opponent victory (Science, Culture, etc.) fires during
@@ -1258,7 +1286,7 @@ async def execute_end_turn(gs: GameState) -> str:
             if not diplomacy_probed and cumulative_wait >= 45:
                 diplomacy_probed = True
                 diplo_msg, diplo_advanced = await _check_mid_turn_diplomacy(
-                    gs, lua, turn_before
+                    gs, lua, turn_before, seat
                 )
                 if diplo_msg is not None:
                     return diplo_msg
@@ -1274,7 +1302,7 @@ async def execute_end_turn(gs: GameState) -> str:
         # as the early Phase 2 probe — Phase 3 is the fallback if the
         # probe didn't fire or missed the diplomacy window).
         diplo_msg, diplo_advanced = await _check_mid_turn_diplomacy(
-            gs, lua, turn_before
+            gs, lua, turn_before, seat
         )
         if diplo_msg is not None:
             return diplo_msg
@@ -1302,13 +1330,8 @@ async def execute_end_turn(gs: GameState) -> str:
                 await gs.conn.execute_write(lua)
                 for _ in range(5):
                     await asyncio.sleep(2.0)
-                    turn_after = await _get_turn_number(gs)
-                    if (
-                        turn_after is not None
-                        and turn_before is not None
-                        and turn_after > turn_before
-                    ):
-                        advanced = True
+                    turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
+                    if advanced:
                         break
         except Exception:
             log.debug("Post-timeout dismiss failed", exc_info=True)
@@ -1316,13 +1339,7 @@ async def execute_end_turn(gs: GameState) -> str:
     if not advanced:
         # Final verification — turn may have slipped through
         await asyncio.sleep(2.0)
-        turn_after = await _get_turn_number(gs)
-        if (
-            turn_after is not None
-            and turn_before is not None
-            and turn_after > turn_before
-        ):
-            advanced = True
+        turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
 
     if not advanced:
         # Check if game ended during turn transition (victory/defeat)
@@ -1432,6 +1449,31 @@ async def execute_end_turn(gs: GameState) -> str:
             gs._advisor_calls_this_turn = 0
         gs._high_water_turn = max(gs._high_water_turn, turn_after)
 
+    # Seated (handoff) mode: the agent has handed the human slot on, but the
+    # round is not over — the human and the other agents still have to play,
+    # and the game turn has not incremented.  Querying now would report a
+    # half-finished round, and hammering the InGame context while other civs
+    # process is what stalls the AI.  So stash the baseline and build the
+    # report when this seat gets the slot back (see wait_for_turn).
+    if seat is not None:
+        from civ_mcp.seats import PendingTurnReport
+
+        seat.pending_report = PendingTurnReport(
+            snapshot=snap_before,
+            turn_before=turn_before,
+            threats_before=threats_before,
+        )
+        return (
+            f"Turn {turn_before} ended for P{seat.player_id}. "
+            "Play has passed to the next civ.\n"
+            "You are off the clock: read tools still answer for your empire, so "
+            "use this window to study the map and plan. Write tools are refused "
+            "until your next turn.\n"
+            "Call wait_for_turn() to block until you are back on the clock — it "
+            "returns the full turn report (what changed, threats, warnings). "
+            "get_turn_status() checks without blocking."
+        )
+
     # Post-advance game-over check — victory can trigger during the turn
     # transition (e.g. science vessel arriving, diplo VP threshold).
     # Must check here so "GAME OVER" appears in result for log_game_over.
@@ -1451,6 +1493,25 @@ async def execute_end_turn(gs: GameState) -> str:
                 f"GAME OVER — VICTORY! You won a {vtype} victory! The game has ended."
             )
 
+    return await build_post_turn_report(
+        gs, snap_before, turn_before, turn_after, threats_before
+    )
+
+
+async def build_post_turn_report(
+    gs: GameState,
+    snap_before: lq.TurnSnapshot | None,
+    turn_before: int | None,
+    turn_after: int | None,
+    threats_before: list[lq.ThreatInfo] | None = None,
+) -> str:
+    """Build the post-turn report: snapshot diff, notifications, warnings.
+
+    Split out of :func:`execute_end_turn` so the handoff path can defer it.
+    A seated agent ends its turn mid-round, so its report is built later —
+    when the human slot comes back to it and the game is idle again.
+    """
+    threats_before = threats_before or []
     # Take post-turn snapshot and diff
     snap_after = None
     try:
@@ -1462,11 +1523,18 @@ async def execute_end_turn(gs: GameState) -> str:
     # MCP per-turn autosave — fire-and-forget after successful turn advance.
     # On Linux (Aspyr port), Network.SaveGame silently fails for custom names.
     # We rely on the game's own AutoSave_NNNN instead.
+    # In handoff mode several seats report inside the same game turn, so the
+    # save is written once per turn rather than once per report.
     from .autosave import saves_work_on_this_platform
 
-    if turn_after is not None and saves_work_on_this_platform():
+    if (
+        turn_after is not None
+        and saves_work_on_this_platform()
+        and gs.conn.last_autosave_turn != turn_after
+    ):
         try:
             await save_game(gs.conn, f"0_MCP_{turn_after:04d}")
+            gs.conn.last_autosave_turn = turn_after
             cleanup_old_autosaves(keep=8)
         except Exception:
             log.debug("MCP autosave failed for T%s", turn_after, exc_info=True)

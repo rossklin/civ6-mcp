@@ -4,6 +4,7 @@
 
 The focus shifted from running games to packaging the results. The dataset publisher pipeline exports all telemetry to HuggingFace with Croissant 1.1 metadata for the NeurIPS Evaluations & Datasets track submission. Several reliability features landed in parallel from ongoing eval runs across the fleet.
 
+- **Human vs agent play**: `CIV_MCP_AGENT_PLAYERS=1,2` lets a human keep playing in the Civ 6 UI while several MCP agents run rival civs in the same single-player game. A `GameEvents.PlayerTurnStarted` hook moves the local-player slot between civs at each turn boundary; agents claim a seat (`claim_seat`), read their own empire at all times, and write only on their own turn (`get_turn_status` / `wait_for_turn`). Serves over `streamable-http` so one server process owns the single FireTuner connection. See [docs/human-vs-agent.md](docs/human-vs-agent.md).
 - **HuggingFace dataset publisher**: End-to-end pipeline (`scripts/publish_hf/`) for staging, exporting parquet tables, generating Croissant 1.1 metadata, validating, and uploading to HuggingFace.
 - **NeurIPS anonymization**: RAI metadata fields, identity redaction in parquet exports, anonymous HF account.
 - **Game-over watchdog**: Detect victories even when the LLM stops calling tools — polls game state on a background timer.

@@ -191,6 +191,40 @@ cities, and play through the turn.
 
 The agent will orient with `get_game_overview`, scan the map for threats, move units, set production and research, handle diplomacy, and end the turn.
 
+## Play against agents
+
+You can also keep playing yourself and let agents run rival civs in the same
+single-player game. Start a game with one major civ per agent plus your own,
+then run the server with the agents' player ids:
+
+```bash
+# you are P0; agents play P1 and P2
+CIV_MCP_AGENT_PLAYERS=1,2 uv run civ-mcp
+```
+
+This serves MCP over HTTP at `http://127.0.0.1:8765/mcp` — a shared game needs
+one server process for all the agents, since the game's debug protocol
+broadcasts output to every connected client. Point each agent at that URL:
+
+```json
+{
+  "mcpServers": {
+    "civ6": { "type": "http", "url": "http://127.0.0.1:8765/mcp" }
+  }
+}
+```
+
+Each agent calls `claim_seat(player_id=N)` to take its civ, then plays only on
+its own turn — the server hands the human slot from civ to civ at each turn
+boundary and refuses any write from a civ that is not on the clock. Between its
+turns an agent can still read the map and plan, then call `wait_for_turn()` to
+pick up its next turn with a report of what changed. You play normally in the
+game window; it pauses on each agent's turn while it thinks.
+
+Note that agents can see your empire in this mode — fog of war is not enforced
+across seats. See [Human vs Agent](docs/human-vs-agent.md) for the design, the
+configuration options, and what is still unverified.
+
 ## As a benchmark
 
 Civilization VI is a compelling environment for evaluating LLM strategic reasoning. Games run 300+ turns with compounding decisions, incomplete information, and multiple competing objectives — a significant step up from single-turn or short-horizon tasks.

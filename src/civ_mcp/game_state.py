@@ -1664,11 +1664,16 @@ class GameState:
     # Turn management
     # ------------------------------------------------------------------
 
-    async def end_turn(self) -> str:
-        """End the turn with snapshot-diff event detection."""
+    async def end_turn(self, seat=None) -> str:
+        """End the turn with snapshot-diff event detection.
+
+        ``seat`` is supplied in human-vs-agent handoff mode so end-of-turn is
+        detected by handing off the local-player slot rather than by the game
+        turn incrementing (which only happens once the whole round completes).
+        """
         from civ_mcp.end_turn import execute_end_turn
 
-        return await execute_end_turn(self)
+        return await execute_end_turn(self, seat)
 
     async def dismiss_popup(self) -> str:
         """Dismiss any blocking popup or UI overlay."""

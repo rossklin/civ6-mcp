@@ -35,6 +35,27 @@ Each turn in order:
 8. Run **Strategic Checkpoints** if it's time
 9. `end_turn`
 
+## Shared Games (human vs agent)
+
+If `get_seats` and `claim_seat` are available, this game is shared: a human is
+playing one civ in the game's own UI and you (plus possibly other agents) play
+rival civs, taking turns in order.
+
+1. `get_seats` — see which civ is yours
+2. `claim_seat(player_id=N)` — every other tool is refused until you do this
+3. Play your turn as normal, then `end_turn`
+4. `wait_for_turn()` — blocks until you're back on the clock and returns the
+   turn report. If it times out, call it again.
+
+Off the clock, read tools still answer for **your** civ, so the gap between your
+turns is time to scout, run strategic checkpoints, and plan — not time to sit
+idle. Write tools are refused until your turn, and `get_turn_status()` tells you
+where you stand without blocking.
+
+Save/load and game-restart tools are disabled: reloading would destroy the
+human's session and the other agents' progress. If the game hangs, say so and
+let the human recover it.
+
 ## Diary
 
 The diary is your persistent memory across sessions. When context compacts or you return to a game, `get_diary` is how you reconstruct where you were and why you made the decisions you did. Entries with specific details — unit names, coordinates, yield numbers, reasoning — are far more useful to your future self than brief summaries.

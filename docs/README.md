@@ -20,8 +20,8 @@
 
 ## Design & Research
 
-- [Human vs Agent](human-vs-agent.md) — Play against an agent via turn-boundary local-player handoff (validated, not implemented)
-- [Agent vs Agent](agent-vs-agent.md) — Multi-agent play design (proposal, not implemented; superseded in part by [Human vs Agent](human-vs-agent.md))
+- [Human vs Agent](human-vs-agent.md) — Play against one or more agents in your own game, via turn-boundary local-player handoff (implemented)
+- [Agent vs Agent](agent-vs-agent.md) — Multi-agent play design (proposal, not implemented; superseded by [Human vs Agent](human-vs-agent.md))
 - [Feature Ideas](feature-ideas.md) — Planned features with status markers
 - [MCP Design Report](research/game_mcp_design_report.md) — Initial design research and best practices
 

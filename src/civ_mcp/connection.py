@@ -18,9 +18,28 @@ from civ_mcp.lua._helpers import SENTINEL
 
 log = logging.getLogger(__name__)
 
+# Every Lua builder spells the caller's own player exactly this way.
+LOCAL_PLAYER_EXPR = "Game.GetLocalPlayer()"
+
 
 class LuaError(Exception):
     """Raised when Lua code execution returns an error."""
+
+
+def apply_perspective(lua_code: str, view_player: int | None) -> str:
+    """Rewrite ``Game.GetLocalPlayer()`` to a literal player id.
+
+    Under the human-vs-agent handoff the local-player slot moves between civs
+    at every turn boundary, so an agent reading during someone else's turn
+    would otherwise get *that* civ's state.  Binding the expression to the
+    caller's own seat keeps every query answering for the right empire.
+
+    A no-op when ``view_player`` is None, and a no-op in effect while the seat
+    holds the local-player slot (the substituted id is the local player).
+    """
+    if view_player is None:
+        return lua_code
+    return lua_code.replace(LOCAL_PLAYER_EXPR, str(view_player))
 
 
 class GameConnection:
@@ -35,6 +54,9 @@ class GameConnection:
         self.lua_states: dict[int, str] = {}  # index -> name
         self.gamecore_index: int | None = None
         self.ingame_index: int | None = None
+        # Game-scoped, not player-scoped: several seats can build a turn report
+        # inside the same game turn, and the MCP autosave is written once.
+        self.last_autosave_turn: int | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -117,29 +139,56 @@ class GameConnection:
                 "Make sure a game is in progress (not at the main menu)."
             )
 
-    async def execute_read(self, lua_code: str, timeout: float = 5.0) -> list[str]:
-        """Execute Lua in GameCore context (read state). Returns parsed output lines."""
-        await self._ensure_game_states()
-        return await self._execute_and_collect(self.gamecore_index, lua_code, timeout)
+    async def execute_read(
+        self, lua_code: str, timeout: float = 5.0, perspective: bool = True
+    ) -> list[str]:
+        """Execute Lua in GameCore context (read state). Returns parsed output lines.
 
-    async def execute_write(self, lua_code: str, timeout: float = 5.0) -> list[str]:
+        Pass ``perspective=False`` for code that must see the *actual* local
+        player rather than the calling seat's — turn-ownership probes and the
+        handoff installer.
+        """
+        await self._ensure_game_states()
+        return await self._execute_and_collect(
+            self.gamecore_index, lua_code, timeout, perspective
+        )
+
+    async def execute_write(
+        self, lua_code: str, timeout: float = 5.0, perspective: bool = True
+    ) -> list[str]:
         """Execute Lua in InGame context (issue commands). Returns parsed output lines."""
         await self._ensure_game_states()
-        return await self._execute_and_collect(self.ingame_index, lua_code, timeout)
+        return await self._execute_and_collect(
+            self.ingame_index, lua_code, timeout, perspective
+        )
 
     async def execute_in_state(
-        self, state_index: int, lua_code: str, timeout: float = 5.0
+        self,
+        state_index: int,
+        lua_code: str,
+        timeout: float = 5.0,
+        perspective: bool = True,
     ) -> list[str]:
         """Execute Lua in an arbitrary state index. Returns parsed output lines."""
-        return await self._execute_and_collect(state_index, lua_code, timeout)
+        return await self._execute_and_collect(
+            state_index, lua_code, timeout, perspective
+        )
 
     async def _execute_and_collect(
-        self, state_index: int, lua_code: str, timeout: float
+        self,
+        state_index: int,
+        lua_code: str,
+        timeout: float,
+        perspective: bool = True,
     ) -> list[str]:
         """Send Lua code and collect output lines until sentinel or timeout.
 
         Auto-reconnects once on dead socket (e.g. after game crash/reload).
         """
+        if perspective:
+            from civ_mcp.seats import get_view_player
+
+            lua_code = apply_perspective(lua_code, get_view_player())
         await self.ensure_connected()
         async with self._lock:
             try:
