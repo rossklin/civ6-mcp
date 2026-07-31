@@ -311,8 +311,8 @@ dashboard is skipped with a warning — it is not required to play.
 
 ### 3. Point one agent at each seat
 
-Each agent is a separate MCP client session against the same URL. For Claude
-Code, one entry per agent working directory:
+Give each agent its own working directory with an `.mcp.json` that **points at
+the running server**. Copy [`docs/mcp-http.json`](mcp-http.json):
 
 ```json
 {
@@ -321,6 +321,20 @@ Code, one entry per agent working directory:
   }
 }
 ```
+
+> **Do not copy the repo's own `.mcp.json`.** That one is the stdio *launcher*
+> (`"command": "uv", "args": [... "civ-mcp"]`); it tells the client to spawn its
+> own private server rather than connect to yours. Two agents doing that get two
+> classic-mode servers with no seat tools (`get_seats` "does not exist") racing
+> for the tuner port, so one works and the other reports "Cannot connect to Civ 6
+> at 127.0.0.1:4318" — while the real handoff server sits idle with nobody
+> connected. Observed on 2026-07-31; the `type`/`url` form above is the fix.
+
+Both agents should stay connected for the whole game. The context is torn down
+when the last session disconnects, which disarms the hook and hands the slot
+back — deliberate, so the human is never stuck waiting on an agent that has
+gone away, but it means the game reverts to ordinary single-player if every
+agent quits.
 
 Then start each agent with its seat:
 

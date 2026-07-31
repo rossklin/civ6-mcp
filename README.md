@@ -205,9 +205,13 @@ CIV_MCP_AGENT_PLAYERS=1,2 uv run civ-mcp
 $env:CIV_MCP_AGENT_PLAYERS="1,2"; uv run civ-mcp
 ```
 
-This serves MCP over HTTP at `http://127.0.0.1:8765/mcp` — a shared game needs
-one server process for all the agents, since the game's debug protocol
-broadcasts output to every connected client. Point each agent at that URL:
+This serves MCP over HTTP at `http://127.0.0.1:8765/mcp`. A shared game needs one
+server process for all the agents, because the game's debug port accepts only a
+single client — a second `civ-mcp` process is refused outright.
+
+Give each agent its own working directory containing
+[`docs/mcp-http.json`](docs/mcp-http.json), which **points at** the running
+server rather than starting one:
 
 ```json
 {
@@ -216,6 +220,10 @@ broadcasts output to every connected client. Point each agent at that URL:
   }
 }
 ```
+
+Don't copy this repo's `.mcp.json` — that's the stdio launcher, and it makes each
+agent spawn its own private server. They then have no seat tools and fight over
+the game's debug port, while the server you started sits idle.
 
 Each agent calls `claim_seat(player_id=N)` to take its civ, then plays only on
 its own turn — the server hands the human slot from civ to civ at each turn
