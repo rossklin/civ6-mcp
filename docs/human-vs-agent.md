@@ -4,9 +4,15 @@
 > implemented 2026-07-29 with support for several agent opponents at once, and
 > confirmed the same day in a 4-player game (human Portugal P0, agents Sumeria
 > P1 and Egypt P2, Cree P3 built-in AI) through turn 5 — see
-> [Live multi-agent validation](#live-multi-agent-validation). Blockers,
-> diplomacy, World Congress and save/load under handoff remain untested; see
-> [Remaining unknowns](#remaining-unknowns).
+> [Live multi-agent validation](#live-multi-agent-validation).
+>
+> **Diplomacy is broken under handoff** (found 2026-08-01): deals with a managed
+> civ are auto-resolved by the built-in AI in both directions, and holding the
+> local-player slot disables the human's diplomacy screen toward that civ until
+> the game is reloaded — see
+> [Diplomacy and trade under handoff](#diplomacy-and-trade-under-handoff).
+> World Congress remains untested, and `end_turn` hangs rather than reports when
+> a blocker fires; see [Remaining unknowns](#remaining-unknowns).
 >
 > Goal: a human plays Civ 6 in the normal UI while one or more MCP-driven
 > agents play rival civilizations in the same single-player game, taking turns
@@ -460,6 +466,145 @@ Bugs this run found and fixed: the web dashboard's `sys.exit(1)` on a port clash
 escaping as `SystemExit` and killing the whole ASGI app, and the per-session
 lifespan described above.
 
+## Diplomacy and trade under handoff
+
+Tested live on 2026-08-01: human Cree (P0) in the UI, agent Rome (P2) over MCP,
+turns 12–16. Three findings, one of them a blocker for human↔agent diplomacy.
+
+### Deals with a managed civ are answered by the built-in AI
+
+**Confirmed in both directions.** Whichever party does not hold the
+local-player slot has its deals answered by the AI, synchronously, inside the
+proposing side's turn.
+
+- **Human → agent.** The human gifted 87 gold to Rome from the native trade
+  screen. It completed instantly; Rome's gold went 135 → 222. The agent's
+  `get_pending_trades` was empty throughout and it was never consulted.
+- **Agent → human.** `propose_trade` returned `ACCEPTED` *inside the tool call*.
+  No popup reached the human, who was watching that screen for the whole
+  exchange.
+
+The cause is that the whole AI response happens inside one C++ call:
+
+```lua
+DealManager.SendWorkingDeal(DealProposalAction.PROPOSED, me, target)
+-- returns with the AI's counter already written into the INCOMING slot
+```
+
+There is no Lua-visible moment between "proposed" and "AI decided", so there is
+nothing to intercept. Caching the proposal and replaying it on the target's turn
+has no window to act in — the deal must simply never be sent. `GameEvents` has
+no vetoable deal hook, and see the note below on why probing for one is
+worthless.
+
+### Forced deals: `ACCEPTED` without `PROPOSED`
+
+`DealManager.SendWorkingDeal(ACCEPTED, ...)` executes an arbitrary working deal
+with **no `PROPOSED`, no AI valuation, and no diplomacy session**. Measured:
+
+| Deal | Before (P2/P0) | After | Expected |
+|---|---|---|---|
+| 10g P2→P0 | 137 / 109 | 127 / 119 | ✓ |
+| 4g P2→P0 **and** 6g P0→P2 | 127 / 119 | 129 / 117 | ✓ |
+
+The two-sided case is the important one: an item was added `from` player 0 — who
+never consented, was AI-controlled, and had no session open — and the engine
+moved their gold. Consent is therefore ours to model in Python while the engine
+still does the bookkeeping. The working deal self-clears afterwards and
+`HasPendingDeal` returns false.
+
+Two caveats:
+
+- **Only lump-sum gold has been exercised.** Gold-per-turn (`duration > 0`),
+  resources, agreements, favor and cities each involve different engine
+  bookkeeping and are unconfirmed.
+- **A forced deal leaves an open diplomacy session behind**, which then blocks
+  `end_turn` with "diplomacy encounter pending". Any executor must finish with
+  the `_lua_close_diplo_session()` teardown.
+
+### The handoff breaks the human's diplomacy UI — BLOCKER
+
+Once a civ has held the local-player slot, the human's diplomacy screen toward
+that civ goes inert: every action (Make Deal, Declare Friendship, …) is disabled
+and clicking does nothing. It survives turn rollover, is cured by save+reload,
+and is re-broken by a single handoff cycle — confirmed with a control turn on
+which the agent took no actions and ran no probes at all.
+
+The engine disagrees with the UI. `IsDiplomaticActionValid` from P0 toward P2
+returns `true` for Delegation, Declare Friendship and Denounce, exactly
+symmetric with P2 toward P0. Every game-state layer reads clean: handoff slot
+correct, config layer correct (P0 `SS_TAKEN`, agents `SS_COMPUTER`), no pending
+deals, no open sessions.
+
+**Root cause: two notions of "local player" diverge.**
+
+| API | Value while P2 holds the slot | Follows the handoff? |
+|---|---|---|
+| `Game.GetLocalPlayer()` | 2 | yes |
+| `Game.GetLocalObserver()` | 2 | yes |
+| `Network.GetLocalPlayerID()` | **0** | **no** |
+
+`PlayerManager.SetLocalPlayerAndObserver()` updates the Game layer and leaves
+the Network layer pinned to the original human. There is no
+`Network.SetLocalPlayerID` to correct it. This is very likely the same root
+cause as the fog-rendering artefact and the uncloseable city-founding modal.
+
+> **Do not fire `Events.LocalPlayerChanged` by hand.** Attempting to force a UI
+> resync this way **hung the game** (process alive but `Responding = False`, no
+> map tiles rendered, window unresponsive, tuner listener gone). Unlike
+> `GameEvents`, the `Events` table does not fabricate members — a made-up name
+> is `nil` — so the call really does raise the engine event, and the engine's
+> invariants around it are not re-established just because handlers run.
+> Subscribing to engine events is safe; raising them is not.
+
+### Tentative plan: a server-side deal mailbox
+
+Not yet built. The shape that the findings above point to:
+
+1. **`propose_trade` forks on target type.** An unmanaged built-in AI keeps
+   today's behaviour. A *managed* target (the human or another agent) writes a
+   `PendingProposal` into a server-side mailbox and returns "sent, awaiting
+   response" — the engine is never touched, so the AI never gets to answer.
+2. **Delivery.** Agent targets read it through `get_pending_trades` and resolve
+   it with `respond_to_trade`. The human needs a surface that is not the native
+   trade screen; the web dashboard is the obvious candidate, being the only
+   human-facing component that already exists.
+3. **Execution on acceptance** via the forced-deal primitive, followed by
+   `_lua_close_diplo_session()`. The accepting party is on the clock by
+   definition, so the local-player slot is already correct.
+
+**The blocker gates all of this.** Until the diverged local-player state is
+resolved, the human cannot use the native diplomacy screen toward an agent civ
+at all — so there is no in-game entry point for the human→agent direction, and
+a mod that only replaces `DiplomacyDealView.lua` would not restore one. A
+custom view reading the local player fresh may well be immune, but that is
+untested. Resolve the divergence first.
+
+### Lua environment topology (relevant to any mod)
+
+- **Engine singletons are per-Lua-state wrapper tables.** `DealManager` is
+  `0x1F3D32830` in InGame and `0x1895E7B30` in GameCore; `Players` and `Game`
+  differ likewise. Same C++ object, different Lua tables.
+- `DiplomacyDealView` / `DiplomacyActionView` globals (`ProposeWorkingDeal`,
+  `ms_bIsDemand`, `ms_SelectedPlayerID`) are **invisible** from the tuner's
+  InGame state, while `DealManager`, `LuaEvents`, `UI` and `Controls` resolve.
+  Shared control tree ≠ shared Lua environment: `ContextPtr:LookUpControl` is a
+  C++ tree walk and works across contexts regardless.
+- **Whether monkey-patching `DealManager.SendWorkingDeal` from the tuner reaches
+  the game's own UI is UNRESOLVED.** `DealManager` is a plain writable table
+  with no metatable, so the patch installs and a positive control confirms the
+  wrapper fires for tuner-originated calls. The decisive test — the human
+  clicking Propose in the native screen — was never completed, because the
+  diplomacy UI was dead for the rest of the session.
+- `DiplomacyManager` is **nil** in GameCore; `DealManager` is present in both.
+- The tuner sandbox strips `_G`, `rawget`, `_ENV` and `getfenv`, so globals
+  cannot be enumerated — probe names by direct reference.
+- **`GameEvents` is a lazy proxy that fabricates a table with a working `.Add`
+  for any name you ask for.** An invented `GameEvents.DealAccepted` returns
+  `TABLE+Add` exactly like a real event. Name-existence probing proves nothing;
+  the only real test is registering a handler and observing whether it fires.
+  `Events` does *not* behave this way.
+
 ## Rejected Approaches
 
 **Multiplayer / hotseat — impossible.** FireTuner's listener is disabled for all
@@ -518,27 +663,43 @@ The mechanism itself is settled — see
 longer game, since these only arise after the opening turns. None of them block
 play.
 
-1. **End-turn blockers under handoff.** Not one fired in turns 1–5, so the
-   blocker-resolution machinery is untested in this mode. The first will be a
-   completed civic (Code of Laws) or tech needing a next choice; era changes,
-   governor points and policy slots follow. This is the highest-value next test,
-   because `end_turn`'s blocker path is the most intricate code the handoff
-   touches.
+1. **End-turn blockers under handoff — partially exercised, and it hangs.**
+   `ENDTURN_BLOCKING_PRODUCTION` and `ENDTURN_BLOCKING_UNITS` both fired on
+   2026-08-01 when an agent's city finished its build. The failure mode is bad:
+
+   ```
+   UI.CanEndTurn()=true despite blockers ['ENDTURN_BLOCKING_PRODUCTION',
+     'ENDTURN_BLOCKING_UNITS'] — proceeding
+   Skipping ACTION_ENDTURN — previous request still in flight (from turn 16)
+   ```
+
+   `end_turn` trusts `UI.CanEndTurn()` over its own blocker list and proceeds,
+   the turn cannot advance, and the in-flight guard then suppresses every retry
+   — so the tool **blocks for minutes and reports nothing** instead of returning
+   the blocker with a resolution hint. Resolving the blockers by hand
+   (`set_city_production`, `skip_remaining_units`) is the workaround. Era
+   changes, governor points and policy slots remain untested.
 2. **Does the AI still choose an agent civ's research and production?**
    Suggestive but not conclusive so far: P1's research stayed on the Animal
    Husbandry the agent picked across four turns. Test properly by reading an
    agent's research and build queue at the moment of handoff, *before* the agent
    acts. If the engine pre-commits them, agents must overwrite every turn.
-3. **Diplomacy.** A civ that becomes human mid-game may be approached
-   differently by other AIs. AI-initiated diplomacy sessions targeting an agent
-   route through `get_pending_diplomacy` / `respond_to_diplomacy` during that
-   agent's window, but AI-to-AI diplomacy between two agent civs has no API.
+3. **Diplomacy — answered, and it is a blocker.** See
+   [Diplomacy and trade under handoff](#diplomacy-and-trade-under-handoff).
+   Deals with a managed civ are auto-resolved by the built-in AI in both
+   directions, and holding the local-player slot permanently disables the
+   human's diplomacy screen toward that civ until the game is reloaded. Still
+   open: whether other AIs approach a civ differently once it has been human,
+   and AI-to-AI diplomacy between two agent civs, which has no API.
 4. **Fairness.** Agents have gamecore read access to the entire map regardless
    of their own visibility, and so can see the human's state. Accepted for now;
    enforcing fog of war requires visibility checks in the query layer.
-5. **Save/load.** Confirm a game saved mid-handoff (an agent holding the human
-   slot) reloads sanely, and that the local player on load is the human. The
-   keeper re-arms the hook after a load either way.
+5. **Save/load — mostly confirmed.** A save+reload taken with the *human*
+   holding the slot reloaded cleanly on 2026-08-01, and `HandoffKeeper` re-armed
+   the hook on its own within its poll interval, with the agent picking up its
+   next turn unaided. Reload also rebuilds every UI context, which is currently
+   the only cure for the diplomacy-UI blocker. Still untested: saving while an
+   *agent* holds the slot.
 6. **Longevity.** Four full rounds with two agents showed no drift or leaked
    handlers. Still worth 20+ turns, where era changes and unit counts grow.
 7. **The city-founding modal.** Founding a city as an agent raises a modal on
