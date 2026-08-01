@@ -780,9 +780,10 @@ local pDiplo = Players[me]:GetDiplomacy()
 if not pDiplo:HasMet(target) then {_bail("ERR:NOT_MET|Have not met player " + str(other_player_id))} end
 if pDiplo:IsAtWarWith(target) then {_bail("ERR:AT_WAR|Cannot trade while at war")} end
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
-if not DealManager.HasPendingDeal(me, target) then
-    DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target)
-end
+-- Always clear: the working deal persists across calls, and a leftover deal
+-- (e.g. from a prior test_trade EQUALIZE) would stack its items underneath
+-- ours and silently double the amounts actually traded.
+DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target)
 local deal = DealManager.GetWorkingDeal(DealDirection.OUTGOING, me, target)
 if not deal then {_bail("ERR:NO_DEAL_OBJECT|Failed to get working deal")} end
 {offer_lua}
@@ -921,6 +922,11 @@ pcall(function()
     local sid = DiplomacyManager.FindOpenSessionID(me, target)
     if sid and sid >= 0 then DiplomacyManager.CloseSession(sid) end
 end)
+-- EQUALIZE leaves both working deals populated and HasPendingDeal true. Left
+-- behind, those items stack under the next propose_trade and get traded for
+-- real — this preview must not outlive itself.
+pcall(function() DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target) end)
+pcall(function() DealManager.ClearWorkingDeal(DealDirection.INCOMING, me, target) end)
 print("{SENTINEL}")
 """
 
@@ -991,9 +997,9 @@ pcall(function()
 end)
 if not hasDiploService then {_bail("ERR:NO_CIVIC|Diplomatic Service civic required for alliances")} end
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
-if not DealManager.HasPendingDeal(me, target) then
-    DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target)
-end
+-- Always clear — see the note in build_propose_trade. A leftover working deal
+-- would attach its items to the alliance proposal.
+DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target)
 local deal = DealManager.GetWorkingDeal(DealDirection.OUTGOING, me, target)
 if not deal then {_bail("ERR:NO_DEAL_OBJECT|Failed to get working deal")} end
 do local ai_item = deal:AddItemOfType(DealItemTypes.AGREEMENTS, me)
