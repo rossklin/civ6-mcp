@@ -1723,6 +1723,19 @@ class GameState:
 
         return await execute_lua(self.conn, code, context)
 
+    # ── Unified State Query ────────────────────────────────────────
+
+    async def get_full_game_state(self) -> "lq.FullGameState":
+        """Fetch all game state in a single Lua query.
+
+        Returns a ``FullGameState`` dataclass with all read sections
+        populated.  Use ``narrate_unified.narrate_full_state()`` to
+        format for LLM consumption.
+        """
+        from civ_mcp.unified_state import fetch_full_state
+
+        return await fetch_full_state(self.conn)
+
 
 def _action_result(lines: list[str]) -> str:
     """Parse OK:/ERR: prefixed action responses.

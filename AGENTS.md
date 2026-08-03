@@ -6,6 +6,14 @@ An MCP server connecting to a live Civilization VI game via FireTuner. You can r
 
 `end_turn` now runs **empire warnings** automatically — alerts for loyalty crises, idle trade routes, gold deficits, resource caps, scoreboard position, and military imbalance. These compensate for the most common blind spots, but don't replace periodic deep checks (victory progress, religion spread, diplomacy).
 
+## Two-Tool Architecture
+
+This server exposes **two primary tools** plus admin utilities:
+
+- **`get_full_game_state`** — returns ALL game state in a single call: overview, units, cities, diplomacy, research, trade routes, resources, victory progress, religion, governors, policies, city-states, builder tasks, great people, world congress, notifications, and strategic map. Call this at the start of each turn.
+- **`execute_commands`** — runs a batch of game commands from a JSON array. Callable multiple times per turn (scout first, review intel, then commit remaining moves). Unit movements return visibility intel inline.
+- **`end_turn`** — advances the turn. Reflections are optional — provide what you can, skip what you can't.
+
 ## Coordinate System
 
 **Hex grid: (X, Y) where higher Y = visually south.**
@@ -25,15 +33,11 @@ Early choices compound. Each decision shapes what's available 20, 40, 60 turns l
 ## Turn Loop
 
 Each turn in order:
-1. `get_game_overview` — turn, yields, research, score, era score, difficulty. If resuming after context compaction, call `get_diary` first.
-2. `get_units` — positions, HP, moves, charges, nearby threats
-3. `get_map_area` around cities/units — terrain, resources, enemy units
-4. Move/action each unit
-5. `get_cities` — queues, growth, pillaged districts
-6. `get_district_advisor` if placing a new district
-7. `set_city_production` / `set_research` if needed
-8. Run **Strategic Checkpoints** if it's time
-9. `end_turn`
+1. `get_full_game_state` — all game state in one call. If resuming after context compaction, call `get_diary` first.
+2. Plan your moves based on the full state.
+3. `execute_commands` with your planned actions (move units, set production, set research, etc.).
+4. If unit movements reveal new intel (visible in the command results), you may call `execute_commands` again to act on it. Prefer fewer calls where possible.
+5. `end_turn` — advance the turn. Reflections are optional.
 
 ## Shared Games (human vs agent)
 
@@ -43,7 +47,7 @@ rival civs, taking turns in order.
 
 1. `get_seats` — see which civ is yours
 2. `claim_seat(player_id=N)` — every other tool is refused until you do this
-3. Play your turn as normal, then `end_turn`
+3. Play your turn: `get_full_game_state`, then `execute_commands`, then `end_turn`
 4. `wait_for_turn()` — blocks until you're back on the clock and returns the
    turn report. If it times out, call it again.
 
@@ -62,10 +66,10 @@ The diary is your persistent memory across sessions. When context compacts or yo
 
 Reflections are recorded **before** AI processing begins — write what YOU observed and did this turn. Anything that surfaces after `end_turn` (a diplomacy proposal, AI units entering your territory, events in the turn result) belongs in the **next** turn's diary, not this one.
 
-Five reflection fields each turn (all required, non-empty):
+Five reflection fields each turn (all optional — provide what you can, skip what you can't):
 - **tactical**: What happened — specific units, tiles, outcomes.
 - **strategic**: Standings vs rivals — yields, city count, victory path viability with numbers.
-- **tooling**: Tool issues observed, or "No issues".
+- **tooling**: Tool issues observed.
 - **planning**: Concrete actions for the next 5-10 turns — specific builds, moves, research targets with turn estimates.
 - **hypothesis**: Specific predictions — attack timing, milestone turns, biggest risks.
 

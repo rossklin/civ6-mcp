@@ -1287,3 +1287,57 @@ class BuilderInfo:
     y: int
     charges: int
     moves: float
+
+
+# ---------------------------------------------------------------------------
+# Unified game state — all read queries in one dataclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FullGameState:
+    """All game state the agent needs for a turn, from a single query.
+
+    Fields may be None if the corresponding Lua query failed or returned
+    no data. The agent should handle missing sections gracefully.
+    """
+
+    overview: GameOverview | None = None
+    units: list[UnitInfo] = field(default_factory=list)
+    cities: list[CityInfo] = field(default_factory=list)
+    city_distances: list[str] = field(default_factory=list)
+    spies: list[SpyInfo] = field(default_factory=list)
+
+    # Diplomacy
+    diplomacy: list[CivInfo] = field(default_factory=list)
+    pending_deals: list[PendingDeal] = field(default_factory=list)
+    diplomacy_sessions: list[DiplomacySession] = field(default_factory=list)
+
+    # Research
+    tech_civics: TechCivicStatus | None = None
+
+    # Economy
+    trade_routes: TradeRouteStatus | None = None
+    empire_resources: Any = None  # tuple from get_empire_resources
+    strategic_map: StrategicMapData | None = None
+
+    # Victory & Religion
+    victory_progress: VictoryProgress | None = None
+    religion_status: ReligionStatus | None = None
+
+    # Governance
+    governors: GovernorStatus | None = None
+    policies: GovernmentStatus | None = None
+    city_states: EnvoyStatus | None = None
+
+    # Planning
+    builder_tasks: Any = None  # tuple[list[BuilderTask], list[BuilderInfo]]
+    great_people: list[GreatPersonInfo] = field(default_factory=list)
+
+    # World Congress & Notifications
+    world_congress: WorldCongressStatus | None = None
+    notifications: list[GameNotification] = field(default_factory=list)
+
+    # Map tiles around cities and units (keyed by center coordinate)
+    map_around_cities: dict = field(default_factory=dict)
+    map_around_units: dict = field(default_factory=dict)

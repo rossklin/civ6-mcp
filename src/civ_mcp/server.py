@@ -33,6 +33,8 @@ from civ_mcp.game_state import GameState
 from civ_mcp.handoff import HandoffConfig, HandoffKeeper
 from civ_mcp.logger import GameLogger
 from civ_mcp.map_capture import MapCapture
+from civ_mcp.command_executor import execute_commands as _execute_commands
+from civ_mcp.narrate_unified import narrate_full_state
 from civ_mcp.seats import Seat, SeatRegistry
 from civ_mcp.spatial import SpatialTracker
 from civ_mcp.spectator import CameraController, PopupWatcher
@@ -517,7 +519,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 _INSTRUCTIONS = (
     "Read game state and issue commands to a running Civ 6 game. "
-    "Call get_game_overview first to orient yourself."
+    "Call get_full_game_state first to orient yourself."
 )
 
 if HANDOFF_CONFIG.enabled:
@@ -527,7 +529,7 @@ if HANDOFF_CONFIG.enabled:
         "agents play rival civs through this server, taking turns in order.\n"
         "Start by calling get_seats() and then claim_seat(player_id=N) — every "
         "other tool is refused until you hold a seat. Then call "
-        "get_game_overview() to orient yourself.\n"
+        "get_full_game_state() to orient yourself.\n"
         "Read tools always answer for your own civ, including while other "
         "players are taking their turns, so you can scout and plan off the "
         "clock. Write tools work only during your own turn. After end_turn(), "
@@ -813,6 +815,91 @@ async def _logged(
 
 
 # ---------------------------------------------------------------------------
+# Unified tools — get_full_game_state and execute_commands
+# ---------------------------------------------------------------------------
+# These two tools consolidate ~70 individual query/action tools into two.
+# The code for the original tools is preserved in game_state.py and the
+# lua/ modules — they're just not exposed as individual MCP tools.
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_full_game_state(ctx: Context) -> str:
+    """Get the complete game state in a single call.
+
+    Returns all game information needed to plan your turn: overview, units,
+    cities, diplomacy, research, trade routes, resources, victory progress,
+    religion, governors, policies, city-states, builder tasks, great people,
+    world congress, notifications, and strategic map.
+
+    This replaces all individual get_* query tools. Call this once at the
+    start of your turn to orient yourself, then issue commands via
+    execute_commands.
+    """
+    gs = _get_game(ctx)
+
+    async def _run():
+        state = await gs.get_full_game_state()
+        logger = _get_logger(ctx)
+        if state.overview is not None:
+            logger.set_turn(state.overview.turn)
+            spatial = _get_spatial(ctx)
+            spatial.set_turn(state.overview.turn)
+            try:
+                civ, seed = await gs.get_game_identity()
+                logger.bind_game(civ, seed)
+                spatial.bind_game(civ, seed)
+                heartbeat.bind_game(civ, seed)
+                gs.spatial = spatial
+            except Exception:
+                pass
+        return narrate_full_state(state)
+
+    return await _logged(ctx, "get_full_game_state", {}, _run)
+
+
+@mcp.tool()
+async def execute_commands(ctx: Context, commands_json: str) -> str:
+    """Execute a batch of game commands.
+
+    Args:
+        commands_json: A JSON array of command objects. Each object has:
+            - action: The command name (matching a game action)
+            - params: Dict of parameters for that command
+
+    Example:
+        [{"action": "move_unit", "params": {"unit_id": 12345, "x": 10, "y": 20}},
+         {"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_SETTLER"}},
+         {"action": "set_research", "params": {"tech_name": "TECH_IRON_WORKING"}}]
+
+    Commands execute sequentially in order. Unit movement commands return
+    visibility intel (newly revealed tiles and enemy units) inline — you can
+    call this tool multiple times per turn to scout first, then act on new
+    intel. Prefer fewer calls where possible.
+
+    Available commands include: move_unit, attack_unit, fortify_unit,
+    skip_unit, skip_remaining_units, automate_explore, heal_unit, alert_unit,
+    sleep_unit, delete_unit, found_city, improve_tile, remove_feature,
+    repair_improvement, build_route, spread_religion, activate_great_person,
+    make_trade_route, teleport_to_city, upgrade_unit, promote_unit,
+    set_city_production, purchase_item, purchase_tile, set_city_focus,
+    city_attack, set_research, set_civic, send_diplomatic_action,
+    respond_to_diplomacy, propose_trade, test_trade, respond_to_trade,
+    propose_peace, form_alliance, set_policies, appoint_governor,
+    assign_governor, promote_governor, send_envoy, change_government,
+    choose_dedication, choose_pantheon, found_religion, recruit_great_person,
+    patronize_great_person, reject_great_person, queue_wc_votes,
+    spy_travel, spy_mission, dismiss_popup, resolve_city_capture,
+    and more.
+    """
+    gs = _get_game(ctx)
+
+    async def _run():
+        return await _execute_commands(gs, commands_json)
+
+    return await _logged(ctx, "execute_commands", {}, _run)
+
+
+# ---------------------------------------------------------------------------
 # Seats and turn ownership (human-vs-agent mode)
 # ---------------------------------------------------------------------------
 # These tools exist only when the server was started with
@@ -1003,7 +1090,7 @@ async def reinstall_handoff(ctx: Context) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_game_overview(ctx: Context) -> str:
     """Get a high-level summary of the current game state.
 
@@ -1070,7 +1157,7 @@ async def get_game_overview(ctx: Context) -> str:
     return await _logged(ctx, "get_game_overview", {}, _run)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_units(ctx: Context) -> str:
     """List all your units with position, type, movement, and health.
 
@@ -1097,7 +1184,7 @@ async def get_units(ctx: Context) -> str:
     return await _logged(ctx, "get_units", {}, _run, tiles=unit_tiles)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_spies(ctx: Context) -> str:
     """List all your spy units with position, rank, city, and available missions.
 
@@ -1117,7 +1204,7 @@ async def get_spies(ctx: Context) -> str:
     return await _logged(ctx, "get_spies", {}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def spy_action(
     ctx: Context,
     unit_id: int,
@@ -1166,7 +1253,7 @@ async def spy_action(
     return result
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_cities(ctx: Context) -> str:
     """List all your cities with yields, population, production, growth, and loyalty.
 
@@ -1182,7 +1269,7 @@ async def get_cities(ctx: Context) -> str:
     return await _logged(ctx, "get_cities", {}, _run)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_city_production(ctx: Context, city_id: int) -> str:
     """List what a city can produce right now.
 
@@ -1201,7 +1288,7 @@ async def get_city_production(ctx: Context, city_id: int) -> str:
     return await _logged(ctx, "get_city_production", {"city_id": city_id}, _run)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_map_area(
     ctx: Context, center_x: int, center_y: int, radius: int = 2
 ) -> str:
@@ -1232,7 +1319,7 @@ async def get_map_area(
     return result
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_settle_advisor(ctx: Context, unit_id: int) -> str:
     """List best settle locations near a settler unit.
 
@@ -1252,7 +1339,7 @@ async def get_settle_advisor(ctx: Context, unit_id: int) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_pathing_estimate(
     ctx: Context, unit_id: int, target_x: int, target_y: int
 ) -> str:
@@ -1280,7 +1367,7 @@ async def get_pathing_estimate(
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_global_settle_advisor(ctx: Context) -> str:
     """Find the best settle locations across the entire revealed map.
 
@@ -1299,7 +1386,7 @@ async def get_global_settle_advisor(ctx: Context) -> str:
     return await _logged(ctx, "get_global_settle_advisor", {}, _run)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_builder_tasks(ctx: Context) -> str:
     """Get a prioritized task board for all your builders.
 
@@ -1323,7 +1410,7 @@ async def get_builder_tasks(ctx: Context) -> str:
     return await _logged(ctx, "get_builder_tasks", {}, _run)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_empire_resources(ctx: Context) -> str:
     """Get a summary of all resources in and near your empire.
 
@@ -1339,7 +1426,7 @@ async def get_empire_resources(ctx: Context) -> str:
     return await _logged(ctx, "get_empire_resources", {}, _run)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_strategic_map(ctx: Context) -> str:
     """Get fog-of-war boundaries and unclaimed resources across the map.
 
@@ -1356,7 +1443,7 @@ async def get_strategic_map(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_diplomacy(ctx: Context) -> str:
     """Get diplomatic status with all known civilizations.
 
@@ -1374,7 +1461,7 @@ async def get_diplomacy(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_tech_civics(ctx: Context) -> str:
     """Get technology and civic research status.
 
@@ -1390,7 +1477,7 @@ async def get_tech_civics(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_pending_trades(ctx: Context) -> str:
     """Check for pending trade deal offers from other civilizations.
 
@@ -1406,7 +1493,7 @@ async def get_pending_trades(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_policies(ctx: Context) -> str:
     """Get current government, policy slots, and available policies.
 
@@ -1420,7 +1507,7 @@ async def get_policies(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_notifications(ctx: Context) -> str:
     """Get all active game notifications.
 
@@ -1438,7 +1525,7 @@ async def get_notifications(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_pending_diplomacy(ctx: Context) -> str:
     """Check for pending diplomacy encounters (e.g. first meeting with a civ).
 
@@ -1460,7 +1547,7 @@ async def get_pending_diplomacy(ctx: Context) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_governors(ctx: Context) -> str:
     """Get governor status, appointed governors, and available types.
 
@@ -1476,7 +1563,7 @@ async def get_governors(ctx: Context) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def appoint_governor(ctx: Context, governor_type: str) -> str:
     """Appoint a new governor.
 
@@ -1494,7 +1581,7 @@ async def appoint_governor(ctx: Context, governor_type: str) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def assign_governor(ctx: Context, governor_type: str, city_id: int) -> str:
     """Assign an appointed governor to a city.
 
@@ -1513,7 +1600,7 @@ async def assign_governor(ctx: Context, governor_type: str, city_id: int) -> str
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def promote_governor(
     ctx: Context, governor_type: str, promotion_type: str
 ) -> str:
@@ -1534,7 +1621,7 @@ async def promote_governor(
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_unit_promotions(ctx: Context, unit_id: int) -> str:
     """List available promotions for a unit.
 
@@ -1553,7 +1640,7 @@ async def get_unit_promotions(ctx: Context, unit_id: int) -> str:
     return await _logged(ctx, "get_unit_promotions", {"unit_id": unit_id}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def promote_unit(ctx: Context, unit_id: int, promotion_type: str) -> str:
     """Apply a promotion to a unit.
 
@@ -1572,7 +1659,7 @@ async def promote_unit(ctx: Context, unit_id: int, promotion_type: str) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_city_states(ctx: Context) -> str:
     """List known city-states with envoy counts and types.
 
@@ -1589,7 +1676,7 @@ async def get_city_states(ctx: Context) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def send_envoy(ctx: Context, player_id: int) -> str:
     """Send an envoy to a city-state.
 
@@ -1604,7 +1691,7 @@ async def send_envoy(ctx: Context, player_id: int) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_pantheon_beliefs(ctx: Context) -> str:
     """Get pantheon status and available beliefs for selection.
 
@@ -1620,7 +1707,7 @@ async def get_pantheon_beliefs(ctx: Context) -> str:
     return await _logged(ctx, "get_pantheon_beliefs", {}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def choose_pantheon(ctx: Context, belief_type: str) -> str:
     """Found a pantheon with the specified belief.
 
@@ -1639,7 +1726,7 @@ async def choose_pantheon(ctx: Context, belief_type: str) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def get_religion_beliefs(ctx: Context) -> str:
     """Get religion founding status, available religions, and available beliefs.
 
@@ -1656,7 +1743,7 @@ async def get_religion_beliefs(ctx: Context) -> str:
     return await _logged(ctx, "get_religion_beliefs", {}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def found_religion(
     ctx: Context, religion_type: str, follower_belief: str, founder_belief: str
 ) -> str:
@@ -1684,7 +1771,7 @@ async def found_religion(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def upgrade_unit(ctx: Context, unit_id: int) -> str:
     """Upgrade a unit to its next type (e.g. Slinger -> Archer).
 
@@ -1700,7 +1787,7 @@ async def upgrade_unit(ctx: Context, unit_id: int) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def get_dedications(ctx: Context) -> str:
     """Get current era age, available dedications, and active ones.
 
@@ -1717,7 +1804,7 @@ async def get_dedications(ctx: Context) -> str:
     return await _logged(ctx, "get_dedications", {}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def choose_dedication(ctx: Context, dedication_index: int) -> str:
     """Choose a dedication/commemoration for the current era.
 
@@ -1735,7 +1822,7 @@ async def choose_dedication(ctx: Context, dedication_index: int) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_trade_options(ctx: Context, other_player_id: int) -> str:
     """See what both sides can trade — like opening the trade screen.
 
@@ -1757,7 +1844,7 @@ async def get_trade_options(ctx: Context, other_player_id: int) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def respond_to_trade(ctx: Context, other_player_id: int, accept: bool) -> str:
     """Accept or reject a pending trade deal.
 
@@ -1776,7 +1863,7 @@ async def respond_to_trade(ctx: Context, other_player_id: int, accept: bool) -> 
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def propose_trade(
     ctx: Context,
     other_player_id: int,
@@ -1878,7 +1965,7 @@ async def propose_trade(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def propose_peace(ctx: Context, other_player_id: int) -> str:
     """Propose white peace to a civilization you're at war with.
 
@@ -1897,7 +1984,7 @@ async def propose_peace(ctx: Context, other_player_id: int) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def set_policies(ctx: Context, assignments: str) -> str:
     """Set policy cards in government slots.
 
@@ -1928,7 +2015,7 @@ async def set_policies(ctx: Context, assignments: str) -> str:
     return await _logged(ctx, "set_policies", {"assignments": assignments}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def respond_to_diplomacy(
     ctx: Context, other_player_id: int, response: str
 ) -> str:
@@ -1951,7 +2038,7 @@ async def respond_to_diplomacy(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def send_diplomatic_action(
     ctx: Context, other_player_id: int, action: str
 ) -> str:
@@ -1980,7 +2067,7 @@ async def send_diplomatic_action(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def form_alliance(
     ctx: Context, other_player_id: int, alliance_type: str = "MILITARY"
 ) -> str:
@@ -2002,7 +2089,7 @@ async def form_alliance(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def city_action(
     ctx: Context,
     city_id: int,
@@ -2052,7 +2139,7 @@ async def city_action(
             return f"Error: Unknown city action '{action}'. Available: attack, keep, reject, raze, liberate_founder, liberate_previous"
 
 
-@mcp.tool()
+# @mcp.tool()
 async def unit_action(
     ctx: Context,
     unit_id: int,
@@ -2163,7 +2250,7 @@ async def unit_action(
     return result
 
 
-@mcp.tool()
+# @mcp.tool()
 async def skip_remaining_units(ctx: Context) -> str:
     """Skip all units that still have moves remaining.
 
@@ -2176,7 +2263,7 @@ async def skip_remaining_units(ctx: Context) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def set_city_production(
     ctx: Context,
     city_id: int,
@@ -2211,7 +2298,7 @@ async def set_city_production(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def purchase_item(
     ctx: Context,
     city_id: int,
@@ -2243,7 +2330,7 @@ async def purchase_item(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def set_research(ctx: Context, tech_or_civic: str, category: str = "tech") -> str:
     """Choose a technology or civic to research.
 
@@ -2282,11 +2369,11 @@ async def end_turn(
     Make sure you've moved all units, set production, and chosen research
     before ending the turn.
 
-    All 5 reflection parameters are required and must be non-empty.
-    These form the per-turn diary — your persistent memory across sessions:
+    All 5 reflection parameters are optional — provide what you can,
+    leave blank what you can't. These form the per-turn diary:
         tactical: What happened this turn — combat, movements, improvements.
         strategic: Current standing vs rivals — yields, city count, victory path.
-        tooling: Tool issues or observations. Write "No issues" if none.
+        tooling: Tool issues or observations.
         planning: Concrete actions for the next 5-10 turns.
         hypothesis: Predictions — enemy behavior, resource needs, timelines.
 
@@ -2312,13 +2399,6 @@ async def end_turn(
         "planning": planning,
         "hypothesis": hypothesis,
     }
-    missing = [k for k, v in reflections.items() if not v.strip()]
-    if missing:
-        return (
-            f"Empty reflections: {', '.join(missing)}. "
-            "Provide non-empty entries for all 5 fields: "
-            "tactical, strategic, tooling, planning, hypothesis."
-        )
 
     # Model ID comes from CIV_MCP_AGENT_MODEL env var (set by eval runner)
     env_model = os.environ.get("CIV_MCP_AGENT_MODEL", "")
@@ -2800,7 +2880,7 @@ async def get_diary(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_trade_routes(ctx: Context) -> str:
     """Get trade route capacity, active routes, and trader status.
 
@@ -2816,7 +2896,7 @@ async def get_trade_routes(ctx: Context) -> str:
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_trade_destinations(ctx: Context, unit_id: int) -> str:
     """List valid trade route destinations for a trader unit.
 
@@ -2841,7 +2921,7 @@ async def get_trade_destinations(ctx: Context, unit_id: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_district_advisor(ctx: Context, city_id: int, district_type: str) -> str:
     """Show best tiles to place a district with adjacency bonuses.
 
@@ -2873,7 +2953,7 @@ async def get_district_advisor(ctx: Context, city_id: int, district_type: str) -
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_wonder_advisor(ctx: Context, city_id: int, wonder_name: str) -> str:
     """Show best tiles to place a wonder with displacement cost analysis.
 
@@ -2913,7 +2993,7 @@ async def get_wonder_advisor(ctx: Context, city_id: int, wonder_name: str) -> st
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_purchasable_tiles(ctx: Context, city_id: int) -> str:
     """List tiles a city can purchase with gold.
 
@@ -2932,7 +3012,7 @@ async def get_purchasable_tiles(ctx: Context, city_id: int) -> str:
     return await _logged(ctx, "get_purchasable_tiles", {"city_id": city_id}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def purchase_tile(ctx: Context, city_id: int, x: int, y: int) -> str:
     """Buy a tile for a city with gold.
 
@@ -2959,7 +3039,7 @@ async def purchase_tile(ctx: Context, city_id: int, x: int, y: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+# @mcp.tool()
 async def change_government(ctx: Context, government_type: str) -> str:
     """Switch to a different government type.
 
@@ -2983,7 +3063,7 @@ async def change_government(ctx: Context, government_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_great_people(ctx: Context) -> str:
     """See available Great People and recruitment progress.
 
@@ -2999,7 +3079,7 @@ async def get_great_people(ctx: Context) -> str:
     return await _logged(ctx, "get_great_people", {}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def get_gp_advisor(ctx: Context, unit_index: int) -> str:
     """Show best cities to activate a Great Person, ranked by suitability.
 
@@ -3021,7 +3101,7 @@ async def get_gp_advisor(ctx: Context, unit_index: int) -> str:
     return await _logged(ctx, "get_gp_advisor", {"unit": unit_index}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def recruit_great_person(ctx: Context, individual_id: int) -> str:
     """Recruit a Great Person using accumulated GP points.
 
@@ -3040,7 +3120,7 @@ async def recruit_great_person(ctx: Context, individual_id: int) -> str:
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def patronize_great_person(
     ctx: Context, individual_id: int, yield_type: str = "YIELD_GOLD"
 ) -> str:
@@ -3062,7 +3142,7 @@ async def patronize_great_person(
     )
 
 
-@mcp.tool()
+# @mcp.tool()
 async def reject_great_person(ctx: Context, individual_id: int) -> str:
     """Pass on a Great Person (skip to the next one in that class).
 
@@ -3086,7 +3166,7 @@ async def reject_great_person(ctx: Context, individual_id: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_world_congress(ctx: Context) -> str:
     """Get World Congress status, active resolutions, and voting options.
 
@@ -3103,7 +3183,7 @@ async def get_world_congress(ctx: Context) -> str:
     return await _logged(ctx, "get_world_congress", {}, _run)
 
 
-@mcp.tool()
+# @mcp.tool()
 async def queue_wc_votes(ctx: Context, votes: str) -> str:
     """Pre-configure World Congress votes for the upcoming session.
 
@@ -3139,7 +3219,7 @@ async def queue_wc_votes(ctx: Context, votes: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_victory_progress(ctx: Context) -> str:
     """Get victory condition progress for all civilizations.
 
@@ -3162,7 +3242,7 @@ async def get_victory_progress(ctx: Context) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+# @mcp.tool(annotations={"readOnlyHint": True})
 async def get_religion_spread(ctx: Context) -> str:
     """Get per-city religion breakdown across all visible cities.
 
@@ -3183,7 +3263,7 @@ async def get_religion_spread(ctx: Context) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+# @mcp.tool()
 async def set_city_focus(ctx: Context, city_id: int, focus: str) -> str:
     """Set a city's citizen yield priority.
 
