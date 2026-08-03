@@ -557,6 +557,38 @@ cause as the fog-rendering artefact and the uncloseable city-founding modal.
 > invariants around it are not re-established just because handlers run.
 > Subscribing to engine events is safe; raising them is not.
 
+### Monkey-patching `Network.GetLocalPlayerID` — NOT VIABLE
+
+Probed live on 2026-08-03 with agent Rome (P2) on the clock:
+
+| Test | Result |
+|---|---|
+| `Network` accessible in InGame | `Network.GetLocalPlayerID()` = 0 ✓ |
+| `Network` has a metatable | Yes — it is a protected table |
+| Can overwrite `GetLocalPlayerID` | **"Attempt to modify read-only table"** |
+| `Game.GetLocalPlayer()` | 2 (correct — follows the handoff) |
+| `Network.GetLocalPlayerID()` | 0 (pinned to P0 — divergence confirmed) |
+
+Unlike `DealManager` (which is a plain writable table), `Network` has a
+metatable that blocks writes.  Any approach that patches `Network` to track
+`Game.GetLocalPlayer()` is impossible from Lua.  The two notions of "local
+player" cannot be unified from the tuner.
+
+This rules out the simplest fix.  Remaining options:
+
+- **Mod-based fix** (recommended) — replace the diplomacy UI files with versions
+  that read `Game.GetLocalPlayer()` or re-read the local player from a source
+  that follows the handoff.  A mod has full access to the InGame Lua environment
+  and owns its UI context, avoiding the tuner's sandbox and the
+  across-contexts visibility gap documented below.
+- **UI context rebuild** (untested) — force the diplomacy screen to reinitialize
+  after handoff, e.g. via `ContextPtr:LookUpControl("/InGame/DiplomacyActionView")`
+  and hide/show cycling.  May not work if the corruption is deeper than the
+  context's visible state.
+- **Avoid `SetLocalPlayerAndObserver` entirely** (unexplored) — find an
+  alternative mechanism that does not create the Network/Game divergence in the
+  first place.
+
 ### Tentative plan: a server-side deal mailbox
 
 Not yet built. The shape that the findings above point to:
@@ -688,9 +720,12 @@ play.
    [Diplomacy and trade under handoff](#diplomacy-and-trade-under-handoff).
    Deals with a managed civ are auto-resolved by the built-in AI in both
    directions, and holding the local-player slot permanently disables the
-   human's diplomacy screen toward that civ until the game is reloaded. Still
-   open: whether other AIs approach a civ differently once it has been human,
-   and AI-to-AI diplomacy between two agent civs, which has no API.
+   human's diplomacy screen toward that civ until the game is reloaded.
+   `Network.GetLocalPlayerID()` cannot be patched (read-only table), so the
+   divergence must be addressed through a mod or an alternative handoff
+   mechanism.  Still open: whether other AIs approach a civ differently once
+   it has been human, and AI-to-AI diplomacy between two agent civs, which
+   has no API.
 4. **Fairness.** Agents have gamecore read access to the entire map regardless
    of their own visibility, and so can see the human's state. Accepted for now;
    enforcing fog of war requires visibility checks in the query layer.
