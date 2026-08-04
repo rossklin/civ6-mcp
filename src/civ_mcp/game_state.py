@@ -515,6 +515,16 @@ class GameState:
         lines = await self.conn.execute_read(lua)
         return _action_result(lines)
 
+    async def exit_formation(self, unit_index: int) -> str:
+        lua = lq.build_exit_formation(unit_index)
+        lines = await self.conn.execute_write(lua)
+        return _action_result(lines)
+
+    async def enter_formation(self, unit_index: int, target_unit_index: int) -> str:
+        lua = lq.build_enter_formation(unit_index, target_unit_index)
+        lines = await self.conn.execute_write(lua)
+        return _action_result(lines)
+
     async def skip_remaining_units(self) -> str:
         # First try to fortify/heal combat units (InGame context)
         fortify_result = ""

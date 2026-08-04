@@ -184,7 +184,10 @@ for i, u in Players[id]:GetUnits():Members() do
         -- Track tile occupancy + formation state (checked via game API, not heuristic)
         local key = x .. "," .. y
         if not tileUnits[key] then tileUnits[key] = {} end
-        local inFormation = UnitManager.CanStartCommand(u, UnitCommandTypes.EXIT_FORMATION, id, true)
+        local inFormation = false
+        pcall(function()
+            inFormation = UnitManager.CanStartCommand(u, UnitCommandTypes.EXIT_FORMATION, id, true)
+        end)
         table.insert(tileUnits[key], {idx = uid % 65536, utype = ut, in_fm = inFormation})
     end
 end
@@ -851,6 +854,63 @@ def build_skip_unit(unit_index: int) -> str:
 {_lua_get_unit_gamecore(unit_index)}
 UnitManager.FinishMoves(unit)
 print("OK:SKIPPED")
+print("{SENTINEL}")
+"""
+
+
+def build_exit_formation(unit_index: int) -> str:
+    """Exit the current formation (unlink from escort partner)."""
+    return f"""
+{_lua_get_unit(unit_index)}
+if not UnitManager.CanStartCommand(unit, UnitCommandTypes.EXIT_FORMATION, me, true) then
+    {_bail("ERR:NOT_IN_FORMATION|Unit is not in a formation")}
+end
+local ux, uy = unit:GetX(), unit:GetY()
+UnitManager.RequestCommand(unit, UnitCommandTypes.EXIT_FORMATION, {{}})
+print("OK:EXITED_FORMATION|" .. ux .. "," .. uy)
+print("{SENTINEL}")
+"""
+
+
+def build_enter_formation(unit_index: int, target_unit_index: int) -> str:
+    """Enter a formation with another unit (escort/link)."""
+    return f"""
+{_lua_get_unit(unit_index)}
+-- Find the target unit by its index
+local target = nil
+for _, u in Players[me]:GetUnits():Members() do
+    if u:GetID() % 65536 == {target_unit_index} and u:GetX() ~= -9999 then
+        target = u
+        break
+    end
+end
+if not target then
+    {_bail(f"ERR:TARGET_NOT_FOUND|Unit with index {target_unit_index} not found")}
+end
+local tx, ty = target:GetX(), target:GetY()
+local ux, uy = unit:GetX(), unit:GetY()
+if ux ~= tx or uy ~= ty then
+    {_bail_lua(f'"ERR:NOT_ON_SAME_TILE|Units must be on the same tile to form a formation. Unit at (" .. ux .. "," .. uy .. "), target at (" .. tx .. "," .. ty .. ")")')}
+end
+-- Prevent stacking same formation class (already checked in move but re-check here)
+local unitInfo = GameInfo.Units[unit:GetType()]
+local targetInfo = GameInfo.Units[target:GetType()]
+local unitClass = unitInfo and unitInfo.FormationClass or ""
+local targetClass = targetInfo and targetInfo.FormationClass or ""
+if unitClass == targetClass then
+    {_bail_lua('"ERR:SAME_FORMATION_CLASS|Cannot link two units of the same formation class (" .. unitClass .. ")"')}
+end
+if UnitManager.CanStartCommand(unit, UnitCommandTypes.ENTER_FORMATION, me, true) then
+    local params = {{}}
+    params[UnitCommandTypes.PARAM_UNIT_ID] = target:GetID()
+    UnitManager.RequestCommand(unit, UnitCommandTypes.ENTER_FORMATION, params)
+    local uName = unitInfo and unitInfo.UnitType:gsub("UNIT_", "") or "unit"
+    local tName = targetInfo and targetInfo.UnitType:gsub("UNIT_", "") or "unit"
+    print("OK:ENTERED_FORMATION|" .. uName .. " linked with " .. tName)
+else
+    local uName = unitInfo and unitInfo.UnitType:gsub("UNIT_", "") or "unit"
+    print("ERR:CANNOT_ENTER_FORMATION|" .. uName .. " cannot enter formation — check units are adjacent, not already linked, and compatible")
+end
 print("{SENTINEL}")
 """
 
