@@ -10,6 +10,7 @@ The output is a ``FullGameState`` dataclass (see ``lua.models``).
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from civ_mcp import lua as lq
@@ -57,12 +58,33 @@ def _sentinel(section: str) -> str:
     return f"{_SENTINEL_PREFIX}{section.upper()}"
 
 
+# Patterns that individual section queries use to emit their terminator.
+# We must strip these from each section so they don't prematurely end
+# output collection for the combined unified query.
+_SENTINEL_PRINT_RE = re.compile(
+    r'^\s*print\("[^"]*---END---[^"]*"\)\s*;?\s*(?:--.*)?$',
+    re.MULTILINE,
+)
+
+
+def _strip_section_sentinels(lua_code: str) -> str:
+    """Remove ``print("---END---")`` lines from a section's Lua code.
+
+    Individual query builders emit their own sentinel at the end so they
+    work standalone.  In the unified query those would cause output
+    collection to stop after the first section.
+    """
+    return _SENTINEL_PRINT_RE.sub("", lua_code)
+
+
 def build_unified_query() -> str:
     """Build a single Lua string that runs all read queries sequentially.
 
     Each domain query is wrapped in a ``do ... end`` block, preceded by
-    a ``print()`` of the section sentinel.  The final line is the standard
-    ``---END---`` sentinel.
+    a ``print()`` of the section sentinel.  Individual section queries
+    end with ``print("---END---")``, which would prematurely terminate
+    output collection — we strip those and emit a single sentinel at the
+    very end of the combined script.
     """
     parts: list[str] = []
     for section_name, _attr, _uses_write in _SECTIONS:
@@ -75,15 +97,25 @@ def build_unified_query() -> str:
             lua_code = builder()
             if not lua_code.strip():
                 continue
-            # Wrap in do...end and add sentinel
+            # Strip the individual section's sentinel so it doesn't
+            # prematurely terminate output collection for the whole
+            # unified query.
+            lua_code = _strip_section_sentinels(lua_code)
+            if not lua_code.strip():
+                continue
+            # Wrap in pcall so a runtime error in one section (e.g. a nil
+            # entity that hasn't been unlocked yet) doesn't kill the rest.
             parts.append(f'print("{_sentinel(section_name)}")')
-            parts.append("do")
+            parts.append("local ok, err = pcall(function()")
             parts.append(lua_code)
-            parts.append("end")
+            parts.append("end)")
+            parts.append("if not ok then print('ERR|" + section_name + "|' .. tostring(err)) end")
         except Exception:
             log.warning(
                 "Failed to build query for section %s", section_name, exc_info=True
             )
+    # Single terminator for the entire combined script
+    parts.append(f'print("{lq.SENTINEL}")')
     return "\n".join(parts)
 
 
@@ -143,15 +175,25 @@ def _split_sections(lines: list[str]) -> dict[str, list[str]]:
     return sections
 
 
+# Sections whose parsers return tuples that need destructuring, or whose
+# parser function name doesn't follow the standard parse_*_response pattern.
+_SPECIAL_SECTIONS: frozenset[str] = frozenset(
+    {"cities", "empire_resources", "builder_tasks", "pending_deals"}
+)
+
+
 def _parse_sections(state: FullGameState, sections: dict[str, list[str]]) -> None:
     """Route each section's lines to the appropriate parser."""
     for section_name, lines in sections.items():
         if not lines:
             continue
+        if section_name in _SPECIAL_SECTIONS:
+            _parse_special(state, section_name, lines)
+            continue
         parser_name = f"parse_{section_name}_response"
         parser = getattr(lq, parser_name, None)
         if parser is None:
-            # Some sections have special parsing
+            # Fallback: try special parsing for unknown sections
             _parse_special(state, section_name, lines)
             continue
         try:
