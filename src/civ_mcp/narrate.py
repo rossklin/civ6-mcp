@@ -199,6 +199,11 @@ def narrate_units(
             f"moves {moves_disp}{charges}{religion_flag}{status}{route_flag}{promo_flag}{upgrade_flag} "
             f"[id:{u.unit_id}, idx:{u.unit_index}]"
         )
+        if u.formation_linked_to is not None:
+            lines.append(
+                f"    >> FORMATION with {u.formation_linked_type} (idx:{u.formation_linked_to}) — "
+                f"moving either unit moves both. Use exit_formation to unlink."
+            )
         if u.targets:
             for t in u.targets:
                 lines.append(f"    >> CAN ATTACK: {t}")
@@ -242,6 +247,14 @@ def narrate_builder_tasks(
         return "No builders with charges available."
     idle = [b for b in builders if b.moves > 0]
     lines = [f"=== BUILDER TASKS ({len(tasks)} tasks, {len(idle)} idle builders) ==="]
+    lines.append("")
+    lines.append(
+        "NOTE: Tasks suggest improvements based on terrain/resources but do NOT check "
+        "all indirect tech prerequisites. For example: building a Mine on a hill with "
+        "Jungle requires Bronze Working (to clear jungle) plus Mining (to build the mine). "
+        "Similarly, harvesting a resource before improving may require specific techs. "
+        "Verify tech requirements before committing builder charges."
+    )
     if not tasks:
         lines.append("")
         lines.append("No tiles need improvement in your territory.")

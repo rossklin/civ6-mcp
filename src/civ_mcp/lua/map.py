@@ -301,7 +301,9 @@ for i = 0, 63 do
                         label = Locale.Lookup(oCfg:GetCivilizationShortDescription())
                     end
                 end
-                local val = label .. " " .. ut:gsub("UNIT_", "")
+                local hp = u:GetMaxDamage() - u:GetDamage()
+                local maxHp = u:GetMaxDamage()
+                local val = label .. " " .. ut:gsub("UNIT_", "") .. "(" .. hp .. "/" .. maxHp .. "hp)"
                 if enemyLookup[key] then
                     enemyLookup[key] = enemyLookup[key] .. ";" .. val
                 else

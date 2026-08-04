@@ -159,6 +159,21 @@ Some paths close. It's worth checking periodically via `get_victory_progress`:
 - **Religious**: Requires a founded religion (Great Prophet pool fills early). Missionaries spread; Apostles fight theological combat (killing = 250 pressure in 10-tile radius). Buy religious units only from cities where your religion is majority.
 - **Diplomatic**: 20 DVP. World Congress resolutions, scored competitions, wonders. Favor from government tier, alliances, suzerainties. If a DVP-stripping resolution targets you, vote Option B on yourself (net 0 vs -2).
 
+## Game Rules Reference
+
+The in-game Civilopedia is available at: https://www.civilopedia.net/en-US/gathering-storm/concepts/intro/
+
+Key URL patterns for looking up rules:
+- Movement: `concepts/movement_1/` through `movement_5/`
+- Combat: `concepts/combat_1/` through `combat_13/`
+- Terrain & Features: `features/terrain_grass_hills/`, `features/feature_forest/`
+- Technologies: `technologies/` (full enum index)
+- Civics: `civics/` (full enum index)
+- Units: `units/` (full enum index)
+- Improvements: `improvements/` (full enum index)
+
+When unsure about game mechanics (movement costs, combat formulas, tech prerequisites, improvement requirements), use `WebFetch` to look up the relevant page. The concept pages provide overviews; individual item pages have specific stats.
+
 ## Combat Quick Reference
 
 | Unit | CS | RS | Range |

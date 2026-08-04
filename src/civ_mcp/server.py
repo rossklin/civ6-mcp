@@ -867,9 +867,12 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             - params: Dict of parameters for that command
 
     Example:
-        [{"action": "move_unit", "params": {"unit_id": 12345, "x": 10, "y": 20}},
+        [{"action": "move_unit", "params": {"unit_index": 0, "target_x": 10, "target_y": 20}},
          {"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_SETTLER"}},
          {"action": "set_research", "params": {"tech_name": "TECH_IRON_WORKING"}}]
+
+    Use ``unit_index`` (from the idx field in the Units section), not unit_id.
+    Use ``target_x``/``target_y`` for the destination coordinates.
 
     Commands execute sequentially in order. Unit movement commands return
     visibility intel (newly revealed tiles and enemy units) inline — you can

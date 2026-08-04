@@ -29,7 +29,7 @@ local civicName = "None"
 local civicTurns = -1
 if civicIdx >= 0 then
     civicName = Locale.Lookup(GameInfo.Civics[civicIdx].Name)
-    civicTurns = cu:GetTurnsLeftOnCurrentCivic()
+    civicTurns = cu:GetTurnsLeft()
 end
 print("CURRENT|" .. techName .. "|" .. techTurns .. "|" .. civicName .. "|" .. civicTurns)
 -- Build boost lookup

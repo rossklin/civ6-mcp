@@ -221,6 +221,10 @@ class UnitInfo:
     upgrade_cost: int = 0
     valid_improvements: list[str] = field(default_factory=list)
     religion: str = ""
+    formation_linked_to: int | None = (
+        None  # unit_index of the other unit in the formation, if any
+    )
+    formation_linked_type: str = ""  # unit type name of linked unit
 
 
 @dataclass

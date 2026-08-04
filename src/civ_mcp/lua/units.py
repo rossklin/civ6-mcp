@@ -24,6 +24,7 @@ def build_units_query() -> str:
     """InGame context: lists all units with upgrade and builder improvement info."""
     return """
 local id = Game.GetLocalPlayer()
+local tileUnits = {}
 for i, u in Players[id]:GetUnits():Members() do
     local x, y = u:GetX(), u:GetY()
     if x ~= -9999 then
@@ -180,6 +181,27 @@ for i, u in Players[id]:GetUnits():Members() do
             if #meList > 0 then validImps = table.concat(meList, ";") end
         end
         print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName)
+        -- Track tile occupancy + formation state (checked via game API, not heuristic)
+        local key = x .. "," .. y
+        if not tileUnits[key] then tileUnits[key] = {} end
+        local inFormation = UnitManager.CanStartCommand(u, UnitCommandTypes.EXIT_FORMATION, id, true)
+        table.insert(tileUnits[key], {idx = uid % 65536, utype = ut, in_fm = inFormation})
+    end
+end
+-- Detect formations: pair units on same tile where at least one is linked
+for key, group in pairs(tileUnits) do
+    if #group >= 2 then
+        -- Pair each formation unit with every other formation unit on the same tile
+        -- (when linked, both units return CanStartCommand(EXIT_FORMATION)=true)
+        for _, a in ipairs(group) do
+            if a.in_fm then
+                for _, b in ipairs(group) do
+                    if a.idx ~= b.idx and b.in_fm then
+                        print("FORMATION|" .. a.idx .. "|" .. b.idx .. "|" .. b.utype:gsub("UNIT_", ""))
+                    end
+                end
+            end
+        end
     end
 end
 print("{SENTINEL}")
@@ -1352,7 +1374,20 @@ print("{SENTINEL}")
 
 def parse_units_response(lines: list[str]) -> list[UnitInfo]:
     units = []
+    # Pass 1: collect FORMATION| lines first (they appear after unit lines in output)
+    formations: dict[int, tuple[int, str]] = {}
     for line in lines:
+        if line.startswith("FORMATION|"):
+            parts = line.split("|")
+            if len(parts) >= 4:
+                src_idx = int(parts[1])
+                tgt_idx = int(parts[2])
+                tgt_type = parts[3]
+                formations[src_idx] = (tgt_idx, tgt_type)
+    # Pass 2: parse unit lines with formation lookup
+    for line in lines:
+        if line.startswith("FORMATION|"):
+            continue
         parts = line.split("|")
         if len(parts) < 7:
             continue
@@ -1373,10 +1408,12 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
             [v for v in valid_imps_raw.split(";") if v] if valid_imps_raw else []
         )
         religion = parts[16] if len(parts) > 16 else ""
+        unit_idx = int(parts[1])
+        fm = formations.get(unit_idx)
         units.append(
             UnitInfo(
                 unit_id=int(parts[0]),
-                unit_index=int(parts[1]),
+                unit_index=unit_idx,
                 name=parts[2],
                 unit_type=parts[3],
                 x=int(x_str),
@@ -1395,6 +1432,8 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 upgrade_cost=upgrade_cost,
                 valid_improvements=valid_imps,
                 religion=religion,
+                formation_linked_to=fm[0] if fm else None,
+                formation_linked_type=fm[1] if fm else "",
             )
         )
     return units
