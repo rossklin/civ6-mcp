@@ -116,6 +116,7 @@ from civ_mcp.lua.map import (  # noqa: F401
     build_found_city,
     build_global_settle_scan,
     build_map_area_query,
+    build_map_query,
     build_ownership_delta,
     build_purchasable_tiles_query,
     build_purchase_tile,

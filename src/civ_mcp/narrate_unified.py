@@ -116,6 +116,11 @@ def narrate_full_state(state: FullGameState) -> str:
         parts.append("\n## Notifications\n")
         parts.append(nr.narrate_notifications(state.notifications))
 
+    # ── Map ────────────────────────────────────────────────────────
+    if state.map:
+        parts.append("\n## Map\n")
+        parts.append(nr.narrate_map_tiles(state.map))
+
     # ── Strategic Map ──────────────────────────────────────────────
     if state.strategic_map is not None:
         parts.append("\n## Strategic Map\n")

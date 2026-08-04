@@ -1338,6 +1338,5 @@ class FullGameState:
     world_congress: WorldCongressStatus | None = None
     notifications: list[GameNotification] = field(default_factory=list)
 
-    # Map tiles around cities and units (keyed by center coordinate)
-    map_around_cities: dict = field(default_factory=dict)
-    map_around_units: dict = field(default_factory=dict)
+    # Map
+    map: list[TileInfo] = field(default_factory=list)
