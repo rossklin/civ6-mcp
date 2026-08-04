@@ -597,10 +597,23 @@ def narrate_map_tiles(tiles: list[lq.TileInfo]) -> str:
     for t in tiles:
         by_row.setdefault(t.y, []).append(t)
 
+    # Build row parity legend from first tile of each row
+    row_parity_info: dict[int, str] = {}
+    for t in tiles:
+        if t.y not in row_parity_info and t.row_parity:
+            row_parity_info[t.y] = t.row_parity
+
     lines = [f"{len(tiles)} revealed tiles:"]
     for y in sorted(by_row.keys()):
         row_tiles = sorted(by_row[y], key=lambda t: t.x)
-        lines.append(f"  --- Row {y} ---")
+        parity_tag = ""
+        if y in row_parity_info:
+            p = row_parity_info[y]
+            if p == "even":
+                parity_tag = " [LS: NW at (x-1,y+1)]"
+            elif p == "odd":
+                parity_tag = " [RS: NW at (x,y+1)]"
+        lines.append(f"  --- Row {y}{parity_tag} ---")
         for t in row_tiles:
             lines.append(_format_tile(t))
 

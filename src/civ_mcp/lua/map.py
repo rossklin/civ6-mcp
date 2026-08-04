@@ -315,6 +315,8 @@ for i = 0, 63 do
 end
 
 -- Pass 2: scan every tile, emit revealed ones
+local seenRows = {{}}
+local rowFirstTile = {{}}  -- first revealed tile per row (for parity check)
 for y = 0, h - 1 do
     for x = 0, w - 1 do
         local plot = Map.GetPlot(x, y)
@@ -322,6 +324,10 @@ for y = 0, h - 1 do
             local plotIdx = plot:GetIndex()
             local revealed = vis:IsRevealed(plotIdx)
             if revealed then
+                if not seenRows[y] then
+                    seenRows[y] = true
+                    rowFirstTile[y] = {{x = x, y = y}}
+                end
                 local visible = vis:IsVisible(plotIdx)
                 local terrain = GameInfo.Terrains[plot:GetTerrainType()].TerrainType
                 local hills = plot:IsHills() and "1" or "0"
@@ -404,6 +410,25 @@ for y = 0, h - 1 do
                 end
                 print(x .. "," .. y .. "|" .. terrain .. "|" .. feature .. "|" .. resource .. "|" .. hills .. "|" .. river .. "|" .. coastal .. "|" .. imp .. "|" .. owner .. "|" .. unitStr .. "|" .. visTag .. "|" .. freshWater .. "|" .. yields .. "|" .. distName .. "|" .. ownerName .. "|" .. myUnitStr .. "|" .. routeType .. "|" .. moveCost)
             end
+        end
+    end
+end
+-- Pass 3: determine row shift by calling GetAdjacentPlot on a tile in each row
+-- dir 5 = NW. Use modulo to handle map wrapping at edges (cylindrical maps)
+for y, tile in pairs(rowFirstTile) do
+    for dx = 0, 10 do
+        local tx = tile.x + dx
+        local adj = Map.GetAdjacentPlot(tx, y, 5)
+        if adj then
+            local ax = adj:GetX()
+            -- Normalize delta accounting for map wrap: (ax - tx + w) % w
+            local d = (ax - tx + w) % w
+            if d == 0 then
+                print("ROWINFO|" .. y .. "|odd")
+            elseif d == w - 1 then
+                print("ROWINFO|" .. y .. "|even")
+            end
+            break
         end
     end
 end
@@ -992,8 +1017,18 @@ print("{SENTINEL}")
 
 
 def parse_map_response(lines: list[str]) -> list[TileInfo]:
+    # Pass 1: collect ROWINFO lines
+    row_parity: dict[int, str] = {}
+    for line in lines:
+        if line.startswith("ROWINFO|"):
+            parts = line.split("|")
+            if len(parts) >= 3:
+                row_parity[int(parts[1])] = parts[2]
+    # Pass 2: parse tiles
     tiles = []
     for line in lines:
+        if line.startswith("ROWINFO|"):
+            continue
         parts = line.split("|")
         if len(parts) < 9:
             continue
@@ -1079,6 +1114,9 @@ def parse_map_response(lines: list[str]) -> list[TileInfo]:
                 own_units=own_unit_list,
                 route_type=route_type,
                 movement_cost=movement_cost,
+                row_parity=row_parity.get(
+                    int(y_str), ""
+                ),
             )
         )
     return tiles

@@ -21,6 +21,32 @@ This server exposes **two primary tools** plus admin utilities:
 - X increases → east. X decreases → west.
 - Moving from (9,24) to (9,26) is **south**, not north.
 
+**Hex adjacency: simple rules by row parity.**
+
+The game uses offset hex coordinates. Moving ±1 in ONLY X or ONLY Y is **always** adjacent. For diagonal moves (±1 in both axes), use the parity rules below. The Map section header shows the parity hint for quick reference.
+
+**Left shifted rows: NW neighbor at (x-1, y+1)**
+| Direction | Offset |
+|-----------|--------|
+| NE | (x, y+1) |
+| E | (x+1, y) |
+| SE | (x, y-1) |
+| SW | (x-1, y-1) |
+| W | (x-1, y) |
+| NW | (x-1, y+1) |
+
+**Right shifted rows: NW neighbor at (x, y+1)**
+| Direction | Offset |
+|-----------|--------|
+| NE | (x+1, y+1) |
+| E | (x+1, y) |
+| SE | (x+1, y-1) |
+| SW | (x, y-1) |
+| W | (x-1, y) |
+| NW | (x, y+1) |
+
+When calculating movement: check the `[mv:N]` notation in the map output. A tile costing `[mv:3]` (hills + forest/jungle) cannot be entered or attacked by a unit with only 2 moves remaining, except if it is an adjacent tile and 2 moves is the full movement points for that unit. Check map movement costs BEFORE issuing move or attack commands.
+
 ## Game Start
 
 Before your first turn:
