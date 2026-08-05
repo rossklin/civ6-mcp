@@ -155,6 +155,77 @@ def build_uninstall_lua() -> str:
     )
 
 
+#: UI contexts whose ``g_bIsLocalPlayerTurn`` needs repairing after a handoff.
+#: Only this one: the flag appears in ``DiplomacyActionView.lua`` and in the
+#: Expansion2 script that replaces it, and a replacement runs inside the same
+#: context.  The ``_AllianceTab`` / ``_WorldCongressTab`` siblings are separate
+#: Lua states but never read the flag.
+DIPLOMACY_UI_STATES = ("DiplomacyActionView",)
+
+
+def build_diplomacy_ui_fix_lua() -> str:
+    """Lua that repairs the diplomacy screen's turn flag after a handoff.
+
+    ``SetLocalPlayerAndObserver`` raises ``Events.LocalPlayerChanged``
+    immediately before the new local player's turn activates, and the engine
+    then **suppresses** ``Events.LocalPlayerTurnBegin`` for that activation
+    (measured live 2026-08-05, turns 47-50).  ``DiplomacyActionView`` only ever
+    sets ``g_bIsLocalPlayerTurn = true`` from that event, so after the human's
+    own End Turn cleared it the flag stays false for their whole next turn and
+    every action button is disabled at DiplomacyActionView.lua:736/740.
+
+    The repair delivers the swallowed event by calling the screen's own
+    ``OnLocalPlayerTurnBegin`` once the local player's turn really is active.
+    Registered on both candidate events because their order differs between a
+    normal turn start and a handoff one; the flag check makes it idempotent.
+    """
+    return (
+        "if g_bIsLocalPlayerTurn == nil then "
+        '  print("DIPLOFIX|absent") '
+        f'  print("{SENTINEL}") '
+        "  return "
+        "end "
+        "if __civmcp_diplo_fix == nil then "
+        "  __civmcp_diplo_fix = function() "
+        "    local pid = Game.GetLocalPlayer() "
+        "    if pid == nil or pid < 0 then return end "
+        "    local p = Players[pid] "
+        "    if p ~= nil and p:IsTurnActive() and not g_bIsLocalPlayerTurn then "
+        "      pcall(OnLocalPlayerTurnBegin) "
+        "    end "
+        "  end "
+        "  Events.LocalPlayerChanged.Add(__civmcp_diplo_fix) "
+        "  Events.PlayerTurnActivated.Add(__civmcp_diplo_fix) "
+        "  __civmcp_diplo_fix() "
+        '  print("DIPLOFIX|installed") '
+        "else "
+        "  __civmcp_diplo_fix() "
+        '  print("DIPLOFIX|present") '
+        "end "
+        f'print("{SENTINEL}")'
+    )
+
+
+async def install_diplomacy_ui_fix(conn: GameConnection) -> str:
+    """Install the turn-flag repair in each diplomacy UI context.
+
+    Contexts are rebuilt on every save load, so this is re-applied by
+    :class:`HandoffKeeper` alongside the hook itself.  A context that does not
+    define ``g_bIsLocalPlayerTurn`` is simply skipped.
+    """
+    results = []
+    for state in DIPLOMACY_UI_STATES:
+        lines = await conn.execute_in_named_state(
+            state, build_diplomacy_ui_fix_lua()
+        )
+        status = next((l[9:] for l in lines if l.startswith("DIPLOFIX|")), None)
+        if status is not None:
+            results.append(f"{state}={status}")
+    if results:
+        log.info("Diplomacy UI fix: %s", ", ".join(results))
+    return ", ".join(results) if results else "no diplomacy contexts"
+
+
 def build_status_lua() -> str:
     """GameCore Lua reporting turn, local player, and handler presence."""
     return (
@@ -278,6 +349,9 @@ async def install(conn: GameConnection, cfg: HandoffConfig, force: bool = False)
         cfg.human_id,
         ",".join(f"P{p}" for p in cfg.agent_ids),
     )
+    # The hook and the UI contexts die together on a save load, so the screen
+    # repair is armed on the same path rather than on a schedule of its own.
+    await install_diplomacy_ui_fix(conn)
     return state
 
 
@@ -410,6 +484,10 @@ class HandoffKeeper:
                         own.turn,
                     )
                     previous = own.local_player
+                    # Once armed the repair is self-sustaining, but a context
+                    # rebuilt between polls would have lost it. A handoff just
+                    # happened, so this is the cheap moment to re-arm.
+                    await install_diplomacy_ui_fix(self._conn)
             except Exception:
                 # No connection yet, or the game is mid-load. Try again later.
                 log.debug("Handoff keeper poll failed", exc_info=True)

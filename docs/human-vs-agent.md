@@ -6,10 +6,11 @@
 > P1 and Egypt P2, Cree P3 built-in AI) through turn 5 — see
 > [Live multi-agent validation](#live-multi-agent-validation).
 >
-> **Diplomacy is broken under handoff** (found 2026-08-01): deals with a managed
-> civ are auto-resolved by the built-in AI in both directions, and holding the
-> local-player slot disables the human's diplomacy screen toward that civ until
-> the game is reloaded — see
+> **Diplomacy: root-caused and unblocked 2026-08-05.** The dead diplomacy
+> screen is a single suppressed engine event, fixed in-place from the tuner with
+> no mod; and the human's native trade screen *can* be intercepted before the
+> deal reaches the engine, also with no mod. Deals with a managed civ are still
+> auto-resolved by the built-in AI until the mailbox is built — see
 > [Diplomacy and trade under handoff](#diplomacy-and-trade-under-handoff).
 > World Congress remains untested, and `end_turn` hangs rather than reports when
 > a blocker fires; see [Remaining unknowns](#remaining-unknowns).
@@ -473,8 +474,44 @@ lifespan described above.
 
 ## Diplomacy and trade under handoff
 
-Tested live on 2026-08-01: human Cree (P0) in the UI, agent Rome (P2) over MCP,
-turns 12–16. Three findings, one of them a blocker for human↔agent diplomacy.
+Tested live on 2026-08-01 (human Cree P0, agent Rome P2, turns 12–16), and
+root-caused on 2026-08-05 in a 4-player game (human Cree P0, Maya P1 driven as
+a managed civ, Rome P2, Brazil P3, turns 47–50).
+
+The 2026-08-05 session overturned the two conclusions that had made this look
+like a wall. Both came from the same wrong assumption — that the tuner offers
+only a `GameCore_Tuner` and an `InGame` state:
+
+> **Every UI context is its own Lua state, individually addressable over the
+> tuner.** `LSQ:` returns 153 of them. `DiplomacyActionView` is state 97,
+> `DiplomacyDealView` 98, `LeaderScene` 96, `InGame` 149, `GameCore_Tuner` 6.
+
+Each has its own copy of the engine wrapper tables, measured in the same game:
+
+| State | `DealManager` | `Game` | `LuaEvents` |
+|---|---|---|---|
+| `InGame` | `…8DA86870` | `…8DA823B0` | `…8DA7FE30` |
+| `DiplomacyDealView` | `…8283E510` | `…182838A20` | `…8378A0` |
+| `DiplomacyActionView` | `…8284A3F0` | `…1826E5240` | `…6E2860` |
+| `GameCore_Tuner` | `…8DA18580` | `…8DA10510` | `…8DA73270` |
+
+So the per-Lua-state wrapper-table rule applies *context to context*, not just
+GameCore-vs-InGame — even `LuaEvents` is a different table in each, the
+cross-context bus being bridged in C++. Two consequences, both load-bearing:
+
+- Patching `DealManager` from the `InGame` state was never going to reach the
+  game's own UI. That earlier open question is answered, negatively.
+- But patching it **inside `DiplomacyDealView`** does, and that context's
+  globals (`ProposeWorkingDeal`, `g_bIsLocalPlayerTurn`, …) are readable and
+  writable from the tuner. The "invisible from the tuner" limitation recorded
+  below was an artifact of only ever talking to `InGame`.
+
+**No mod is required for either half.** See
+[Deal interception, measured](#deal-interception-measured) and
+[The diplomacy screen dies](#the-diplomacy-screen-dies-root-caused).
+
+`scripts/diplo_probe.py` is the driver used for all of this — it talks to the
+tuner directly so the MCP server does not have to hold the single-client port.
 
 ### Deals with a managed civ are answered by the built-in AI
 
@@ -488,6 +525,17 @@ proposing side's turn.
 - **Agent → human.** `propose_trade` returned `ACCEPTED` *inside the tool call*.
   No popup reached the human, who was watching that screen for the whole
   exchange.
+
+There is a third direction the original write-up missed, observed 2026-08-05:
+
+- **AI-run human civ → managed civ.** While Maya (P1) held the slot, the
+  built-in AI playing *Cree* — the human's own civ, AI-controlled because it
+  did not hold the slot — opened a delegation offer to Maya. It surfaced as a
+  normal leader-scene conversation on screen and was answered normally. In a
+  real session that popup lands on an **agent's** turn, and no agent tool can
+  answer it: `DiplomacyActionView`'s conversation responses are UI-only. The
+  session stays open and blocks `ACTION_ENDTURN`, so the agent's `end_turn`
+  hangs. Untriaged; see [Remaining unknowns](#remaining-unknowns).
 
 The cause is that the whole AI response happens inside one C++ call:
 
@@ -527,21 +575,126 @@ Two caveats:
   `end_turn` with "diplomacy encounter pending". Any executor must finish with
   the `_lua_close_diplo_session()` teardown.
 
-### The handoff breaks the human's diplomacy UI — BLOCKER
+### The diplomacy screen dies (root-caused)
 
-Once a civ has held the local-player slot, the human's diplomacy screen toward
-that civ goes inert: every action (Make Deal, Declare Friendship, …) is disabled
-and clicking does nothing. It survives turn rollover, is cured by save+reload,
-and is re-broken by a single handoff cycle — confirmed with a control turn on
-which the agent took no actions and ran no probes at all.
+**Symptom.** After a handoff cycle the human's diplomacy screen is inert: Make
+Deal, Declare Friendship, Denounce and every other action is disabled. It
+survives turn rollover and is cured only by save+reload.
 
-The engine disagrees with the UI. `IsDiplomaticActionValid` from P0 toward P2
-returns `true` for Delegation, Declare Friendship and Denounce, exactly
-symmetric with P2 toward P0. Every game-state layer reads clean: handoff slot
-correct, config layer correct (P0 `SS_TAKEN`, agents `SS_COMPUTER`), no pending
-deals, no open sessions.
+**It is global, not per-civ.** The 2026-08-01 write-up said "toward that civ",
+but that was never controlled for. On 2026-08-05, with the slot back at P0, the
+screen was equally dead toward Brazil (P3) — a built-in AI that had *never*
+held the slot — as toward the managed Maya (P1). One screen-wide cause.
 
-**Root cause: two notions of "local player" diverge.**
+**The cause is one Lua boolean.** `DiplomacyActionView.lua` disables every
+action button on `g_bIsLocalPlayerTurn`:
+
+```lua
+-- DiplomacyActionView.lua:736 and :740
+instance.Button:SetDisabled(not g_bIsLocalPlayerTurn or selection.IsDisabled == true);
+instance.Button:SetDisabled(not g_bIsLocalPlayerTurn);
+```
+
+It has exactly three writes in the whole game: `= true` at file scope (line 29),
+`= false` in `OnLocalPlayerTurnEnd`, `= true` in `OnLocalPlayerTurnBegin`
+(lines 2959-2970, registered at 3058-3059). Read live over the tuner in the
+broken state: `g_bIsLocalPlayerTurn=false` while `Game.GetLocalPlayer()=0` and
+P0's turn was active.
+
+**Why it never recovers.** A tracer in the `DiplomacyActionView` state logged
+every relevant event across turns 47-50:
+
+```
+turn 48   ACTIVATED(p0,true)   local=1
+          ACTIVATED(p0,false)  local=1
+          TURN_BEGIN           local=1  g=true     <-- fires
+turn 49   ACTIVATED(p0,true)   local=1
+          TURN_BEGIN           local=1  g=true     <-- fires
+turn 50   LOCAL_CHANGED(0,nil) local=0
+          ACTIVATED(p0,true)   local=0
+                                        g=false    <-- TURN_BEGIN NEVER FIRES
+```
+
+> **When `Events.LocalPlayerChanged` fires immediately before the local
+> player's turn activates, the engine suppresses `Events.LocalPlayerTurnBegin`
+> for that activation.**
+
+Turn 50 is the handoff turn — the hook called `SetLocalPlayerAndObserver(0)`
+inside `PlayerTurnStarted(0)`, raising `LocalPlayerChanged` just before P0
+activated. Turns 48-49 had no local-player change (the slot was stuck on P1 due
+to a misconfigured test hook) and `TURN_BEGIN` fired normally. The human's own
+End Turn had already cleared the flag; nothing sets it back, so it stays false
+for their entire turn.
+
+Note what turns 48-49 also show: `TURN_BEGIN` fired *for P0* while
+`Game.GetLocalPlayer()` was 1. So that event does track the Network-pinned
+local player. The Network/Game divergence is real and adjacent — but it is not
+what the diplomacy UI reads, and it is not the cause. See
+[the Network layer](#the-network-layer-real-but-not-the-cause).
+
+**The fix: deliver the swallowed event.** Since `DiplomacyActionView` is its own
+addressable Lua state, its own `OnLocalPlayerTurnBegin` can be called from the
+tuner once the local player's turn really is active:
+
+```lua
+__civmcp_diplo_fix = function()
+  local pid = Game.GetLocalPlayer()
+  if pid == nil or pid < 0 then return end
+  local p = Players[pid]
+  if p ~= nil and p:IsTurnActive() and not g_bIsLocalPlayerTurn then
+    pcall(OnLocalPlayerTurnBegin)
+  end
+end
+Events.LocalPlayerChanged.Add(__civmcp_diplo_fix)
+Events.PlayerTurnActivated.Add(__civmcp_diplo_fix)
+```
+
+The `IsTurnActive() and not g_bIsLocalPlayerTurn` guard makes it idempotent and
+stops the flag being set while off the clock. Calling the screen's own handler
+rather than poking the flag means anything else that handler is responsible for
+stays correct.
+
+**Both registrations are load-bearing, and not symmetrically.** Verified live
+at turn 51:
+
+```
+LOCAL_CHANGED(0,nil)  turn=51  local=0  g=false   <- repair declines
+ACTIVATED(p0,true)    turn=51  local=0  g=true    <- repair fires
+```
+
+At `LocalPlayerChanged` the guard correctly refuses: `Players[0]:IsTurnActive()`
+is still false in the UI context at that instant. `PlayerTurnActivated` is what
+actually restores the flag. Registering only `LocalPlayerChanged` — the
+intuitive choice, since that is the event that causes the problem — would
+silently do nothing. Keep both: the order is not guaranteed, and the guard makes
+the redundant one free.
+
+The same trace shows `ACTIVATED(p1,true) local=1 g=true` when the managed civ
+took the slot, so the repair keeps the *agent's* diplomacy screen live too,
+rather than leaving it dead by default.
+
+Implemented as `handoff.build_diplomacy_ui_fix_lua` /
+`install_diplomacy_ui_fix`, armed by `install()` and re-armed by
+`HandoffKeeper` when the local player changes (UI contexts are rebuilt on save
+load, which loses the listeners).
+
+> **Still do not fire `Events.LocalPlayerChanged` by hand.** Attempting to force
+> a UI resync that way **hung the game** (process alive but `Responding =
+> False`, no map tiles rendered, tuner listener gone). Unlike `GameEvents`, the
+> `Events` table does not fabricate members, so the call really does raise the
+> engine event and its invariants are not re-established just because handlers
+> run. Subscribing is safe; raising is not. The fix above calls a *Lua* function
+> in a UI context — it raises nothing.
+
+**Worth auditing:** ~24 other contexts subscribe to `Events.LocalPlayerTurnBegin`
+(`ActionPanel`, `CityPanel`, `SelectedUnit`, `LaunchBar`, `WorldTracker`,
+`GovernmentScreen`, `TechTree`, `CivicsTree`, …). The suppression is generic, so
+any of them may hold stale turn state after a handoff. Diplomacy was simply the
+one where it was visible enough to notice.
+
+### The Network layer: real, but not the cause
+
+Probed 2026-08-03 with agent Rome (P2) on the clock:
 
 | API | Value while P2 holds the slot | Follows the handoff? |
 |---|---|---|
@@ -549,90 +702,171 @@ deals, no open sessions.
 | `Game.GetLocalObserver()` | 2 | yes |
 | `Network.GetLocalPlayerID()` | **0** | **no** |
 
-`PlayerManager.SetLocalPlayerAndObserver()` updates the Game layer and leaves
-the Network layer pinned to the original human. There is no
-`Network.SetLocalPlayerID` to correct it. This is very likely the same root
-cause as the fog-rendering artefact and the uncloseable city-founding modal.
+`Network` has a metatable and rejects writes ("Attempt to modify read-only
+table"), so it cannot be patched from Lua, and there is no
+`Network.SetLocalPlayerID`. That much stands.
 
-> **Do not fire `Events.LocalPlayerChanged` by hand.** Attempting to force a UI
-> resync this way **hung the game** (process alive but `Responding = False`, no
-> map tiles rendered, window unresponsive, tuner listener gone). Unlike
-> `GameEvents`, the `Events` table does not fabricate members — a made-up name
-> is `nil` — so the call really does raise the engine event, and the engine's
-> invariants around it are not re-established just because handlers run.
-> Subscribing to engine events is safe; raising them is not.
+But it was never the mechanism behind the dead screen, for two reasons found on
+2026-08-05:
 
-### Monkey-patching `Network.GetLocalPlayerID` — NOT VIABLE
+1. **No diplomacy UI file reads it.** A grep of every `.lua` in the install puts
+   `Network.GetLocalPlayerID` in 13 files, all lobby/multiplayer plumbing
+   (`StagingRoom`, `SetupParameters`, `ChatPanel`, `ActionPanel`, …). Across
+   *all* `*Diplo*.lua` — action view, deal view, ribbon, statement support and
+   every Expansion1/2 replacement — `Network.` appears zero times.
+2. **The timing is wrong.** The divergence exists only while an agent holds the
+   slot. The human uses the diplomacy screen on their own turn, when both APIs
+   read 0 and agree. A live divergence cannot explain a symptom seen when the
+   two values are identical.
 
-Probed live on 2026-08-03 with agent Rome (P2) on the clock:
+Its real role is upstream: it is almost certainly why `LocalPlayerTurnBegin`
+kept firing for P0 during turns 48-49. The pinned Network id makes the engine's
+notion of "the local player's turn" diverge from `Game.GetLocalPlayer()` —
+harmless in itself, but part of the same knot.
 
-| Test | Result |
-|---|---|
-| `Network` accessible in InGame | `Network.GetLocalPlayerID()` = 0 ✓ |
-| `Network` has a metatable | Yes — it is a protected table |
-| Can overwrite `GetLocalPlayerID` | **"Attempt to modify read-only table"** |
-| `Game.GetLocalPlayer()` | 2 (correct — follows the handoff) |
-| `Network.GetLocalPlayerID()` | 0 (pinned to P0 — divergence confirmed) |
+### Deal interception, measured
 
-Unlike `DealManager` (which is a plain writable table), `Network` has a
-metatable that blocks writes.  Any approach that patches `Network` to track
-`Game.GetLocalPlayer()` is impossible from Lua.  The two notions of "local
-player" cannot be unified from the tuner.
+The decisive experiment, 2026-08-05, human Cree (P0) on the clock, handoff not
+yet armed. `DealManager.SendWorkingDeal` was wrapped **inside the
+`DiplomacyDealView` Lua state**:
 
-This rules out the simplest fix.  Remaining options:
+```lua
+__MCP_orig_SWD = DealManager.SendWorkingDeal
+DealManager.SendWorkingDeal = function(a, b, c)
+  print("MCPDEAL|action=" .. tostring(a) .. "|from=" .. tostring(b) .. "|to=" .. tostring(c))
+  return __MCP_orig_SWD(a, b, c)
+end
+```
 
-- **Mod-based fix** (recommended) — replace the diplomacy UI files with versions
-  that read `Game.GetLocalPlayer()` or re-read the local player from a source
-  that follows the handoff.  A mod has full access to the InGame Lua environment
-  and owns its UI context, avoiding the tuner's sandbox and the
-  across-contexts visibility gap documented below.
-- **UI context rebuild** (untested) — force the diplomacy screen to reinitialize
-  after handoff, e.g. via `ContextPtr:LookUpControl("/InGame/DiplomacyActionView")`
-  and hide/show cycling.  May not work if the corruption is deeper than the
-  context's visible state.
-- **Avoid `SetLocalPlayerAndObserver` entirely** (unexplored) — find an
-  alternative mechanism that does not create the Network/Game divergence in the
-  first place.
+The human then opened the native trade screen with Brazil (P3) and put 100 gold
+on the table. Output:
 
-### Tentative plan: a server-side deal mailbox
+```
+MCPDEAL|action=7|from=0|to=3          -- 7 = INSPECT, the auto-propose
+VIEW local=0 other=3 initiatedBy=0 isDemand=false autoPropose=true
+OTHER Players:IsHuman=false Config:IsHuman=false hasPending=false
+DEAL items=1 valid=true gift=true
+  GOLD[1] from=0 amount=100 duration=0
+```
 
-Not yet built. The shape that the findings above point to:
+So from the tuner, with no mod, we can:
 
-1. **`propose_trade` forks on target type.** An unmanaged built-in AI keeps
-   today's behaviour. A *managed* target (the human or another agent) writes a
-   `PendingProposal` into a server-side mailbox and returns "sent, awaiting
-   response" — the engine is never touched, so the AI never gets to answer.
-2. **Delivery.** Agent targets read it through `get_pending_trades` and resolve
-   it with `respond_to_trade`. The human needs a surface that is not the native
-   trade screen; the web dashboard is the obvious candidate, being the only
-   human-facing component that already exists.
-3. **Execution on acceptance** via the forced-deal primitive, followed by
-   `_lua_close_diplo_session()`. The accepting party is on the clock by
-   definition, so the local-player slot is already correct.
+- **See the human's proposal before the engine does** — the wrapper runs first
+  and can decline to forward.
+- **Read the working deal** via `DealManager.GetWorkingDeal(DealDirection.OUTGOING,
+  me, other)` and `pDeal:FindItemsByType(...)`, giving everything a mailbox
+  entry needs.
+- **Override the higher-level entry point** — `ProposeWorkingDeal` is a plain
+  writable global in that state (`DiplomacyDealView.lua:144`).
 
-**The blocker gates all of this.** Until the diverged local-player state is
-resolved, the human cannot use the native diplomacy screen toward an agent civ
-at all — so there is no in-game entry point for the human→agent direction, and
-a mod that only replaces `DiplomacyDealView.lua` would not restore one. A
-custom view reading the local player fresh may well be immune, but that is
-untested. Resolve the divergence first.
+Enum values, read live: `PENDING=9 ACCEPTED=1 REJECTED=2 ADJUSTED=3 PROPOSED=4
+DEMANDED=5 EQUALIZE=6 INSPECT=7 CLOSED=8 EQUALIZE_FAILED=10
+REJECTED_PERMANENT=12`; `DealDirection.OUTGOING=0 INCOMING=1`.
 
-### Lua environment topology (relevant to any mod)
+Note `autoPropose=true`: when the other party is not human the view fires
+`INSPECT` on **every item change**, which is what makes the AI's valuation
+appear live. A managed target must suppress those too, or the human sees an AI
+opinion on a deal the AI is not supposed to see.
 
-- **Engine singletons are per-Lua-state wrapper tables.** `DealManager` is
-  `0x1F3D32830` in InGame and `0x1895E7B30` in GameCore; `Players` and `Game`
-  differ likewise. Same C++ object, different Lua tables.
-- `DiplomacyDealView` / `DiplomacyActionView` globals (`ProposeWorkingDeal`,
-  `ms_bIsDemand`, `ms_SelectedPlayerID`) are **invisible** from the tuner's
-  InGame state, while `DealManager`, `LuaEvents`, `UI` and `Controls` resolve.
-  Shared control tree ≠ shared Lua environment: `ContextPtr:LookUpControl` is a
-  C++ tree walk and works across contexts regardless.
-- **Whether monkey-patching `DealManager.SendWorkingDeal` from the tuner reaches
-  the game's own UI is UNRESOLVED.** `DealManager` is a plain writable table
-  with no metatable, so the patch installs and a positive control confirms the
-  wrapper fires for tuner-originated calls. The decisive test — the human
-  clicking Propose in the native screen — was never completed, because the
-  diplomacy UI was dead for the rest of the session.
+#### The game already has a human↔human deal mode
+
+`DiplomacyDealView.lua:3026` sets `ms_OtherPlayerIsHuman = g_OtherPlayer:IsHuman()`
+— the *gamecore* notion, which follows the handoff. When true the view stops
+auto-proposing (`IsAutoPropose`, line 977), shows a real Propose button, and has
+a whole "viewing a pending deal" mode (lines 1145, 1172, 601, 630). This is
+hotseat machinery and it is present in single-player.
+
+Tempting, but not reachable: `ms_OtherPlayerIsHuman` is a **file-local**, and it
+is read once in `SetupPlayers`. Only a mod could set it. Overriding the global
+`IsAutoPropose()` to return `false` gets the most valuable part of the same
+behaviour without one.
+
+### Plan: a server-side deal mailbox
+
+Not yet built. **No mod is required** — every hook point below is a writable
+global in an addressable Lua state.
+
+**1. Server-side state.** A `DealMailbox` keyed by `(from_player, to_player)`
+holding `PendingProposal(from, to, items, turn_proposed)`, where `items` is the
+serialized working deal. Lives on the shared app context next to `SeatRegistry`,
+not on a `GameState` — it spans seats.
+
+**2. Agent → managed target.** `propose_trade` forks on the target. Unmanaged
+built-in AI keeps today's behaviour (`SendWorkingDeal(PROPOSED, …)`); a managed
+target writes a `PendingProposal` and returns "sent, awaiting response" without
+touching the engine, so the AI never gets to answer.
+
+**3. Human → managed target.** Install into the `DiplomacyDealView` state, on
+the same path as the screen fix:
+
+- Wrap `DealManager.SendWorkingDeal`. If `to` is a managed civ, serialize the
+  working deal, `print("MCPDEAL|…")`, and **return without forwarding**.
+  Otherwise forward unchanged, so trade with ordinary AI civs is untouched.
+- Override `IsAutoPropose()` to return `false` for managed targets, so the
+  screen stops firing `INSPECT` and stops rendering a fabricated AI opinion.
+- Serialization needs `pDeal:GetItemCount()`, and per item
+  `GetFromPlayerID/GetType/GetValueType/GetAmount/GetDuration`. Only lump-sum
+  gold has been exercised end to end.
+
+**4. Getting it back to Python.** Unsolicited `print()` output already arrives
+over the tuner socket — `tuner_client.drain_messages` exists for exactly that,
+and the 2026-08-05 session read `MCPDEAL|…` lines asynchronously while the human
+clicked. `GameConnection` currently discards anything that is not a command
+reply, so this needs a reader task that recognises `MCPDEAL|` and files it into
+the mailbox. That is the one genuinely new piece of plumbing. Polling
+`DealManager.GetWorkingDeal` on a timer is the fallback if push proves flaky.
+
+**5. Delivery.** Agents read pending proposals through `get_pending_trades` and
+answer with `respond_to_trade`. The human needs a surface: the web dashboard is
+the obvious candidate, being the only human-facing component that exists. A
+nicer option now that the screen works — raise the native screen and let the
+human answer there — is left for later; it needs the pending deal to be visible
+to `DealManager`, which the mailbox design deliberately avoids.
+
+**6. Execution on acceptance** via the forced-deal primitive
+(`SendWorkingDeal(ACCEPTED, …)` with items added from both sides), followed by
+the `_lua_close_diplo_session()` teardown. The accepting party is on the clock
+by definition, so the local-player slot is already correct.
+
+**Ordering.** Steps 3 and 4 are the risky ones and are independently testable
+against a live game without any agent connected. Do them first.
+
+**Open risks.**
+
+- The wrapper lives in a UI context, so it dies on save load. It must be
+  re-armed on the same path as the screen fix, and a silently missing wrapper
+  means deals leak to the AI — it needs a positive health check, not just
+  best-effort reinstall.
+- Only lump-sum gold is confirmed for the forced-deal primitive. Gold-per-turn,
+  resources, agreements, favor and cities are unexercised.
+- `Quick Deals` (workshop `2460661464`) adds its own deal contexts
+  (`qd_dealpopup`, `qd_offerautomator`, `qd_popuptab_*`) and its own
+  `diplomacyactionview_qd.lua`. It was loaded during these tests and did not
+  interfere, but it is a second path to `SendWorkingDeal` that has not been
+  audited.
+
+### Lua environment topology
+
+- **Every UI context is its own Lua state**, listed by `LSQ:` and addressable by
+  index — 153 of them in a modded game. `GameConnection.execute_in_named_state`
+  resolves one by name. Contexts are registered lazily, so a name that is
+  missing may just need a re-handshake.
+- **Engine singletons are per-Lua-state wrapper tables**, and that includes
+  context to context: `DealManager`, `Game` and even `LuaEvents` are distinct
+  tables in `InGame`, `DiplomacyDealView`, `DiplomacyActionView` and
+  `GameCore_Tuner`. Same C++ object, different Lua tables. A patch installed in
+  one state is invisible to every other.
+- Therefore `DiplomacyDealView` / `DiplomacyActionView` globals
+  (`ProposeWorkingDeal`, `g_bIsLocalPlayerTurn`, `ms_SelectedPlayerID`) are
+  invisible **from the `InGame` state** — but fully readable and writable from
+  their own. The earlier "invisible from the tuner" note was wrong about the
+  tuner and right about `InGame`.
+- A `ReplaceUIScript` runs *inside* the context it replaces, so
+  `DiplomacyActionView_Expansion2.lua` shares the `DiplomacyActionView` state.
+  `DiplomacyActionView_AllianceTab` and `_WorldCongressTab` are separate
+  contexts and separate states.
+- `ContextPtr:LookUpControl` is a C++ tree walk and works across contexts
+  regardless of Lua state.
 - `DiplomacyManager` is **nil** in GameCore; `DealManager` is present in both.
 - The tuner sandbox strips `_G`, `rawget`, `_ENV` and `getfenv`, so globals
   cannot be enumerated — probe names by direct reference.
@@ -721,16 +955,21 @@ play.
    Husbandry the agent picked across four turns. Test properly by reading an
    agent's research and build queue at the moment of handoff, *before* the agent
    acts. If the engine pre-commits them, agents must overwrite every turn.
-3. **Diplomacy — answered, and it is a blocker.** See
+3. **Diplomacy — root-caused, partly fixed.** See
    [Diplomacy and trade under handoff](#diplomacy-and-trade-under-handoff).
-   Deals with a managed civ are auto-resolved by the built-in AI in both
-   directions, and holding the local-player slot permanently disables the
-   human's diplomacy screen toward that civ until the game is reloaded.
-   `Network.GetLocalPlayerID()` cannot be patched (read-only table), so the
-   divergence must be addressed through a mod or an alternative handoff
-   mechanism.  Still open: whether other AIs approach a civ differently once
-   it has been human, and AI-to-AI diplomacy between two agent civs, which
-   has no API.
+   The dead screen is fixed. Deals with a managed civ are still auto-resolved
+   by the built-in AI until the mailbox is built. Still open:
+   - **Other contexts with stale turn state.** The `LocalPlayerTurnBegin`
+     suppression is generic; ~24 contexts subscribe to it and only diplomacy
+     has been checked.
+   - **Diplomacy aimed at a civ while an agent holds the slot.** Observed once:
+     the AI running the human's own civ opened a delegation offer to the
+     managed civ. With a real agent there is nobody to answer it, the session
+     stays open, and `ACTION_ENDTURN` is blocked. Needs either an
+     auto-dismiss in the seated `end_turn` path or a tool to answer
+     conversations.
+   - Whether other AIs approach a civ differently once it has been human, and
+     AI-to-AI diplomacy between two agent civs, which has no API.
 4. **Fairness.** Agents have gamecore read access to the entire map regardless
    of their own visibility, and so can see the human's state. Accepted for now;
    enforcing fog of war requires visibility checks in the query layer.
@@ -781,9 +1020,10 @@ save to clear it.
 
 | File | Role |
 |---|---|
-| `src/civ_mcp/handoff.py` | Config, the GameCore install/status/roster/hand-back Lua, `HandoffKeeper`, `wait_for_turn` |
+| `src/civ_mcp/handoff.py` | Config, the GameCore install/status/roster/hand-back Lua, the diplomacy screen fix, `HandoffKeeper`, `wait_for_turn` |
 | `src/civ_mcp/seats.py` | `SeatRegistry`, `Seat`, the read-perspective `ContextVar` |
-| `src/civ_mcp/connection.py` | `apply_perspective` — the `Game.GetLocalPlayer()` rewrite |
+| `src/civ_mcp/connection.py` | `apply_perspective` — the `Game.GetLocalPlayer()` rewrite; `state_index_for` / `execute_in_named_state` for reaching a UI context's own Lua state |
+| `scripts/diplo_probe.py`, `scripts/lua/` | Standalone tuner driver used for the diplomacy investigation — talks to the game directly so the MCP server need not hold the single-client port |
 | `src/civ_mcp/end_turn.py` | `_poll_advanced` (seat-aware advancement), `build_post_turn_report` (deferred report) |
 | `src/civ_mcp/server.py` | Shared lifespan, seat resolution, `_check_turn_gate`, seat/turn tools, transport selection |
 | `tests/test_handoff.py`, `tests/test_seats.py` | Config, generated Lua, parsing, registry, gating, `wait_for_turn` |

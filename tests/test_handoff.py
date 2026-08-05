@@ -115,8 +115,38 @@ class TestInstallLua:
             handoff.build_status_lua(),
             handoff.build_log_lua(),
             handoff.build_roster_lua((0, 1)),
+            handoff.build_diplomacy_ui_fix_lua(),
         ):
             assert "---END---" in lua
+
+
+class TestDiplomacyUIFixLua:
+    """The screen repair described in docs/human-vs-agent.md."""
+
+    def test_delivers_the_event_the_engine_swallows(self):
+        lua = handoff.build_diplomacy_ui_fix_lua()
+        # Both events, because their order differs between a normal turn start
+        # and a handoff one, and we cannot know which arrives last.
+        assert "Events.LocalPlayerChanged.Add(__civmcp_diplo_fix)" in lua
+        assert "Events.PlayerTurnActivated.Add(__civmcp_diplo_fix)" in lua
+        assert "pcall(OnLocalPlayerTurnBegin)" in lua
+
+    def test_only_repairs_when_the_turn_is_really_active(self):
+        """Setting the flag while off the clock would enable actions wrongly."""
+        lua = handoff.build_diplomacy_ui_fix_lua()
+        assert "p:IsTurnActive() and not g_bIsLocalPlayerTurn" in lua
+
+    def test_registers_listeners_once(self):
+        lua = handoff.build_diplomacy_ui_fix_lua()
+        assert "if __civmcp_diplo_fix == nil then" in lua
+
+    def test_bails_out_in_a_context_without_the_flag(self):
+        lua = handoff.build_diplomacy_ui_fix_lua()
+        assert "if g_bIsLocalPlayerTurn == nil then" in lua
+        assert "DIPLOFIX|absent" in lua
+
+    def test_targets_only_the_context_that_reads_the_flag(self):
+        assert handoff.DIPLOMACY_UI_STATES == ("DiplomacyActionView",)
 
 
 # ---------------------------------------------------------------------------

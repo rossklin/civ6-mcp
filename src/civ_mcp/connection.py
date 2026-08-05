@@ -174,6 +174,39 @@ class GameConnection:
             state_index, lua_code, timeout, perspective
         )
 
+    async def state_index_for(self, name: str) -> int | None:
+        """Resolve a Lua state index by exact name, or None if absent.
+
+        Every UI context is its own Lua state with its own copies of the engine
+        wrapper tables (``DealManager`` in ``DiplomacyDealView`` is a different
+        table from the one in ``InGame``), so reaching a context's globals means
+        addressing its state directly.  Contexts are registered lazily, so a
+        miss triggers one re-handshake before giving up.
+        """
+        await self.ensure_connected()
+        for index, state in self.lua_states.items():
+            if state == name:
+                return index
+        await self.reconnect()
+        for index, state in self.lua_states.items():
+            if state == name:
+                return index
+        return None
+
+    async def execute_in_named_state(
+        self, name: str, lua_code: str, timeout: float = 5.0
+    ) -> list[str]:
+        """Execute Lua in a named UI context's state. Empty list if absent.
+
+        Never applies the seat perspective rewrite: these scripts act on the
+        real local player's UI, not on a seat's view of the world.
+        """
+        index = await self.state_index_for(name)
+        if index is None:
+            log.warning("Lua state %r not found", name)
+            return []
+        return await self._execute_and_collect(index, lua_code, timeout, False)
+
     async def _execute_and_collect(
         self,
         state_index: int,
