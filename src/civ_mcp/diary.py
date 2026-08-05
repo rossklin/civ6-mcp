@@ -1,6 +1,8 @@
-"""Diary feature — structured per-turn reflections, always on.
+"""Diary feature — persistent plans written once per turn, always on.
 
-Writes/reads JSONL diary files stored in ~/.civ6-mcp/.
+Writes JSONL diary files stored in ~/.civ6-mcp/.  Each row has two plan fields:
+- ``next_turn_plan`` — overwritten each turn (only the most recent matters)
+- ``long_term_plans`` — passed in full each time; last write wins
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ import json
 from pathlib import Path
 
 DIARY_DIR = Path.home() / ".civ6-mcp"
-_REFLECTION_FIELDS = ("tactical", "strategic", "tooling", "planning", "hypothesis")
+_PLAN_FIELDS = ("next_turn_plan", "long_term_plans")
 
 
 def diary_path(civ: str, seed: int, run_id: str) -> Path:
@@ -17,43 +19,29 @@ def diary_path(civ: str, seed: int, run_id: str) -> Path:
     return DIARY_DIR / f"diary_{civ}_{seed}_{run_id}.jsonl"
 
 
-def merge_agent_reflections(
-    path: Path, turn: int, new_reflections: dict
-) -> dict | None:
-    """Merge new reflections into the most recent agent row for this turn.
+def get_current_plans(path: Path) -> dict[str, str]:
+    """Return the most recent ``next_turn_plan`` and ``long_term_plans``.
 
-    Finds the last is_agent=True row matching the given turn, appends each
-    non-empty reflection field with ' | ' separator, and rewrites the file.
-    Returns the merged row dict if successful, None otherwise.
+    Reads the last entry in the JSONL file.  Returns ``{"next_turn_plan": "",
+    "long_term_plans": ""}`` if the file is missing or empty.
     """
     if not path.exists():
-        return None
+        return {"next_turn_plan": "", "long_term_plans": ""}
     lines = path.read_text().strip().splitlines()
-    target_idx = None
+    if not lines:
+        return {"next_turn_plan": "", "long_term_plans": ""}
+    # Walk backwards to find the last valid row with plan fields
     for i in range(len(lines) - 1, -1, -1):
         try:
             row = json.loads(lines[i])
-            if row.get("is_agent") and row.get("turn") == turn:
-                target_idx = i
-                break
+            if "next_turn_plan" in row or "long_term_plans" in row:
+                return {
+                    "next_turn_plan": row.get("next_turn_plan", ""),
+                    "long_term_plans": row.get("long_term_plans", ""),
+                }
         except json.JSONDecodeError:
             continue
-    if target_idx is None:
-        return None
-
-    row = json.loads(lines[target_idx])
-    existing = row.get("reflections") or {}
-    for field in _REFLECTION_FIELDS:
-        new_val = new_reflections.get(field, "").strip()
-        old_val = existing.get(field, "").strip()
-        if new_val and new_val != old_val:
-            existing[field] = f"{old_val} | {new_val}" if old_val else new_val
-    row["reflections"] = existing
-    lines[target_idx] = json.dumps(row, separators=(",", ":"))
-
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    return row
+    return {"next_turn_plan": "", "long_term_plans": ""}
 
 
 def read_diary_entries(path: Path) -> list[dict]:
@@ -69,11 +57,38 @@ def read_diary_entries(path: Path) -> list[dict]:
 
 
 def format_diary_entry(e: dict) -> str:
+    """Format a single diary entry for display."""
+    t = e.get("turn", "?")
+
+    # New plan-format entry
+    if "next_turn_plan" in e or "long_term_plans" in e:
+        return _format_plan_entry(e)
+
     # New flat format (v2) — detected by "v" key
     if "v" in e:
         return _format_flat_entry(e)
+
     # Legacy nested format
     return _format_legacy_entry(e)
+
+
+def _format_plan_entry(e: dict) -> str:
+    """Format a plan-format diary entry (next_turn_plan + long_term_plans)."""
+    t = e.get("turn", "?")
+    ntp = e.get("next_turn_plan", "").strip()
+    ltp = e.get("long_term_plans", "").strip()
+
+    header = f"=== Turn {t} Plans ==="
+    parts = [header]
+    if ltp:
+        parts.append(f"Long-term Plans:\n{ltp}")
+    else:
+        parts.append("Long-term Plans: (none)")
+    if ntp:
+        parts.append(f"Next-Turn Plan:\n{ntp}")
+    else:
+        parts.append("Next-Turn Plan: (none)")
+    return "\n".join(parts)
 
 
 def _format_flat_entry(e: dict) -> str:
@@ -93,8 +108,8 @@ def _format_flat_entry(e: dict) -> str:
     stk = e.get("stockpiles")
     stk_line = ""
     if stk:
-        parts = [f"{k}: {v}" for k, v in stk.items()]
-        stk_line = "\n  Resources: " + ", ".join(parts)
+        parts_parts = [f"{k}: {v}" for k, v in stk.items()]
+        stk_line = "\n  Resources: " + ", ".join(parts_parts)
     ref_lines = "\n".join(f"  {k}: {v}" for k, v in r.items())
     return f"{header}\n{score_line}{stk_line}\n{ref_lines}"
 

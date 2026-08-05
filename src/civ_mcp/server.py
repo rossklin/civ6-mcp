@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
@@ -25,9 +25,7 @@ from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
 from civ_mcp.diary import (
     diary_path as _diary_path,
-    format_diary_entry as _format_diary_entry,
-    merge_agent_reflections as _merge_agent_reflections,
-    read_diary_entries as _read_diary_entries,
+    get_current_plans as _get_current_plans,
 )
 from civ_mcp.game_state import GameState
 from civ_mcp.handoff import HandoffConfig, HandoffKeeper
@@ -39,7 +37,6 @@ from civ_mcp.seats import Seat, SeatRegistry
 from civ_mcp.spatial import SpatialTracker
 from civ_mcp.spectator import CameraController, PopupWatcher
 from civ_mcp.telemetry import (
-    EVENT_CITY_ROW,
     EVENT_DIARY_ROW,
     AlertSink,
     CloudSink,
@@ -532,9 +529,11 @@ if HANDOFF_CONFIG.enabled:
         "get_full_game_state() to orient yourself.\n"
         "Read tools always answer for your own civ, including while other "
         "players are taking their turns, so you can scout and plan off the "
-        "clock. Write tools work only during your own turn. After end_turn(), "
-        "call wait_for_turn() to block until your next turn — it returns a "
-        "report of everything that changed while you waited."
+        "clock. Write tools work only during your own turn.\n"
+        "Turn flow: get_full_game_state → execute_commands → end_turn → "
+        "update_diary(next_turn_plan=..., long_term_plans=...) → "
+        "wait_for_turn(). wait_for_turn() blocks until your next turn starts; "
+        "call it again on timeout without changing the diary."
     )
 
 mcp = FastMCP(
@@ -601,7 +600,7 @@ _GATE_EXEMPT: frozenset[str] = frozenset(
         "get_turn_status",
         "wait_for_turn",
         "reinstall_handoff",
-        "get_diary",
+        "update_diary",
     }
 )
 
@@ -829,7 +828,8 @@ async def get_full_game_state(ctx: Context) -> str:
     Returns all game information needed to plan your turn: overview, units,
     cities, diplomacy, research, trade routes, resources, victory progress,
     religion, governors, policies, city-states, builder tasks, great people,
-    world congress, notifications, and strategic map.
+    world congress, notifications, strategic map, and your diary (long-term
+    plans and the next-turn plan you wrote last turn).
 
     This replaces all individual get_* query tools. Call this once at the
     start of your turn to orient yourself, then issue commands via
@@ -852,7 +852,30 @@ async def get_full_game_state(ctx: Context) -> str:
                 gs.spatial = spatial
             except Exception:
                 pass
-        return narrate_full_state(state)
+        text = narrate_full_state(state)
+
+        # Append diary plans (long-term + next-turn) from the JSONL file
+        try:
+            civ_type, seed = await gs.get_game_identity()
+            run_id = _get_logger(ctx).session_id
+            path = _diary_path(civ_type, seed, run_id)
+            plans = _get_current_plans(path)
+            ntp = plans.get("next_turn_plan", "").strip()
+            ltp = plans.get("long_term_plans", "").strip()
+            if ltp or ntp:
+                text += "\n\n=== DIARY ==="
+                if ltp:
+                    text += f"\nLong-term Plans:\n{ltp}"
+                else:
+                    text += "\nLong-term Plans: (none)"
+                if ntp:
+                    text += f"\n\nPlan for This Turn (from last turn):\n{ntp}"
+                else:
+                    text += "\n\nPlan for This Turn: (none)"
+        except Exception:
+            log.debug("Failed to append diary to full game state", exc_info=True)
+
+        return text
 
     return await _logged(ctx, "get_full_game_state", {}, _run)
 
@@ -1042,9 +1065,9 @@ async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
         timeout_seconds: How long to wait before returning. Capped at 600.
 
     Returns the full turn report for the round that just finished — snapshot
-    diff, threats, notifications and empire warnings — so this is the natural
-    companion to end_turn(): end your turn, study the map while others play,
-    then call wait_for_turn() to pick up your next turn with a briefing.
+    diff, threats, notifications and empire warnings. Call update_diary() first
+    to record your plans, then call wait_for_turn() to block until your next
+    turn. Call it again on timeout — no diary interaction happens here.
 
     If the wait times out it returns the current turn status instead; just call
     it again. Nothing is lost by timing out.
@@ -2359,167 +2382,44 @@ async def set_research(ctx: Context, tech_or_civic: str, category: str = "tech")
 
 
 @mcp.tool(annotations={"destructiveHint": True})
-async def end_turn(
-    ctx: Context,
-    tactical: str = "",
-    strategic: str = "",
-    tooling: str = "",
-    planning: str = "",
-    hypothesis: str = "",
-) -> str:
+async def end_turn(ctx: Context) -> str:
     """End the current turn.
 
     Make sure you've moved all units, set production, and chosen research
     before ending the turn.
 
-    All 5 reflection parameters are optional — provide what you can,
-    leave blank what you can't. These form the per-turn diary:
-        tactical: What happened this turn — combat, movements, improvements.
-        strategic: Current standing vs rivals — yields, city count, victory path.
-        tooling: Tool issues or observations.
-        planning: Concrete actions for the next 5-10 turns.
-        hypothesis: Predictions — enemy behavior, resource needs, timelines.
-
-    IMPORTANT: Reflections are recorded BEFORE the AI processes its turn.
-    Anything that surfaces after end_turn (diplomacy proposals, AI movements,
-    events reported in the turn result) belongs in the NEXT turn's diary.
-    If end_turn is blocked and you call it again after resolving the blocker,
-    the diary entry from the first call is kept — do not repeat reflections.
+    After end_turn(), think about what to do next turn and call
+    update_diary(next_turn_plan=..., long_term_plans=...) to record your
+    plans. Then call wait_for_turn() to block until your next turn starts.
     """
     gs = _get_game(ctx)
 
-    # Check turn ownership up front. _logged() gates too, but the diary is
-    # written before it runs, and a refused end_turn must not leave a diary
-    # entry claiming the turn was played.
+    # Check turn ownership up front.
     refusal = await _check_turn_gate(ctx, "end_turn", {})
     if refusal is not None:
         return refusal
-
-    reflections = {
-        "tactical": tactical,
-        "strategic": strategic,
-        "tooling": tooling,
-        "planning": planning,
-        "hypothesis": hypothesis,
-    }
 
     # Model ID comes from CIV_MCP_AGENT_MODEL env var (set by eval runner)
     env_model = os.environ.get("CIV_MCP_AGENT_MODEL", "")
     if env_model:
         _get_logger(ctx).set_agent_model(env_model)
 
-    # Capture diary state and write BEFORE advancing the turn.
-    # This ensures the entry is saved even if the session is interrupted
-    # during AI turn processing.
-    #
-    # If the last end_turn hit a blocker (diplomacy, WC), the turn may have
-    # advanced during processing. On retry, we merge reflections into the
-    # previous entry rather than writing a duplicate with terse reflections.
+    # Capture turn info for later use (map capture, heartbeat, etc.)
     _diary_turn = 0
-    _diary_player_id = -1
     _diary_civ_type = None
     _diary_seed = None
-    _diary_run_id = _get_logger(ctx).session_id
-    _diary_snapshot = None
-    _is_retry = getattr(gs, "_end_turn_blocked", False)
     try:
         ov = await gs.get_game_overview()
-        _diary_player_id = ov.player_id
         _diary_turn = ov.turn
-        # Keep logger/spatial turn in sync (agent may not call get_game_overview every turn)
+        # Keep logger/spatial turn in sync
         _get_logger(ctx).set_turn(ov.turn)
         _get_spatial(ctx).set_turn(ov.turn)
     except Exception:
-        log.warning("Diary: failed to capture overview", exc_info=True)
+        log.warning("Failed to capture overview before end_turn", exc_info=True)
     try:
         _diary_civ_type, _diary_seed = await gs.get_game_identity()
     except Exception:
-        log.warning("Diary: failed to get game identity", exc_info=True)
-
-    if _is_retry and _diary_civ_type is not None:
-        # Merge reflections into the most recent agent row (from the
-        # previous end_turn call that wrote before hitting a blocker).
-        # Merges into whichever turn that row belongs to — handles both
-        # same-turn retries and turn-advanced-during-blocker cases.
-        try:
-            path = _diary_path(_diary_civ_type, _diary_seed, _diary_run_id)
-            merged_row = _merge_agent_reflections(
-                path, gs._diary_written_turn, reflections
-            )
-            if merged_row:
-                log.info(
-                    "Diary: merged retry reflections into turn %s",
-                    gs._diary_written_turn,
-                )
-                # Re-emit merged row so CloudSink gets the updated reflections
-                await _get_logger(ctx)._emitter.emit(EVENT_DIARY_ROW, merged_row)
-        except Exception:
-            log.warning("Diary: failed to merge reflections", exc_info=True)
-    elif (
-        _diary_civ_type is not None
-        and _diary_turn > 0
-        and gs._diary_written_turn != _diary_turn
-    ):
-        try:
-            _diary_snapshot = await gs.get_diary_snapshot()
-        except Exception:
-            log.warning("Diary: failed to capture snapshot", exc_info=True)
-        if _diary_snapshot:
-            game_id = f"{_diary_civ_type}_{_diary_seed}"
-            ts = datetime.now(timezone.utc).isoformat()
-            # MCP client metadata (from handshake)
-            agent_client = ""
-            agent_client_ver = ""
-            try:
-                ci = ctx.session.client_params.clientInfo
-                agent_client = ci.name or ""
-                agent_client_ver = ci.version or ""
-            except Exception:
-                pass
-            try:
-                _emitter = _get_logger(ctx)._emitter
-                # Write one row per player (emitter routes to sinks)
-                for pr in _diary_snapshot.players:
-                    row = asdict(pr)
-                    row["v"] = 1
-                    row["turn"] = _diary_turn
-                    row["game"] = game_id
-                    row["timestamp"] = ts
-                    if pr.pid == _diary_player_id:
-                        row["is_agent"] = True
-                        # Merge agent extras
-                        ag = _diary_snapshot.agent
-                        row["diplo_states"] = ag.diplo_states
-                        row["suzerainties"] = ag.suzerainties
-                        row["envoys_available"] = ag.envoys_available
-                        row["envoys_sent"] = ag.envoys_sent
-                        row["gp_points"] = ag.gp_points
-                        row["governors"] = ag.governors
-                        row["trade_routes"] = {
-                            "capacity": ag.trade_capacity,
-                            "active": ag.trade_active,
-                            "domestic": ag.trade_domestic,
-                            "international": ag.trade_international,
-                        }
-                        row["reflections"] = reflections
-                        row["agent_client"] = agent_client
-                        row["agent_client_ver"] = agent_client_ver
-                        row["agent_model"] = env_model
-                        # Eval metadata from emitter (only non-empty)
-                        for _mk, _mv in _emitter.metadata.items():
-                            if _mv:
-                                row[_mk] = _mv
-                    await _emitter.emit(EVENT_DIARY_ROW, row)
-                # Write one row per city
-                for cr in _diary_snapshot.cities:
-                    row = asdict(cr)
-                    row["v"] = 1
-                    row["turn"] = _diary_turn
-                    row["game"] = game_id
-                    await _emitter.emit(EVENT_CITY_ROW, row)
-                gs._diary_written_turn = _diary_turn
-            except Exception:
-                log.warning("Diary: failed to write entry", exc_info=True)
+        log.warning("Failed to get game identity before end_turn", exc_info=True)
 
     # Advance the turn
     _seat = _get_seat(ctx)
@@ -2819,28 +2719,27 @@ async def end_turn(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
-async def get_diary(
+@mcp.tool()
+async def update_diary(
     ctx: Context,
-    last_n: int = 5,
-    turn: Optional[int] = None,
-    from_turn: Optional[int] = None,
-    to_turn: Optional[int] = None,
+    next_turn_plan: str = "",
+    long_term_plans: str = "",
 ) -> str:
-    """Read diary entries for game memory.
+    """Record your plans for the next turn and your long-term strategy.
+
+    Call this after end_turn() and before wait_for_turn() — once per turn
+    cycle. The plans you write here will appear in get_full_game_state() at
+    the start of your next turn.
 
     Args:
-        last_n: Number of most recent entries to return (default 5, max 50).
-                Used when turn/from_turn/to_turn are not specified.
-        turn: Return the single entry for this turn number.
-        from_turn: Return entries from this turn onward (inclusive).
-        to_turn: Return entries up to this turn (inclusive).
-
-    Auto-detects the current game from the live connection. Each game has
-    its own diary file (keyed by civ + random seed).
-
-    Call this at the start of a session or after context compaction to
-    restore strategic memory from previous turns.
+        next_turn_plan: Your plan for the NEXT turn — what you intend to do
+            when you get the turn back. This is overwritten each turn, so
+            only the most recent entry matters. Be specific: mention unit
+            movements, production choices, research targets.
+        long_term_plans: Your long-term strategy — victory path, expansion
+            goals, tech progression, diplomatic posture. Pass the complete
+            current version when something changes. Leave empty to keep the
+            existing long-term plans unchanged — the previous value persists.
     """
     gs = _get_game(ctx)
     try:
@@ -2848,34 +2747,52 @@ async def get_diary(
     except Exception:
         return "Could not detect current game. Is the game running?"
 
+    # Capture current turn for the diary row
+    diary_turn = 0
+    try:
+        ov = await gs.get_game_overview()
+        diary_turn = ov.turn
+    except Exception:
+        log.warning("update_diary: failed to capture overview", exc_info=True)
+
     run_id = _get_logger(ctx).session_id
     path = _diary_path(civ_type, seed, run_id)
-    if not path.exists():
-        return f"No diary entries yet for this game ({civ_type}, seed {seed})."
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    entries = _read_diary_entries(path)
-    if not entries:
-        return f"No diary entries yet for this game ({civ_type}, seed {seed})."
+    ntp = next_turn_plan.strip()
+    ltp = long_term_plans.strip()
 
-    # New format (v2) has N rows per turn — filter to agent rows only.
-    # Old format entries (no "v" key) pass through unchanged.
-    entries = [e for e in entries if "v" not in e or e.get("is_agent")]
+    # Inherit previous long-term plans if the agent left them empty.
+    # next_turn_plan is always overwritten (empty = no plan for next turn).
+    if not ltp:
+        previous = _get_current_plans(path)
+        ltp = previous.get("long_term_plans", "")
 
-    # Filter by query mode
-    if turn is not None:
-        entries = [e for e in entries if e.get("turn") == turn]
-    elif from_turn is not None or to_turn is not None:
-        lo = from_turn if from_turn is not None else 0
-        hi = to_turn if to_turn is not None else 999999
-        entries = [e for e in entries if lo <= e.get("turn", 0) <= hi]
-    else:
-        last_n = min(max(last_n, 1), 50)
-        entries = entries[-last_n:]
+    ts = datetime.now(timezone.utc).isoformat()
+    row = {
+        "turn": diary_turn,
+        "next_turn_plan": ntp,
+        "long_term_plans": ltp,
+        "timestamp": ts,
+    }
 
-    if not entries:
-        return "No diary entries match the query."
+    try:
+        # Append to JSONL
+        with open(path, "a") as f:
+            f.write(json.dumps(row, separators=(",", ":")) + "\n")
+        # Emit to telemetry sinks
+        await _get_logger(ctx)._emitter.emit(EVENT_DIARY_ROW, row)
+        log.info("Diary updated for turn %s", diary_turn)
+    except Exception:
+        log.warning("update_diary: failed to write entry", exc_info=True)
+        return "Error: failed to write diary entry."
 
-    return "\n\n".join(_format_diary_entry(e) for e in entries)
+    parts = [f"Diary updated for turn {diary_turn}."]
+    if next_turn_plan.strip():
+        parts.append(f"Next-turn plan recorded ({len(next_turn_plan)} chars).")
+    if long_term_plans.strip():
+        parts.append(f"Long-term plans recorded ({len(long_term_plans)} chars).")
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------

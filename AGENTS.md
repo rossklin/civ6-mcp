@@ -10,9 +10,9 @@ An MCP server connecting to a live Civilization VI game via FireTuner. You can r
 
 This server exposes **two primary tools** plus admin utilities:
 
-- **`get_full_game_state`** — returns ALL game state in a single call: overview, units, cities, diplomacy, research, trade routes, resources, victory progress, religion, governors, policies, city-states, builder tasks, great people, world congress, notifications, and strategic map. Call this at the start of each turn.
+- **`get_full_game_state`** — returns ALL game state in a single call: overview, units, cities, diplomacy, research, trade routes, resources, victory progress, religion, governors, policies, city-states, builder tasks, great people, world congress, notifications, strategic map, and **diary** (long-term plans + next-turn plan). Call this at the start of each turn.
 - **`execute_commands`** — runs a batch of game commands from a JSON array. Callable multiple times per turn (scout first, review intel, then commit remaining moves). Unit movements return visibility intel inline.
-- **`end_turn`** — advances the turn. Reflections are optional — provide what you can, skip what you can't.
+- **`end_turn`** — advances the turn. No diary input — plans are written separately via `update_diary`.
 
 ## Coordinate System
 
@@ -59,11 +59,14 @@ Early choices compound. Each decision shapes what's available 20, 40, 60 turns l
 ## Turn Loop
 
 Each turn in order:
-1. `get_full_game_state` — all game state in one call. If resuming after context compaction, call `get_diary` first.
-2. Plan your moves based on the full state.
+1. `get_full_game_state` — all game state including your diary (long-term plans + the next-turn plan you wrote last turn). If resuming after context compaction, this is all you need to reconstruct your strategic context.
+2. Plan your moves based on the full state and your existing plans. Consider whether notifications or enemy movements since last turn require adjusting your next-turn plan.
 3. `execute_commands` with your planned actions (move units, set production, set research, etc.).
 4. If unit movements reveal new intel (visible in the command results), you may call `execute_commands` again to act on it. Prefer fewer calls where possible.
-5. `end_turn` — advance the turn. Reflections are optional.
+5. `end_turn` — advance the turn.
+6. Think about what to do next turn and whether your long-term plans need updating.
+7. `update_diary(next_turn_plan=..., long_term_plans=...)` — record your plans.
+8. `wait_for_turn()` — block until your next turn starts. Call again on timeout (no diary interaction).
 
 ## Shared Games (human vs agent)
 
@@ -73,9 +76,10 @@ rival civs, taking turns in order.
 
 1. `get_seats` — see which civ is yours
 2. `claim_seat(player_id=N)` — every other tool is refused until you do this
-3. Play your turn: `get_full_game_state`, then `execute_commands`, then `end_turn`
-4. `wait_for_turn()` — blocks until you're back on the clock and returns the
-   turn report. If it times out, call it again.
+3. Play your turn: `get_full_game_state` (includes diary), then `execute_commands`, then `end_turn`
+4. Think about what to do next turn, then `update_diary(next_turn_plan=..., long_term_plans=...)`
+5. `wait_for_turn()` — blocks until you're back on the clock and returns the
+   turn report. If it times out, call it again — no diary interaction.
 
 Off the clock, read tools still answer for **your** civ, so the gap between your
 turns is time to scout, run strategic checkpoints, and plan — not time to sit
@@ -88,16 +92,14 @@ let the human recover it.
 
 ## Diary
 
-The diary is your persistent memory across sessions. When context compacts or you return to a game, `get_diary` is how you reconstruct where you were and why you made the decisions you did. Entries with specific details — unit names, coordinates, yield numbers, reasoning — are far more useful to your future self than brief summaries.
+The diary is your persistent memory across sessions and turns. When you start a turn, `get_full_game_state` includes your diary, so you pick up exactly where you left off. The diary has two parts:
 
-Reflections are recorded **before** AI processing begins — write what YOU observed and did this turn. Anything that surfaces after `end_turn` (a diplomacy proposal, AI units entering your territory, events in the turn result) belongs in the **next** turn's diary, not this one.
+- **`next_turn_plan`**: Your concrete plan for the NEXT turn. Be specific — unit movements, production choices, research targets. This is overwritten each turn, so only the most recent entry matters. Write this from the perspective of what you intend to do when you get the turn back.
+- **`long_term_plans`**: Your long-term strategy — victory path, expansion goals, tech progression timeline, diplomatic posture. Pass the complete current version each time you call `update_diary`; last write wins.
 
-Five reflection fields each turn (all optional — provide what you can, skip what you can't):
-- **tactical**: What happened — specific units, tiles, outcomes.
-- **strategic**: Standings vs rivals — yields, city count, victory path viability with numbers.
-- **tooling**: Tool issues observed.
-- **planning**: Concrete actions for the next 5-10 turns — specific builds, moves, research targets with turn estimates.
-- **hypothesis**: Specific predictions — attack timing, milestone turns, biggest risks.
+Call `update_diary` after `end_turn()` and before `wait_for_turn()` — once per turn cycle. Think while other players are on the clock: based on what you observed this turn and the post-turn report (which `wait_for_turn` will return), what should you do next? Do your long-term plans still hold? Write the answers into the diary so your next invocation starts with context.
+
+The diary appears in `get_full_game_state` output — no separate tool needed. When you resume a game after context compaction, `get_full_game_state` alone is enough to reconstruct your strategic context.
 
 ## Strategic Checkpoints
 

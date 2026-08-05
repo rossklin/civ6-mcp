@@ -241,18 +241,23 @@ stalls. So `end_turn` stashes the baseline on the seat and returns immediately;
 `build_post_turn_report` (split out of `execute_end_turn`) runs later, when the
 seat gets the slot back and the game is idle.
 
-That gives agents a two-call turn loop:
+That gives agents a three-call turn loop:
 
 ```
 end_turn(...)          -> "your turn is over, play has passed on"
-  ... read tools, plan, study the map, off the clock ...
+  ... think about next turn, update long-term plans ...
+update_diary(...)      -> record next-turn plan and long-term plans
 wait_for_turn()        -> blocks, then returns the full turn report
 ```
 
+`update_diary` writes plans to the per-seat JSONL diary before blocking,
+so the plans are persisted even if `wait_for_turn` times out. The diary is
+included in `get_full_game_state` output — no separate read tool needed.
+
 `wait_for_turn` returns after `timeout_seconds` (default 90, capped at 600)
 with the current status rather than blocking past typical MCP client request
-timeouts; the agent just calls it again. `get_turn_status()` is the
-non-blocking check.
+timeouts; the agent just calls it again — no diary interaction on retry.
+`get_turn_status()` is the non-blocking check.
 
 Two per-turn housekeeping items are keyed off the game turn rather than off
 `end_turn`, since several seats end their turn inside one game turn: the

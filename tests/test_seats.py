@@ -213,7 +213,7 @@ class TestTurnGate:
         reg = SeatRegistry(default=_stub_seat(0))
         ctx = _ctx(reg, HandoffConfig())
         assert _gate(ctx, "end_turn") is None
-        assert _gate(ctx, "unit_action") is None
+        assert _gate(ctx, "execute_commands") is None
 
     def test_unseated_session_must_claim_first(self):
         reg = _registry()
@@ -242,7 +242,7 @@ class TestTurnGate:
         self._armed(monkeypatch, local_player=0)
         reg = _registry()
         ctx = _ctx(reg, self.cfg, claims=1)
-        msg = _gate(ctx, "unit_action")
+        msg = _gate(ctx, "execute_commands")
         assert msg is not None
         assert "Not your turn" in msg
         assert "human (P0)" in msg
@@ -259,7 +259,7 @@ class TestTurnGate:
         self._armed(monkeypatch, local_player=1)
         reg = _registry()
         ctx = _ctx(reg, self.cfg, claims=1)
-        for tool in ("unit_action", "end_turn", "set_city_production", "set_research"):
+        for tool in ("execute_commands", "end_turn"):
             assert _gate(ctx, tool) is None
 
     def test_game_reloading_tools_always_refused(self, monkeypatch):
@@ -295,11 +295,10 @@ class TestTurnGate:
     def test_every_state_changing_tool_is_covered(self):
         """The gated set is derived from readOnlyHint, so a new write tool is
         gated by default rather than by remembering to list it."""
-        for tool in ("unit_action", "city_action", "end_turn", "propose_trade"):
+        for tool in ("execute_commands", "end_turn"):
             assert tool in server._WRITE_TOOLS
-        for tool in ("get_units", "get_cities", "get_game_overview"):
-            assert tool not in server._WRITE_TOOLS
-        # Seat/turn tools are exempt rather than gated.
+        assert "get_full_game_state" not in server._WRITE_TOOLS
+        # Seat/turn/diary tools are exempt rather than gated.
         assert server._WRITE_TOOLS.isdisjoint(server._GATE_EXEMPT)
 
 
