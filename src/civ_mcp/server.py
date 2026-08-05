@@ -1365,7 +1365,7 @@ async def get_settle_advisor(ctx: Context, unit_id: int) -> str:
     )
 
 
-# @mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"readOnlyHint": True})
 async def get_pathing_estimate(
     ctx: Context, unit_id: int, target_x: int, target_y: int
 ) -> str:
@@ -1717,7 +1717,7 @@ async def send_envoy(ctx: Context, player_id: int) -> str:
     )
 
 
-# @mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"readOnlyHint": True})
 async def get_pantheon_beliefs(ctx: Context) -> str:
     """Get pantheon status and available beliefs for selection.
 
@@ -1752,7 +1752,7 @@ async def choose_pantheon(ctx: Context, belief_type: str) -> str:
     )
 
 
-# @mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def get_religion_beliefs(ctx: Context) -> str:
     """Get religion founding status, available religions, and available beliefs.
 
@@ -1813,7 +1813,7 @@ async def upgrade_unit(ctx: Context, unit_id: int) -> str:
     )
 
 
-# @mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def get_dedications(ctx: Context) -> str:
     """Get current era age, available dedications, and active ones.
 
@@ -2816,7 +2816,7 @@ async def get_trade_routes(ctx: Context) -> str:
     )
 
 
-# @mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"readOnlyHint": True})
 async def get_trade_destinations(ctx: Context, unit_id: int) -> str:
     """List valid trade route destinations for a trader unit.
 
