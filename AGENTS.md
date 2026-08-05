@@ -79,7 +79,7 @@ Each turn in order:
 2. Plan your moves based on the full state and your existing plans. Consider whether notifications or enemy movements since last turn require adjusting your next-turn plan.
 3. `execute_commands` with your planned actions (move units, set production, set research, etc.).
 4. If unit movements reveal new intel (visible in the command results), you may call `execute_commands` again to act on it. Prefer fewer calls where possible.
-5. `end_turn` — advance the turn.
+5. `end_turn` — advance the turn and get your post-turn report.
 6. Think about what to do next turn and whether your long-term plans need updating.
 7. `update_diary(next_turn_plan=..., long_term_plans=...)` — record your plans.
 8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
