@@ -43,6 +43,7 @@ from civ_mcp.telemetry import (
     LocalSink,
     TelemetryEmitter,
 )
+from civ_mcp.deal_mailbox import DealMailbox, PendingProposal, SerializedDealItem
 from civ_mcp.web_api import create_app
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ class AppContext:
     seats: SeatRegistry
     handoff_config: HandoffConfig
     keeper: HandoffKeeper | None = None
+    # Deal mailbox — intercepts trades with managed civs so the built-in AI
+    # doesn't auto-answer them.
+    mailbox: DealMailbox | None = None
 
 
 async def _auto_boot(conn: GameConnection, save_name: str) -> None:
@@ -432,6 +436,85 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
             )
         keeper.start()
 
+    # Deal mailbox — intercepts trades with managed civs.
+    mailbox = DealMailbox()
+    _deal_notify_task: asyncio.Task | None = None
+    if cfg.enabled:
+        # Install the DiplomacyDealView shim (idempotent).
+        try:
+            shim_status = await handoff.install_deal_shim(conn, cfg.agent_ids)
+            log.info("Deal shim: %s", shim_status)
+        except Exception:
+            log.warning("Deal shim install failed", exc_info=True)
+
+        # Register the notification click handler in InGame.
+        try:
+            note_lines = await conn.execute_write(
+                handoff.build_notification_handler_lua(cfg.agent_ids),
+                perspective=False,
+            )
+            note_status = next(
+                (l for l in note_lines if l.startswith("NOTE_HANDLER|")), "unknown"
+            )
+            log.info("Notification handler: %s", note_status)
+        except Exception:
+            log.warning("Notification handler install failed", exc_info=True)
+
+        # Register the deal event callback.
+        _notified_proposals: set[str] = set()
+
+        def _on_deal_event(event_type: str, data: dict) -> None:
+            if event_type == "proposed":
+                # Human proposed a deal to a managed civ via the native UI.
+                _handle_human_deal_proposed(mailbox, data, cfg)
+            elif event_type == "click":
+                # Human clicked a deal notification.
+                asyncio.ensure_future(
+                    _handle_deal_notification_click(
+                        conn, mailbox, data, cfg, gs
+                    )
+                )
+            elif event_type == "health":
+                if not data.get("ok"):
+                    log.warning("Deal shim health check failed — may be missing")
+
+        conn.add_deal_callback(_on_deal_event)
+
+        # Start the background deal monitor.
+        await conn.start_deal_monitor()
+
+        # Background task: notify the human about pending deals at turn start.
+        _deal_notify_task = asyncio.create_task(
+            _deal_notify_loop(
+                conn, mailbox, cfg, _notified_proposals
+            ),
+            name="deal-notify",
+        )
+
+        # Re-arm the deal shim and notification handler on every keeper cycle
+        # (UI contexts are rebuilt on save load and lose their wrappers).
+        async def _rearm_deal_shim():
+            await handoff.install_deal_shim(conn, cfg.agent_ids)
+
+        async def _rearm_note_handler():
+            try:
+                lines = await conn.execute_write(
+                    handoff.build_notification_handler_lua(cfg.agent_ids),
+                    perspective=False,
+                )
+                status = next(
+                    (l for l in lines if l.startswith("NOTE_HANDLER|")),
+                    "unknown",
+                )
+                log.debug("Notification handler re-armed: %s", status)
+            except Exception:
+                log.debug("Notification handler re-arm failed", exc_info=True)
+
+        keeper.add_post_install_hook(_rearm_deal_shim)
+        keeper.add_post_install_hook(_rearm_note_handler)
+
+        # Stash for cleanup.
+
     # Start the web dashboard API as a background task.
     web_port = int(os.environ.get("CIV_MCP_WEB_PORT", "8000"))
     web_app = create_app(gs)
@@ -454,6 +537,7 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
             seats=registry,
             handoff_config=cfg,
             keeper=keeper,
+            mailbox=mailbox,
         )
     finally:
         await emitter.close()
@@ -473,6 +557,13 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
         await popup_watcher.stop()
         uvi_server.should_exit = True
         await api_task
+        if _deal_notify_task is not None:
+            _deal_notify_task.cancel()
+            try:
+                await _deal_notify_task
+            except asyncio.CancelledError:
+                pass
+        await conn.stop_deal_monitor()
         await conn.disconnect()
 
 
@@ -707,6 +798,200 @@ def _result_summary(result: str) -> str:
     """First meaningful line of a result, truncated."""
     line = result.split("\n", 1)[0].strip()
     return line[:120] + "..." if len(line) > 120 else line
+
+
+# ---------------------------------------------------------------------------
+# Deal mailbox helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_mailbox(ctx: Context) -> DealMailbox | None:
+    return _app(ctx).mailbox
+
+
+def _is_managed_target(player_id: int, cfg: HandoffConfig) -> bool:
+    """True if *player_id* is an agent-managed civ (not the human)."""
+    return player_id in cfg.agent_ids
+
+
+def _handle_human_deal_proposed(
+    mailbox: DealMailbox, data: dict, cfg: HandoffConfig
+) -> None:
+    """Callback: human proposed a deal to a managed civ via the native UI."""
+    from_pid = data.get("from", -1)
+    to_pid = data.get("to", -1)
+    items_data = data.get("items", [])
+
+    items = [
+        SerializedDealItem(
+            item_type=it.get("item_type", "UNKNOWN"),
+            from_player_id=it.get("from", -1),
+            amount=it.get("amount", 0),
+            duration=it.get("duration", 0),
+            value_type=it.get("value", -1),
+            sub_type=it.get("sub", -1),
+        )
+        for it in items_data
+    ]
+
+    # Split items by who provides them.
+    proposer_items = [i for i in items if i.from_player_id == to_pid]
+    target_items = [i for i in items if i.from_player_id == from_pid]
+
+    proposal = PendingProposal(
+        proposal_id="",
+        from_player=from_pid,
+        to_player=to_pid,
+        items_from_proposer=proposer_items,
+        items_from_target=target_items,
+        turn_proposed=0,
+        proposed_by="human",
+    )
+    proposal_id = mailbox.propose(proposal)
+    log.info(
+        "Deal proposed: human P%d → managed P%d (%d items) [%s]",
+        from_pid,
+        to_pid,
+        len(items),
+        proposal_id,
+    )
+
+
+async def _handle_deal_notification_click(
+    conn: GameConnection,
+    mailbox: DealMailbox,
+    data: dict,
+    cfg: HandoffConfig,
+    gs: GameState,
+) -> None:
+    """Callback: human clicked a deal notification in-game.
+
+    Injects the proposal into the OUTGOING deal, opens a MAKE_DEAL session,
+    and forces Accept/Refuse buttons so the human can respond natively.
+    """
+    proposal_id = data.get("proposal_id", "")
+    proposal = mailbox.get(proposal_id)
+    if proposal is None:
+        log.warning("Notification click for unknown proposal %s", proposal_id)
+        return
+
+    human_pid = cfg.human_id
+    agent_pid = proposal.from_player
+
+    # 1. Inject deal items into OUTGOING working deal.
+    try:
+        await conn.execute_write(
+            handoff.build_inject_deal_lua(human_pid, agent_pid, proposal),
+            perspective=False,
+        )
+    except Exception:
+        log.warning("Deal injection failed", exc_info=True)
+        return
+
+    # 2. Open the MAKE_DEAL session.
+    try:
+        await conn.execute_write(
+            handoff.build_present_deal_lua(human_pid, agent_pid),
+            perspective=False,
+        )
+    except Exception:
+        log.warning("Deal session open failed", exc_info=True)
+        return
+
+    # 3. Force Accept/Refuse buttons in the deal view.
+    try:
+        await conn.execute_in_named_state(
+            handoff.DEAL_SHIM_STATE,
+            handoff.build_force_deal_buttons_lua(agent_pid, proposal_id),
+        )
+    except Exception:
+        log.warning("Deal button force failed", exc_info=True)
+
+    log.info("Presented proposal %s to human on native deal screen", proposal_id)
+
+
+async def _deal_notify_loop(
+    conn: GameConnection,
+    mailbox: DealMailbox,
+    cfg: HandoffConfig,
+    notified: set,
+    poll_interval: float = 5.0,
+) -> None:
+    """Background loop: send deal notifications when the human gets the slot."""
+    previous_local: int | None = None
+    while True:
+        try:
+            own = await handoff.try_ownership(conn)
+            if own.local_player == cfg.human_id and own.local_player != previous_local:
+                # Human just got the slot — check for pending deals.
+                await _send_deal_notifications(conn, mailbox, cfg, notified)
+            previous_local = own.local_player
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("Deal notify loop error", exc_info=True)
+        await asyncio.sleep(poll_interval)
+
+
+async def _send_deal_notifications(
+    conn: GameConnection,
+    mailbox: DealMailbox,
+    cfg: HandoffConfig,
+    notified: set,
+) -> None:
+    """Send in-game notifications for pending proposals the human hasn't seen."""
+    human_pid = cfg.human_id
+    pending = mailbox.get_pending_for(human_pid)
+    for proposal in pending:
+        if proposal.proposal_id in notified:
+            continue
+        # Build a human-readable summary.
+        parts: list[str] = []
+        for item in proposal.items_from_proposer:
+            if item.item_type == "GOLD":
+                if item.duration > 0:
+                    parts.append(f"{item.amount} GPT")
+                else:
+                    parts.append(f"{item.amount} Gold")
+            elif item.item_type == "RESOURCE":
+                parts.append("Resources")
+            elif item.item_type == "FAVOR":
+                parts.append(f"{item.amount} Favor")
+            elif item.item_type == "AGREEMENT":
+                parts.append("Agreement")
+            elif item.item_type == "CITY":
+                parts.append("City")
+        offer_str = ", ".join(parts) if parts else "items"
+
+        # Get agent civ name.
+        try:
+            roster = await handoff.get_roster(conn, (proposal.from_player,))
+            _, leader, _ = roster.get(
+                proposal.from_player, ("?", "Unknown", True)
+            )
+        except Exception:
+            leader = f"P{proposal.from_player}"
+
+        summary = f"{leader} proposes: {offer_str}. Click to review."
+
+        try:
+            await conn.execute_write(
+                handoff.build_send_deal_notification_lua(
+                    human_pid,
+                    proposal.from_player,
+                    proposal.proposal_id,
+                    summary,
+                ),
+                perspective=False,
+            )
+            notified.add(proposal.proposal_id)
+            log.info("Sent notification for proposal %s", proposal.proposal_id)
+        except Exception:
+            log.debug(
+                "Failed to send notification for proposal %s",
+                proposal.proposal_id,
+                exc_info=True,
+            )
 
 
 async def _logged(
@@ -1511,12 +1796,58 @@ async def get_pending_trades(ctx: Context) -> str:
     Use respond_to_trade to accept or reject.
     """
     gs = _get_game(ctx)
-    return await _logged(
-        ctx,
-        "get_pending_trades",
-        {},
-        lambda: _narrate(gs.get_pending_deals, nr.narrate_pending_deals),
-    )
+
+    async def _run():
+        # Engine-level pending deals (AI proposals).
+        engine_deals = await gs.get_pending_deals()
+        text = nr.narrate_pending_deals(engine_deals)
+
+        # Mailbox proposals (managed civs).
+        mailbox = _get_mailbox(ctx)
+        if mailbox is not None:
+            seat = _get_seat(ctx)
+            pending = mailbox.get_pending_for(seat.player_id)
+            if pending:
+                if text.strip():
+                    text += "\n\n"
+                text += "=== Mailbox (managed civ proposals) ===\n"
+                for p in pending:
+                    text += f"\nFrom P{p.from_player} (proposal {p.proposal_id}):\n"
+                    if p.items_from_proposer:
+                        text += "  They offer:\n"
+                        for item in p.items_from_proposer:
+                            text += _format_mailbox_item(item, indent="    ")
+                    if p.items_from_target:
+                        text += "  They request:\n"
+                        for item in p.items_from_target:
+                            text += _format_mailbox_item(item, indent="    ")
+                    text += (
+                        "  Use respond_to_trade("
+                        f"other_player_id={p.from_player}, accept=True/False)"
+                        " to respond.\n"
+                    )
+        return text
+
+    return await _logged(ctx, "get_pending_trades", {}, _run)
+
+
+def _format_mailbox_item(item: SerializedDealItem, indent: str = "  ") -> str:
+    """One-line summary of a mailbox deal item."""
+    t = item.item_type.upper()
+    if t == "GOLD":
+        if item.duration > 0:
+            return f"{indent}- {item.amount} Gold per turn ({item.duration} turns)\n"
+        return f"{indent}- {item.amount} Gold\n"
+    elif t == "RESOURCE":
+        return f"{indent}- Resource (id={item.value_type}) x{item.amount}\n"
+    elif t == "FAVOR":
+        return f"{indent}- {item.amount} Diplomatic Favor\n"
+    elif t == "AGREEMENT":
+        return f"{indent}- Agreement (sub={item.sub_type})\n"
+    elif t == "CITY":
+        return f"{indent}- City (id={item.value_type})\n"
+    else:
+        return f"{indent}- {t} (amount={item.amount})\n"
 
 
 # @mcp.tool(annotations={"readOnlyHint": True})
@@ -1881,12 +2212,70 @@ async def respond_to_trade(ctx: Context, other_player_id: int, accept: bool) -> 
     Use get_pending_trades first to see what's being offered.
     """
     gs = _get_game(ctx)
+
+    # Check the deal mailbox first — agents may have pending proposals from
+    # the human or from other agents that bypassed the engine.
+    mailbox = _get_mailbox(ctx)
+    seat = _get_seat(ctx)
+    if mailbox is not None:
+        pending = mailbox.get_pending_for(seat.player_id)
+        for proposal in pending:
+            if proposal.from_player == other_player_id:
+                if accept:
+                    # Execute the deal via forced-deal primitive.
+                    async def _exec():
+                        return await _execute_mailbox_deal(
+                            gs, mailbox, proposal, seat.player_id
+                        )
+                    return await _logged(
+                        ctx,
+                        "respond_to_trade",
+                        {"other_player_id": other_player_id, "accept": True},
+                        _exec,
+                    )
+                else:
+                    mailbox.reject(proposal.proposal_id)
+                    return await _logged(
+                        ctx,
+                        "respond_to_trade",
+                        {"other_player_id": other_player_id, "accept": False},
+                        lambda: asyncio.sleep(0)
+                        or f"Deal from P{other_player_id} rejected.",
+                    )
+
+    # Fall through to engine-level pending deals (AI proposals).
     return await _logged(
         ctx,
         "respond_to_trade",
         {"other_player_id": other_player_id, "accept": accept},
         lambda: gs.respond_to_deal(other_player_id, accept),
     )
+
+
+async def _execute_mailbox_deal(
+    gs: GameState, mailbox: DealMailbox, proposal: PendingProposal, accepter_pid: int
+) -> str:
+    """Execute a mailbox proposal via the forced-deal primitive."""
+    # Determine who the accepter is relative to the proposal.
+    # If the accepter is the original proposer's target, the deal is
+    # accepted as-is.  If the accepter is the proposer themselves...
+    # that shouldn't happen (they can't accept their own proposal).
+    from civ_mcp.lua import diplomacy as diplo_lua
+
+    lua = handoff.build_execute_deal_lua(proposal, accepter_pid)
+    try:
+        lines = await gs.conn.execute_write(lua, perspective=False)
+        result = next(
+            (l for l in lines if l.startswith("DEAL_EXECUTED|")),
+            "DEAL_EXECUTED|unknown",
+        )
+        mailbox.accept(proposal.proposal_id)
+        return (
+            f"Deal accepted and executed: {result}\n"
+            f"Proposal {proposal.proposal_id} resolved."
+        )
+    except Exception as e:
+        return f"Deal execution failed: {e}"
 
 
 # @mcp.tool()
@@ -1977,6 +2366,67 @@ async def propose_trade(
                 "request_items": request_items,
             },
             lambda: gs.test_trade(other_player_id, offer_items, request_items),
+        )
+
+    # In handoff mode, deals to managed civs go through the mailbox so the
+    # built-in AI doesn't auto-answer them.
+    app = _app(ctx)
+    cfg = app.handoff_config
+    if cfg.enabled and _is_managed_target(other_player_id, cfg):
+        mailbox = _get_mailbox(ctx)
+        if mailbox is None:
+            return "Error: deal mailbox not available"
+        seat = _get_seat(ctx)
+        agent_pid = seat.player_id
+
+        # Serialize offer items (agent gives) and request items (agent wants).
+        proposer_items = [
+            SerializedDealItem(
+                item_type=it["type"],
+                from_player_id=agent_pid,
+                amount=it.get("amount", 0),
+                duration=it.get("duration", 0),
+            )
+            for it in offer_items
+        ]
+        target_items = [
+            SerializedDealItem(
+                item_type=it["type"],
+                from_player_id=other_player_id,
+                amount=it.get("amount", 0),
+                duration=it.get("duration", 0),
+            )
+            for it in request_items
+        ]
+
+        proposal = PendingProposal(
+            proposal_id="",
+            from_player=agent_pid,
+            to_player=other_player_id,
+            items_from_proposer=proposer_items,
+            items_from_target=target_items,
+            turn_proposed=0,
+            proposed_by="agent",
+        )
+        proposal_id = mailbox.propose(proposal)
+        result_msg = (
+            f"Trade proposed to P{other_player_id} — awaiting response. "
+            f"The deal will be delivered when the human reviews it on their "
+            f"next turn. Proposal id: {proposal_id}"
+        )
+
+        async def _mailbox_result() -> str:
+            return result_msg
+
+        return await _logged(
+            ctx,
+            "propose_trade",
+            {
+                "other_player_id": other_player_id,
+                "offer_items": offer_items,
+                "request_items": request_items,
+            },
+            _mailbox_result,
         )
 
     return await _logged(

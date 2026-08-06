@@ -447,6 +447,15 @@ class HandoffKeeper:
         self._task = None
         self.last_ownership: TurnOwnership | None = None
         self.installs = 0
+        self._post_install_hooks: list = []
+
+    def add_post_install_hook(self, hook) -> None:
+        """Register an async callable to run after each keeper re-arm cycle.
+
+        Used to re-arm the deal shim and notification handler, which live in
+        UI contexts that are rebuilt on save load.
+        """
+        self._post_install_hooks.append(hook)
 
     def start(self) -> None:
         if not self._cfg.enabled:
@@ -488,6 +497,13 @@ class HandoffKeeper:
                     # rebuilt between polls would have lost it. A handoff just
                     # happened, so this is the cheap moment to re-arm.
                     await install_diplomacy_ui_fix(self._conn)
+                    for hook in self._post_install_hooks:
+                        try:
+                            await hook()
+                        except Exception:
+                            log.debug(
+                                "Post-install hook failed", exc_info=True
+                            )
             except Exception:
                 # No connection yet, or the game is mid-load. Try again later.
                 log.debug("Handoff keeper poll failed", exc_info=True)
@@ -580,3 +596,401 @@ async def wait_for_turn(
             f"Your turn — P{seat.player_id}, turn {own.turn}. "
             "Turn report failed to build; query state directly."
         )
+
+
+# ---------------------------------------------------------------------------
+# Deal mailbox — DiplomacyDealView shim
+# ---------------------------------------------------------------------------
+# Installed in the DiplomacyDealView Lua state alongside the diplomacy UI fix.
+# Wraps DealManager.SendWorkingDeal to intercept proposals to managed civs and
+# overrides IsAutoPropose for managed targets so the screen stops firing INSPECT.
+#
+# The shim lives in a UI context, so it dies on save load and is re-armed by
+# HandoffKeeper on the same path as the diplomacy UI fix.
+
+DEAL_SHIM_STATE = "DiplomacyDealView"
+
+
+def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
+    """Lua that wraps SendWorkingDeal and IsAutoPropose in DiplomacyDealView.
+
+    - ``__MCP_orig_SWD``: original ``DealManager.SendWorkingDeal``
+    - ``__MCP_managed_deal``: global flag set before opening a session with a
+      managed target; ``IsAutoPropose`` returns false while it is set
+    - ``SendWorkingDeal`` wrapper: if the target is a managed player, suppress
+      ``INSPECT`` (the auto-propose), serialise ``PROPOSED`` to
+      ``MCPDEAL|...`` lines, and return without forwarding
+    """
+    managed_entries = ",".join(f"[{p}]=true" for p in managed_ids)
+
+    return (
+        # Per-player lookup table for the managed check
+        f"__MCP_managed_ids = {{{managed_entries}}} "
+        "__MCP_managed_deal = false "
+        ""
+        # -- IsAutoPropose override ----------------------------------------
+        "if __MCP_orig_IAP == nil then "
+        "  __MCP_orig_IAP = IsAutoPropose "
+        "  IsAutoPropose = function() "
+        "    if __MCP_managed_deal then return false end "
+        "    return __MCP_orig_IAP() "
+        "  end "
+        "end "
+        ""
+        # -- SendWorkingDeal wrapper ---------------------------------------
+        "if __MCP_orig_SWD == nil then "
+        "  __MCP_orig_SWD = DealManager.SendWorkingDeal "
+        "  DealManager.SendWorkingDeal = function(action, fromP, toP) "
+        # Only intercept for managed targets.
+        "    if __MCP_managed_ids[toP] or __MCP_managed_ids[fromP] then "
+        # INSPECT (7): suppress — we don't want the AI evaluating the deal.
+        "      if action == 7 then "
+        '        print("MCPDEAL|INSPECT|suppressed|from="'
+        "          .. tostring(fromP) .. \"|to=\" .. tostring(toP)) "
+        "        return "
+        "      end "
+        # PROPOSED (4): serialise the deal, print it, don't forward.
+        "      if action == 4 then "
+        '        print("MCPDEAL|PROPOSED|from=" .. tostring(fromP) '
+        '          .. "|to=" .. tostring(toP)) '
+        "        local pDeal = DealManager.GetWorkingDeal("
+        "          0, fromP, toP) "
+        "        if pDeal then "
+        "          for item in pDeal:Items() do "
+        "            local iType = item:GetType() "
+        "            local typeName = \"UNKNOWN\" "
+        "            if iType == DealItemTypes.GOLD then "
+        '              typeName = "GOLD" '
+        "            elseif iType == DealItemTypes.RESOURCES then "
+        '              typeName = "RESOURCE" '
+        "            elseif iType == DealItemTypes.AGREEMENTS then "
+        '              typeName = "AGREEMENT" '
+        "            elseif iType == DealItemTypes.FAVOR then "
+        '              typeName = "FAVOR" '
+        "            elseif iType == DealItemTypes.CITIES then "
+        '              typeName = "CITY" '
+        "            elseif iType == DealItemTypes.GREATWORK then "
+        '              typeName = "GREAT_WORK" '
+        "            end "
+        '            print("MCPDEAL_ITEM|" .. typeName '
+        "              .. \"|from=\" .. tostring(item:GetFromPlayerID()) "
+        "              .. \"|amount=\" .. tostring(item:GetAmount()) "
+        "              .. \"|duration=\" .. tostring(item:GetDuration()) "
+        "              .. \"|value=\" .. tostring(item:GetValueType() or -1) "
+        "              .. \"|sub=\" .. tostring(item:GetSubType() or -1)) "
+        "          end "
+        "        end "
+        '        print("MCPDEAL_END") '
+        "        return "
+        "      end "
+        # ACCEPTED (1) / REJECTED (2): allow through (forced-deal execution).
+        "    end "
+        "    return __MCP_orig_SWD(action, fromP, toP) "
+        "  end "
+        '  print("DEALSHIM|installed") '
+        "else "
+        '  print("DEALSHIM|present") '
+        "end "
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_deal_shim_uninstall_lua() -> str:
+    """Restore the original SendWorkingDeal and IsAutoPropose."""
+    return (
+        "if __MCP_orig_SWD ~= nil then "
+        "  DealManager.SendWorkingDeal = __MCP_orig_SWD "
+        "  __MCP_orig_SWD = nil "
+        "end "
+        "if __MCP_orig_IAP ~= nil then "
+        "  IsAutoPropose = __MCP_orig_IAP "
+        "  __MCP_orig_IAP = nil "
+        "end "
+        "__MCP_managed_ids = nil "
+        "__MCP_managed_deal = nil "
+        'print("DEALSHIM|removed") '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_deal_shim_health_check_lua() -> str:
+    """Verify the wrapper is in place (returns non-zero if missing)."""
+    return (
+        'print("DEALSHIM_HEALTH|" .. tostring(__MCP_orig_SWD ~= nil '
+        "  and DealManager.SendWorkingDeal ~= __MCP_orig_SWD "
+        "  and __MCP_orig_IAP ~= nil)) "
+        f'print("{SENTINEL}")'
+    )
+
+
+async def install_deal_shim(
+    conn: GameConnection, managed_ids: tuple[int, ...]
+) -> str:
+    """Install the deal interception shim in the DiplomacyDealView state."""
+    index = await conn.state_index_for(DEAL_SHIM_STATE)
+    if index is None:
+        log.warning("Deal shim: %s state not found", DEAL_SHIM_STATE)
+        return "absent"
+    lines = await conn.execute_in_named_state(
+        DEAL_SHIM_STATE, build_deal_shim_install_lua(managed_ids)
+    )
+    status = next(
+        (l[9:] for l in lines if l.startswith("DEALSHIM|")), "unknown"
+    )
+    log.info("Deal shim: %s", status)
+    return status
+
+
+# ---------------------------------------------------------------------------
+# Deal injection and native-screen presentation
+# ---------------------------------------------------------------------------
+
+
+def build_inject_deal_lua(
+    human_pid: int, agent_pid: int, proposal
+) -> str:
+    """Lua (InGame) that injects a mailbox proposal into the OUTGOING working deal.
+
+    The native trade screen always reads from OUTGOING, so this is how an
+    incoming proposal from an agent becomes visible to the human.
+    ``proposal`` is a :class:`~civ_mcp.deal_mailbox.PendingProposal`.
+    """
+    # Build item-adding snippets
+    items_lua: list[str] = []
+    for item in proposal.items_from_proposer:
+        items_lua.append(_lua_add_deal_item("fromP", item))
+    for item in proposal.items_from_target:
+        items_lua.append(_lua_add_deal_item("toP", item))
+
+    return (
+        f"local me = {human_pid} "
+        f"local other = {agent_pid} "
+        # Use the agent as the item source for their offers,
+        # the human as the source for what the agent requests.
+        f"local fromP = {agent_pid} "
+        f"local toP = {human_pid} "
+        "DealManager.ClearWorkingDeal(0, me, other) "
+        "local deal = DealManager.GetWorkingDeal(0, me, other) "
+        "if deal then "
+        + " ".join(items_lua)
+        + ' print("INJECTED|" .. tostring(deal:GetItemCount()) .. " items") '
+        "else "
+        ' print("INJECT_FAILED|no deal object") '
+        "end "
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_present_deal_lua(human_pid: int, agent_pid: int) -> str:
+    """Lua (InGame) that opens a MAKE_DEAL session for an injected deal."""
+    return (
+        f"DiplomacyManager.RequestSession({human_pid}, {agent_pid}, "
+        '"MAKE_DEAL") '
+        "local sid = DiplomacyManager.FindOpenSessionID("
+        f"{human_pid}, {agent_pid}) "
+        'print("SESSION_OPENED|" .. tostring(sid)) '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_force_deal_buttons_lua(
+    agent_pid: int, proposal_id: str
+) -> str:
+    """Lua (DiplomacyDealView) that forces Accept/Refuse buttons and sets
+    the leader dialog to show the proposal is from a managed civ."""
+    return (
+        # Set the managed-deal flag so IsAutoPropose returns false.
+        f"__MCP_managed_deal = true "
+        # Show Accept/Refuse, hide AI evaluation.
+        "Controls.AcceptDeal:SetHide(false) "
+        "Controls.AcceptDeal:LocalizeAndSetText("
+        '"LOC_DIPLOMACY_DEAL_ACCEPT_DEAL") '
+        "Controls.RefuseDeal:SetHide(false) "
+        "Controls.RefuseDeal:LocalizeAndSetText("
+        '"LOC_DIPLOMACY_DEAL_REFUSE_DEAL") '
+        "Controls.EqualizeDeal:SetHide(true) "
+        # Leader dialog: name the proposer.
+        f"local cfg = PlayerConfigurations[{agent_pid}] "
+        "local name = cfg and "
+        "  Locale.Lookup(cfg:GetLeaderName()) or 'Unknown' "
+        "Controls.LeaderDialog:SetText("
+        "  name .. ' proposes the following deal:') "
+        # Store the proposal id so the SendWorkingDeal wrapper can include it.
+        f'__MCP_deal_proposal_id = "{proposal_id}" '
+        'print("DEAL_BUTTONS_READY") '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_clear_deal_flag_lua() -> str:
+    """Lua (DiplomacyDealView) that clears the managed-deal flag."""
+    return (
+        "__MCP_managed_deal = false "
+        "__MCP_deal_proposal_id = nil "
+        'print("DEAL_FLAG_CLEARED") '
+        f'print("{SENTINEL}")'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Notification helpers
+# ---------------------------------------------------------------------------
+
+
+def build_notification_handler_lua(managed_ids: tuple[int, ...]) -> str:
+    """Lua (InGame) that registers a click handler for deal notifications.
+
+    On ``Events.NotificationActivated``, checks if the notification is one of
+    ours (message starts with ``MCPDEAL:``), extracts the proposal id, and
+    prints ``MCPDEAL_CLICK|<proposal_id>|<player_id>``.
+    """
+    managed = ",".join(str(p) for p in managed_ids)
+    return (
+        "if __MCP_note_handler == nil then "
+        "  __MCP_note_handler = function(pid, nid, byUser) "
+        "    if not byUser then return end "
+        "    if pid ~= Game.GetLocalPlayer() then return end "
+        "    local n = NotificationManager.Find(pid, nid) "
+        "    if not n then return end "
+        "    local msg = n:GetMessage() "
+        '    if not msg or not msg:find("MCPDEAL:") then return end '
+        '    local proposalId = msg:match("MCPDEAL:(.*)") '
+        "    NotificationManager.Dismiss(pid, nid) "
+        '    print("MCPDEAL_CLICK|" .. tostring(proposalId) '
+        '      .. "|pid=" .. tostring(pid)) '
+        "  end "
+        "  Events.NotificationActivated.Add(__MCP_note_handler) "
+        '  print("NOTE_HANDLER|installed") '
+        "else "
+        '  print("NOTE_HANDLER|present") '
+        "end "
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_send_deal_notification_lua(
+    human_pid: int, agent_pid: int, proposal_id: str, summary: str
+) -> str:
+    """Lua (InGame) that sends a clickable deal notification to the human.
+
+    The proposal id is embedded in the message string (hidden from the player)
+    and extracted by the click handler.  The summary is what the player sees.
+    """
+    # Escape single quotes in summary for Lua string.
+    safe_summary = summary.replace("\\", "\\\\").replace("'", "\\'")
+    return (
+        f"local pid = {human_pid} "
+        "local nType = DB.MakeHash('NOTIFICATION_USER_DEFINED_1') "
+        "NotificationManager.SendNotification(pid, nType, "
+        f"'MCPDEAL:{proposal_id}', "
+        f"'{safe_summary}', -1, -1) "
+        f'print("NOTIFY_SENT|{proposal_id}") '
+        f'print("{SENTINEL}")'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Execution — forced-deal primitive
+# ---------------------------------------------------------------------------
+
+
+def build_execute_deal_lua(
+    proposal, accepter_pid: int
+) -> str:
+    """Lua (InGame) that executes a mailbox proposal via the forced-deal
+    primitive (``SendWorkingDeal(ACCEPTED, …)`` with no ``PROPOSED``).
+
+    The accepter is on the clock by definition, so the local-player slot is
+    already correct.  Follows with the ``_lua_close_diplo_session()`` teardown
+    because a forced deal leaves an open diplomacy session behind.
+    """
+    from civ_mcp.lua._helpers import _lua_close_diplo_session
+
+    proposer_pid = proposal.from_player
+    # Build item-adding snippets
+    items_lua: list[str] = []
+    for item in proposal.items_from_proposer:
+        items_lua.append(_lua_add_deal_item(str(item.from_player_id), item))
+    for item in proposal.items_from_target:
+        items_lua.append(_lua_add_deal_item(str(item.from_player_id), item))
+
+    return (
+        f"local me = {accepter_pid} "
+        f"local other = {proposer_pid} "
+        "DealManager.ClearWorkingDeal(0, me, other) "
+        "local deal = DealManager.GetWorkingDeal(0, me, other) "
+        "if not deal then "
+        ' print("EXEC_FAILED|no deal object") '
+        f' print("{SENTINEL}") '
+        " return "
+        "end "
+        + " ".join(items_lua)
+        + " "
+        "DealManager.SendWorkingDeal(1, me, other) "
+        f"{_lua_close_diplo_session()} "
+        'print("DEAL_EXECUTED|" .. tostring(deal:GetItemCount()) .. " items") '
+        f'print("{SENTINEL}")'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item serialisation helpers
+# ---------------------------------------------------------------------------
+
+# Map item type names to DealItemTypes enum members for Lua.
+_DEAL_ITEM_TYPE_LUA: dict[str, str] = {
+    "GOLD": "DealItemTypes.GOLD",
+    "RESOURCE": "DealItemTypes.RESOURCES",
+    "AGREEMENT": "DealItemTypes.AGREEMENTS",
+    "FAVOR": "DealItemTypes.FAVOR",
+    "CITY": "DealItemTypes.CITIES",
+    "GREAT_WORK": "DealItemTypes.GREATWORK",
+}
+
+
+def _lua_add_deal_item(from_var: str, item) -> str:
+    """One Lua snippet adding a :class:`SerializedDealItem` to ``deal``.
+
+    ``from_var`` is the Lua variable/expression for the player id that
+    *provides* the item (e.g. ``"me"`` or ``"other"``).
+    """
+    t = item.item_type.upper()
+    dt = _DEAL_ITEM_TYPE_LUA.get(t, "DealItemTypes.GOLD")
+    amount = item.amount
+    duration = item.duration
+
+    if t == "GOLD":
+        return (
+            f"do local gi = deal:AddItemOfType({dt}, {from_var}) "
+            f"if gi then gi:SetAmount({amount}) "
+            f"gi:SetDuration({duration}) end end "
+        )
+    elif t == "RESOURCE":
+        return (
+            f"do local ri = deal:AddItemOfType({dt}, {from_var}) "
+            f"if ri then ri:SetValueType({item.value_type}) "
+            f"ri:SetAmount({amount}) "
+            f"ri:SetDuration({duration}) end end "
+        )
+    elif t == "FAVOR":
+        return (
+            f"do local fi = deal:AddItemOfType({dt}, {from_var}) "
+            f"if fi then fi:SetAmount({amount}) end end "
+        )
+    elif t == "AGREEMENT":
+        return (
+            f"do local ai = deal:AddItemOfType({dt}, {from_var}) "
+            f"if ai then ai:SetSubType({item.sub_type}) end end "
+        )
+    elif t == "CITY":
+        return (
+            f"do local ci = deal:AddItemOfType({dt}, {from_var}) "
+            f"if ci then ci:SetValueType({item.value_type}) end end "
+        )
+    elif t == "GREAT_WORK":
+        return (
+            f"do local gw = deal:AddItemOfType({dt}, {from_var}) "
+            f"if gw then gw:SetValueType({item.value_type}) end end "
+        )
+    else:
+        return f"-- unsupported deal item type: {t} "

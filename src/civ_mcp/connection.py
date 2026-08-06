@@ -57,6 +57,10 @@ class GameConnection:
         # Game-scoped, not player-scoped: several seats can build a turn report
         # inside the same game turn, and the MCP autosave is written once.
         self.last_autosave_turn: int | None = None
+        # Deal mailbox — callbacks invoked when MCPDEAL| lines arrive over the
+        # tuner socket (unsolicited print() output from the deal shim).
+        self._deal_callbacks: list = []
+        self._deal_monitor_task: asyncio.Task | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -110,6 +114,88 @@ class GameConnection:
             await self._writer.wait_closed()
         self._writer = None
         self._reader = None
+
+    # ------------------------------------------------------------------
+    # Deal mailbox — unsolicited MCPDEAL message routing
+    # ------------------------------------------------------------------
+
+    def add_deal_callback(self, callback) -> None:
+        """Register a callback for parsed MCPDEAL events.
+
+        ``callback(event_type: str, data: dict)`` is called for each parsed
+        event.  ``event_type`` is one of ``"proposed"``, ``"click"``,
+        ``"health"``, ``"item"``.
+        """
+        self._deal_callbacks.append(callback)
+
+    def remove_deal_callback(self, callback) -> None:
+        try:
+            self._deal_callbacks.remove(callback)
+        except ValueError:
+            pass
+
+    async def start_deal_monitor(self, poll_interval: float = 0.5) -> None:
+        """Start a background task that polls for unsolicited MCPDEAL lines.
+
+        The monitor briefly acquires the connection lock to drain messages,
+        so it yields to command execution.  Messages are parsed and routed
+        to registered callbacks.
+        """
+        if self._deal_monitor_task is not None:
+            return
+        self._deal_monitor_task = asyncio.create_task(
+            self._deal_monitor_loop(poll_interval), name="deal-monitor"
+        )
+
+    async def stop_deal_monitor(self) -> None:
+        if self._deal_monitor_task is None:
+            return
+        self._deal_monitor_task.cancel()
+        try:
+            await self._deal_monitor_task
+        except asyncio.CancelledError:
+            pass
+        self._deal_monitor_task = None
+
+    async def poll_deal_messages(self) -> list[dict]:
+        """Drain and parse any pending MCPDEAL messages.  Returns parsed events.
+
+        Safe to call from any task — acquires the connection lock briefly.
+        """
+        if not self._reader or not self.is_connected:
+            return []
+        events: list[dict] = []
+        try:
+            async with self._lock:
+                messages = await tuner_client.drain_messages(
+                    self._reader, timeout=0.1
+                )
+        except Exception:
+            return events
+        for msg in messages:
+            event = _parse_mcpdeal_line(msg.payload)
+            if event:
+                events.append(event)
+        return events
+
+    async def _deal_monitor_loop(self, poll_interval: float) -> None:
+        """Background loop: poll for deal messages, route to callbacks."""
+        while True:
+            try:
+                events = await self.poll_deal_messages()
+                for event in events:
+                    for cb in self._deal_callbacks:
+                        try:
+                            cb(event["type"], event)
+                        except Exception:
+                            log.debug(
+                                "Deal callback failed", exc_info=True
+                            )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.debug("Deal monitor poll failed", exc_info=True)
+            await asyncio.sleep(poll_interval)
 
     async def ensure_connected(self) -> None:
         """Connect (or reconnect) if not connected. Raises ConnectionError on failure."""
@@ -270,8 +356,18 @@ class GameConnection:
                 lines.append(text)
             # Ignore non-output messages (e.g. tag=3 empty ack)
 
-        # Drain any trailing unsolicited output
-        await tuner_client.drain_messages(self._reader, timeout=0.2)
+        # Drain any trailing unsolicited output — also route through deal
+        # callbacks in case the Lua code produced MCPDEAL lines.
+        trailing = await tuner_client.drain_messages(self._reader, timeout=0.2)
+        for msg in trailing:
+            event = _parse_mcpdeal_line(msg.payload)
+            if event:
+                for cb in self._deal_callbacks:
+                    try:
+                        cb(event["type"], event)
+                    except Exception:
+                        log.debug("Deal callback failed", exc_info=True)
+
         return lines
 
 
@@ -291,3 +387,127 @@ def _parse_output(payload: str) -> str | None:
 
     # Fallback: strip the O and null byte prefix
     return payload.lstrip("O").lstrip("\x00").strip()
+
+
+# ---------------------------------------------------------------------------
+# MCPDEAL line parser
+# ---------------------------------------------------------------------------
+
+# Tracks partial deal serialisations across multiple print() lines.
+# Keyed by something unique to the connection; in practice only one deal
+# is serialised at a time (the human can only have one deal screen open).
+_pending_deal_items: list[dict] = []
+_pending_deal_from: int = -1
+_pending_deal_to: int = -1
+
+
+def _parse_mcpdeal_line(payload: str) -> dict | None:
+    """Parse one unsolicited output line into a deal event dict, or None.
+
+    Multi-line deal serialisations (``MCPDEAL_ITEM`` / ``MCPDEAL_END``) are
+    accumulated in module-level state and emitted as a single ``"proposed"``
+    event when ``MCPDEAL_END`` arrives.
+
+    Returns::
+
+        {"type": "proposed", "action": "PROPOSED", "from": int, "to": int,
+         "items": [{"type": "GOLD", "from": int, "amount": 200, ...}, ...]}
+        {"type": "click", "proposal_id": str, "pid": int}
+        {"type": "health", "ok": bool}
+    """
+    global _pending_deal_items, _pending_deal_from, _pending_deal_to
+
+    text = _parse_output(payload)
+    if text is None:
+        return None
+
+    # Notification click — forwarded by the click handler
+    if text.startswith("MCPDEAL_CLICK|"):
+        parts = text[len("MCPDEAL_CLICK|"):].split("|")
+        data: dict = {"type": "click", "proposal_id": parts[0] if parts else ""}
+        for part in parts[1:]:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k == "pid":
+                    data["pid"] = int(v)
+        return data
+
+    # Deal shim health check
+    if text.startswith("DEALSHIM_HEALTH|"):
+        status = text[len("DEALSHIM_HEALTH|"):].strip()
+        return {"type": "health", "ok": status == "true"}
+
+    # Notification sent acknowledgment
+    if text.startswith("NOTIFY_SENT|"):
+        return {"type": "notify_sent", "proposal_id": text[len("NOTIFY_SENT|"):].strip()}
+
+    # Deal proposal header
+    if text.startswith("MCPDEAL|"):
+        rest = text[len("MCPDEAL|"):]
+        parts = rest.split("|")
+        action_code = -1
+        from_pid = -1
+        to_pid = -1
+        for part in parts:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k == "action":
+                    try:
+                        action_code = int(v)
+                    except ValueError:
+                        action_code = -1
+                elif k == "from":
+                    try:
+                        from_pid = int(v)
+                    except ValueError:
+                        pass
+                elif k == "to":
+                    try:
+                        to_pid = int(v)
+                    except ValueError:
+                        pass
+        # INSPECT (7): suppressed for managed targets.
+        if action_code == 7 or "suppressed" in rest:
+            return {"type": "inspect_suppressed", "from": from_pid, "to": to_pid}
+        # PROPOSED (4): start accumulating items.
+        if action_code == 4:
+            _pending_deal_items = []
+            _pending_deal_from = from_pid
+            _pending_deal_to = to_pid
+            return None  # wait for items
+
+        return {"type": "unknown", "action": str(action_code)}
+
+    # Deal item
+    if text.startswith("MCPDEAL_ITEM|"):
+        parts = text[len("MCPDEAL_ITEM|"):].split("|")
+        item: dict = {}
+        item_type = parts[0] if parts else "UNKNOWN"
+        item["item_type"] = item_type
+        for part in parts[1:]:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                try:
+                    item[k] = int(v)
+                except ValueError:
+                    item[k] = v
+        _pending_deal_items.append(item)
+        return None  # still accumulating
+
+    # End of deal serialisation — emit the complete proposal
+    if text.startswith("MCPDEAL_END"):
+        items = _pending_deal_items
+        from_pid = _pending_deal_from
+        to_pid = _pending_deal_to
+        _pending_deal_items = []
+        _pending_deal_from = -1
+        _pending_deal_to = -1
+        return {
+            "type": "proposed",
+            "action": "PROPOSED",
+            "from": from_pid,
+            "to": to_pid,
+            "items": items,
+        }
+
+    return None
