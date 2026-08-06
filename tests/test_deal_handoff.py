@@ -51,10 +51,10 @@ class TestDealShimInstallLua:
         assert "__MCP_orig_IAP = IsAutoPropose" in lua
         assert "IsAutoPropose = function" in lua
 
-    def test_is_auto_propose_checks_flag(self):
-        """IsAutoPropose returns false when __MCP_managed_deal is set."""
+    def test_is_auto_propose_always_returns_false(self):
+        """IsAutoPropose always returns false — no auto-propose for any civ."""
         lua = handoff.build_deal_shim_install_lua((1,))
-        assert "__MCP_managed_deal then return false" in lua
+        assert "return false end" in lua
 
     def test_inspect_suppressed_for_managed(self):
         """INSPECT (action=7) is suppressed for managed targets."""
@@ -87,11 +87,13 @@ class TestDealShimInstallLua:
         lua = handoff.build_deal_shim_install_lua((1,))
         assert "return __MCP_orig_SWD(action, fromP, toP)" in lua
 
-    def test_idempotent(self):
-        """Re-running the install doesn't double-wrap."""
+    def test_always_overwrites(self):
+        """The shim always overwrites — game Lua state persists across
+        server restarts, so a new server must update the wrappers."""
         lua = handoff.build_deal_shim_install_lua((1,))
-        assert "if __MCP_orig_SWD == nil then" in lua
-        assert "if __MCP_orig_IAP == nil then" in lua
+        assert "__MCP_orig_SWD = DealManager.SendWorkingDeal" in lua
+        assert "__MCP_orig_IAP = IsAutoPropose" in lua
+        assert "__MCP_orig_UDS = UpdateDealStatus" in lua
 
     def test_deal_items_enumerated(self):
         """Serialisation uses pDeal:Items() iteration."""

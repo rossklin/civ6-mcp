@@ -474,6 +474,15 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
                         conn, mailbox, data, cfg, gs
                     )
                 )
+            elif event_type == "human_accepted":
+                # Human clicked Accept on a presented mailbox deal.
+                asyncio.ensure_future(
+                    _handle_human_accepted_deal(
+                        conn, mailbox, data, cfg, gs
+                    )
+                )
+            elif event_type == "trace":
+                log.info("DEAL TRACE: %s", data.get("msg", ""))
             elif event_type == "health":
                 if not data.get("ok"):
                     log.warning("Deal shim health check failed — may be missing")
@@ -835,8 +844,10 @@ def _handle_human_deal_proposed(
     ]
 
     # Split items by who provides them.
-    proposer_items = [i for i in items if i.from_player_id == to_pid]
-    target_items = [i for i in items if i.from_player_id == from_pid]
+    # Items FROM the proposer are what the proposer OFFERS.
+    # Items FROM the target are what the proposer REQUESTS.
+    proposer_items = [i for i in items if i.from_player_id == from_pid]
+    target_items = [i for i in items if i.from_player_id == to_pid]
 
     proposal = PendingProposal(
         proposal_id="",
@@ -855,6 +866,49 @@ def _handle_human_deal_proposed(
         len(items),
         proposal_id,
     )
+
+
+async def _handle_human_accepted_deal(
+    conn: GameConnection,
+    mailbox: DealMailbox,
+    data: dict,
+    cfg: HandoffConfig,
+    gs: GameState,
+) -> None:
+    """Callback: human clicked Accept on a presented mailbox deal.
+
+    Executes the deal via the forced-deal primitive and clears the
+    presentation state.
+    """
+    proposal_id = data.get("proposal_id", "")
+    proposal = mailbox.get(proposal_id)
+    if proposal is None:
+        log.warning("Human accepted unknown proposal %s", proposal_id)
+        return
+
+    # The accepter is the human.
+    human_pid = cfg.human_id
+
+    try:
+        lua = handoff.build_execute_deal_lua(proposal, human_pid)
+        lines = await conn.execute_write(lua, perspective=False)
+        result = next(
+            (l for l in lines if l.startswith("DEAL_EXECUTED|")),
+            "DEAL_EXECUTED|unknown",
+        )
+        mailbox.accept(proposal_id)
+        log.info("Human accepted and executed proposal %s: %s", proposal_id, result)
+
+        # Clear the managed-deal flag and close the session.
+        try:
+            await conn.execute_in_named_state(
+                handoff.DEAL_SHIM_STATE,
+                handoff.build_clear_deal_flag_lua(),
+            )
+        except Exception:
+            pass
+    except Exception:
+        log.warning("Human deal execution failed", exc_info=True)
 
 
 async def _handle_deal_notification_click(
@@ -1160,6 +1214,34 @@ async def get_full_game_state(ctx: Context) -> str:
         except Exception:
             log.debug("Failed to append diary to full game state", exc_info=True)
 
+        # Append mailbox deals (managed civ proposals).
+        try:
+            mailbox = _get_mailbox(ctx)
+            if mailbox is not None:
+                seat = _get_seat(ctx)
+                pending = mailbox.get_pending_for(seat.player_id)
+                sent = mailbox.get_sent_by(seat.player_id)
+                if pending or sent:
+                    text += "\n\n=== DEAL MAILBOX ==="
+                    for p in pending:
+                        text += f"\n\nIncoming from P{p.from_player}"
+                        text += f" (proposal {p.proposal_id}):"
+                        if p.items_from_proposer:
+                            text += "\n  They offer:"
+                            for item in p.items_from_proposer:
+                                text += _format_mailbox_item(item, indent="    ")
+                        if p.items_from_target:
+                            text += "\n  They request:"
+                            for item in p.items_from_target:
+                                text += _format_mailbox_item(item, indent="    ")
+                        text += "\n  Use execute_commands with action='respond_to_trade'"
+                        text += f" (other_player_id={p.from_player}, accept=True/False)"
+                    for p in sent:
+                        text += f"\n\nOutgoing to P{p.to_player}"
+                        text += f" (proposal {p.proposal_id}): awaiting response."
+        except Exception:
+            log.debug("Failed to append mailbox deals", exc_info=True)
+
         return text
 
     return await _logged(ctx, "get_full_game_state", {}, _run)
@@ -1203,9 +1285,82 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
     and more.
     """
     gs = _get_game(ctx)
+    app = _app(ctx)
+    seat = _get_seat(ctx)
 
     async def _run():
-        return await _execute_commands(gs, commands_json)
+        # Parse once to check for mailbox-aware trade commands.
+        try:
+            commands: list[dict] = json.loads(commands_json)
+        except json.JSONDecodeError as e:
+            return f"Invalid JSON: {e}"
+        if not isinstance(commands, list):
+            return "Error: commands_json must be a JSON array."
+
+        results: list[str] = []
+        remaining: list[dict] = []
+        for cmd in commands:
+            action = cmd.get("action", "")
+            params = cmd.get("params", {})
+            if action == "propose_trade" and app.mailbox is not None:
+                target = params.get("other_player_id", -1)
+                if target in app.handoff_config.managed_ids:
+                    # Managed target — route through mailbox.
+                    result = await _mailbox_propose_trade(
+                        app, seat, target, params
+                    )
+                    results.append(f"propose_trade: {result}")
+                    continue
+                # Non-managed target — convert flat params and pass to engine.
+                offer_items, request_items = _parse_trade_params(params)
+                converted = {
+                    "other_player_id": target,
+                    "offer_items": offer_items,
+                    "request_items": request_items,
+                }
+                cmd["params"] = converted
+                remaining.append(cmd)
+                continue
+            elif action == "respond_to_trade" and app.handoff_config.enabled:
+                target = params.get("other_player_id", -1)
+                accept = params.get("accept", False)
+                if isinstance(accept, str):
+                    accept = accept.lower() in ("true", "yes", "1", "accept")
+                # Check mailbox first.
+                mailbox = app.mailbox
+                if mailbox is not None:
+                    pending = mailbox.get_pending_for(seat.player_id)
+                    for proposal in pending:
+                        if proposal.from_player == target:
+                            if accept:
+                                result = await _execute_mailbox_deal(
+                                    gs, mailbox, proposal, seat.player_id
+                                )
+                            else:
+                                mailbox.reject(proposal.proposal_id)
+                                result = (
+                                    f"Deal from P{target} rejected."
+                                )
+                            results.append(f"respond_to_trade: {result}")
+                            break
+                    else:
+                        # Not a mailbox deal — fall through to engine.
+                        remaining.append(cmd)
+                    continue
+                remaining.append(cmd)
+                continue
+            remaining.append(cmd)
+
+        # Pass remaining commands to the executor.
+        if remaining:
+            rem_json = json.dumps(remaining)
+            rest_result = await _execute_commands(gs, rem_json)
+            if results:
+                results.append(rest_result)
+            else:
+                return rest_result
+
+        return "\n".join(results) if results else "No commands to execute."
 
     return await _logged(ctx, "execute_commands", {}, _run)
 
@@ -2250,6 +2405,104 @@ async def respond_to_trade(ctx: Context, other_player_id: int, accept: bool) -> 
         {"other_player_id": other_player_id, "accept": accept},
         lambda: gs.respond_to_deal(other_player_id, accept),
     )
+
+
+async def _mailbox_propose_trade(
+    app, seat, target: int, params: dict
+) -> str:
+    """Build a PendingProposal from flat params and file it in the mailbox."""
+    mailbox = app.mailbox
+    if mailbox is None:
+        return "Error: deal mailbox not available"
+
+    agent_pid = seat.player_id
+    offer_items, request_items = _parse_trade_params(params)
+
+    proposer_items = [
+        SerializedDealItem(
+            item_type=it["type"],
+            from_player_id=agent_pid,
+            amount=it.get("amount", 0),
+            duration=it.get("duration", 0),
+            value_type=it.get("value_type", -1),
+            sub_type=it.get("sub_type", -1),
+        )
+        for it in offer_items
+    ]
+    target_items = [
+        SerializedDealItem(
+            item_type=it["type"],
+            from_player_id=target,
+            amount=it.get("amount", 0),
+            duration=it.get("duration", 0),
+            value_type=it.get("value_type", -1),
+            sub_type=it.get("sub_type", -1),
+        )
+        for it in request_items
+    ]
+
+    proposal = PendingProposal(
+        from_player=agent_pid,
+        to_player=target,
+        items_from_proposer=proposer_items,
+        items_from_target=target_items,
+        proposed_by="agent",
+    )
+    proposal_id = mailbox.propose(proposal)
+    return (
+        f"Trade proposed to P{target} — awaiting response. "
+        f"Proposal: {proposal_id}"
+    )
+
+
+def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
+    """Parse flat trade params into (offer_items, request_items) lists."""
+    offer_items: list[dict] = []
+    request_items: list[dict] = []
+
+    offer_gold = params.get("offer_gold", 0)
+    offer_gpt = params.get("offer_gold_per_turn", 0)
+    offer_res = params.get("offer_resources", "")
+    offer_favor = params.get("offer_favor", 0)
+    offer_ob = params.get("offer_open_borders", False)
+    req_gold = params.get("request_gold", 0)
+    req_gpt = params.get("request_gold_per_turn", 0)
+    req_res = params.get("request_resources", "")
+    req_favor = params.get("request_favor", 0)
+    req_ob = params.get("request_open_borders", False)
+    joint_war = params.get("joint_war_target", 0)
+
+    if offer_gold > 0:
+        offer_items.append({"type": "GOLD", "amount": offer_gold, "duration": 0})
+    if offer_gpt > 0:
+        offer_items.append({"type": "GOLD", "amount": offer_gpt, "duration": 30})
+    if isinstance(offer_res, str):
+        for res in offer_res.split(","):
+            res = res.strip()
+            if res:
+                offer_items.append({"type": "RESOURCE", "name": res, "amount": 1, "duration": 30})
+    if offer_favor > 0:
+        offer_items.append({"type": "FAVOR", "amount": offer_favor})
+    if offer_ob:
+        offer_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
+    if req_gold > 0:
+        request_items.append({"type": "GOLD", "amount": req_gold, "duration": 0})
+    if req_gpt > 0:
+        request_items.append({"type": "GOLD", "amount": req_gpt, "duration": 30})
+    if isinstance(req_res, str):
+        for res in req_res.split(","):
+            res = res.strip()
+            if res:
+                request_items.append({"type": "RESOURCE", "name": res, "amount": 1, "duration": 30})
+    if req_favor > 0:
+        request_items.append({"type": "FAVOR", "amount": req_favor})
+    if req_ob:
+        request_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
+    if joint_war > 0:
+        offer_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
+        request_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
+
+    return offer_items, request_items
 
 
 async def _execute_mailbox_deal(

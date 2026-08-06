@@ -629,18 +629,62 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
         "__MCP_managed_deal = false "
         ""
         # -- IsAutoPropose override ----------------------------------------
-        "if __MCP_orig_IAP == nil then "
-        "  __MCP_orig_IAP = IsAutoPropose "
-        "  IsAutoPropose = function() "
-        "    if __MCP_managed_deal then return false end "
-        "    return __MCP_orig_IAP() "
+        # Always return false.  With auto-propose off the human always sees
+        # a Propose button and must click it explicitly, which gives us a
+        # clean PROPOSED to intercept.  For regular AI civs the human uses
+        # "What would make this work?" (EQUALIZE) to get a counter-offer
+        # instead of seeing it live.
+        # NOTE: always overwrites — the shim must update when the server
+        # restarts, since the old wrapper persists in the game's Lua state.
+        "__MCP_orig_IAP = IsAutoPropose "
+        "IsAutoPropose = function() return false end "
+        ""
+        # -- UpdateDealStatus wrapper: force Accept/Refuse for managed -----
+        # After the game's UpdateProposalButtons runs and hides Accept
+        # (because ms_OtherPlayerIsHuman is false), we force the buttons
+        # back for managed targets.  We find the other player by scanning
+        # for the open diplomacy session.
+        # NOTE: always overwrites for the same reason as IsAutoPropose.
+        "__MCP_orig_UDS = UpdateDealStatus "
+        "UpdateDealStatus = function() "
+        "    __MCP_orig_UDS() "
+        '    print("MCP_TRACE|UDS|proposal_id=" .. '
+        '      tostring(__MCP_deal_proposal_id or "nil")) '
+        "    local me = Game.GetLocalPlayer() "
+        "    local other = -1 "
+        "    for i = 0, 62 do "
+        "      if i ~= me then "
+        "        local sid = DiplomacyManager.FindOpenSessionID(me, i) "
+        "        if sid and sid >= 0 then other = i; break end "
+        "      end "
+        "    end "
+        "    if other >= 0 and __MCP_managed_ids[other] then "
+        "      Controls.AcceptDeal:SetHide(false) "
+        "      Controls.AcceptDeal:LocalizeAndSetText("
+        '        "LOC_DIPLOMACY_DEAL_ACCEPT_DEAL") '
+        "      Controls.RefuseDeal:SetHide(false) "
+        "      Controls.RefuseDeal:LocalizeAndSetText("
+        '        "LOC_DIPLOMACY_DEAL_REFUSE_DEAL") '
+        "      Controls.EqualizeDeal:SetHide(true) "
+        "      local cfg = PlayerConfigurations[other] "
+        "      local name = cfg and "
+        "        Locale.Lookup(cfg:GetLeaderName()) or "
+        '        ("P" .. tostring(other)) '
+        "      Controls.LeaderDialog:SetText("
+        "        name .. ' proposes the following deal:') "
+        "    end "
         "  end "
-        "end "
         ""
         # -- SendWorkingDeal wrapper ---------------------------------------
-        "if __MCP_orig_SWD == nil then "
-        "  __MCP_orig_SWD = DealManager.SendWorkingDeal "
-        "  DealManager.SendWorkingDeal = function(action, fromP, toP) "
+        # NOTE: always overwrites — the shim must update when the server
+        # restarts, since the old wrapper persists in the game's Lua state.
+        "__MCP_orig_SWD = DealManager.SendWorkingDeal "
+        "DealManager.SendWorkingDeal = function(action, fromP, toP) "
+        # Diagnostic: log every call to trace what fires.
+        '    print("MCP_TRACE|SWD|action=" .. tostring(action) '
+        '      .. "|fromP=" .. tostring(fromP) '
+        '      .. "|toP=" .. tostring(toP) '
+        '      .. "|proposal_id=" .. tostring(__MCP_deal_proposal_id or "nil")) '
         # Only intercept for managed targets.
         "    if __MCP_managed_ids[toP] or __MCP_managed_ids[fromP] then "
         # INSPECT (7): suppress — we don't want the AI evaluating the deal.
@@ -649,8 +693,18 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
         "          .. tostring(fromP) .. \"|to=\" .. tostring(toP)) "
         "        return "
         "      end "
-        # PROPOSED (4): serialise the deal, print it, don't forward.
+        # PROPOSED (4): if __MCP_deal_proposal_id is set, this is the
+        # human accepting a mailbox deal; print HUMAN_ACCEPTED.  Otherwise
+        # it's a new proposal from the human — serialise and mailbox it.
         "      if action == 4 then "
+        "        if __MCP_deal_proposal_id ~= nil then "
+        '          print("MCPDEAL|HUMAN_ACCEPTED|" '
+        "            .. tostring(__MCP_deal_proposal_id) "
+        '            .. "|from=" .. tostring(fromP) '
+        '            .. "|to=" .. tostring(toP)) '
+        "          __MCP_deal_proposal_id = nil "
+        "          return "
+        "        end "
         '        print("MCPDEAL|PROPOSED|from=" .. tostring(fromP) '
         '          .. "|to=" .. tostring(toP)) '
         "        local pDeal = DealManager.GetWorkingDeal("
@@ -688,9 +742,6 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
         "    return __MCP_orig_SWD(action, fromP, toP) "
         "  end "
         '  print("DEALSHIM|installed") '
-        "else "
-        '  print("DEALSHIM|present") '
-        "end "
         f'print("{SENTINEL}")'
     )
 
@@ -705,6 +756,10 @@ def build_deal_shim_uninstall_lua() -> str:
         "if __MCP_orig_IAP ~= nil then "
         "  IsAutoPropose = __MCP_orig_IAP "
         "  __MCP_orig_IAP = nil "
+        "end "
+        "if __MCP_orig_UDS ~= nil then "
+        "  UpdateDealStatus = __MCP_orig_UDS "
+        "  __MCP_orig_UDS = nil "
         "end "
         "__MCP_managed_ids = nil "
         "__MCP_managed_deal = nil "

@@ -325,8 +325,17 @@ class GameConnection:
         assert self._reader is not None
         assert self._writer is not None
 
-        # Drain any stale messages
-        await tuner_client.drain_messages(self._reader, timeout=0.1)
+        # Drain any stale messages — route through deal callbacks so
+        # MCPDEAL lines aren't lost between monitor poll cycles.
+        stale = await tuner_client.drain_messages(self._reader, timeout=0.1)
+        for msg in stale:
+            event = _parse_mcpdeal_line(msg.payload)
+            if event:
+                for cb in self._deal_callbacks:
+                    try:
+                        cb(event["type"], event)
+                    except Exception:
+                        log.debug("Deal callback failed", exc_info=True)
 
         await tuner_client.send_message(
             self._writer, tuner_client.TAG_COMMAND, f"CMD:{state_index}:{lua_code}"
@@ -437,6 +446,10 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
         status = text[len("DEALSHIM_HEALTH|"):].strip()
         return {"type": "health", "ok": status == "true"}
 
+    # Diagnostic trace lines
+    if text.startswith("MCP_TRACE|"):
+        return {"type": "trace", "msg": text[len("MCP_TRACE|"):]}
+
     # Notification sent acknowledgment
     if text.startswith("NOTIFY_SENT|"):
         return {"type": "notify_sent", "proposal_id": text[len("NOTIFY_SENT|"):].strip()}
@@ -466,6 +479,19 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
                         to_pid = int(v)
                     except ValueError:
                         pass
+        # HUMAN_ACCEPTED: human clicked Accept on a presented mailbox deal.
+        # Format: MCPDEAL|HUMAN_ACCEPTED|<proposal_id>|from=X|to=Y
+        # rest = "HUMAN_ACCEPTED|<id>|from=X|to=Y", parts[1] is the id.
+        if "HUMAN_ACCEPTED" in rest:
+            proposal_id = (
+                parts[1] if len(parts) > 1 and "=" not in parts[1] else ""
+            )
+            return {
+                "type": "human_accepted",
+                "proposal_id": proposal_id,
+                "from": from_pid,
+                "to": to_pid,
+            }
         # INSPECT (7): suppressed for managed targets.
         if action_code == 7 or "suppressed" in rest:
             return {"type": "inspect_suppressed", "from": from_pid, "to": to_pid}
