@@ -83,17 +83,52 @@ class TestDealShimInstallLua:
         assert "__MCP_managed_ids[toP] or __MCP_managed_ids[fromP]" in lua
 
     def test_non_managed_forwarded(self):
-        """Deals with non-managed civs are forwarded to the original function."""
+        """Deals with non-managed civs are forwarded to the original function
+        via a LOCAL upvalue (origSWD), never the global __MCP_orig_SWD — so
+        re-install can never make the wrapper call itself."""
         lua = handoff.build_deal_shim_install_lua((1,))
-        assert "return __MCP_orig_SWD(action, fromP, toP)" in lua
+        assert "return origSWD(action, fromP, toP)" in lua
+        assert "return __MCP_orig_SWD(action, fromP, toP)" not in lua
 
     def test_always_overwrites(self):
-        """The shim always overwrites — game Lua state persists across
-        server restarts, so a new server must update the wrappers."""
+        """The shim captures originals and re-wraps on every install — game
+        Lua state persists across server restarts, so a new server must
+        replace a stale wrapper.  Idempotent: restore-before-rewrap keeps it
+        to one layer."""
         lua = handoff.build_deal_shim_install_lua((1,))
         assert "__MCP_orig_SWD = DealManager.SendWorkingDeal" in lua
         assert "__MCP_orig_IAP = IsAutoPropose" in lua
         assert "__MCP_orig_UDS = UpdateDealStatus" in lua
+
+    def test_orig_captured_as_local_upvalue_swd(self):
+        """SWD wrapper closes over a local origSWD so a second install cannot
+        cause self-recursion (the regression that crashed the game)."""
+        lua = handoff.build_deal_shim_install_lua((1,))
+        assert "local origSWD = __MCP_orig_SWD" in lua
+
+    def test_orig_captured_as_local_upvalue_uds(self):
+        """UDS wrapper closes over a local origUDS and calls that, not the
+        global."""
+        lua = handoff.build_deal_shim_install_lua((1,))
+        assert "local origUDS = __MCP_orig_UDS" in lua
+        assert "origUDS()" in lua
+        assert "__MCP_orig_UDS()" not in lua
+
+    def test_original_captured_once_via_guard(self):
+        """The original is captured only when nil (guard), so the global
+        never holds a wrapper — this is what prevents self-recursion on
+        re-install."""
+        lua = handoff.build_deal_shim_install_lua((1,))
+        assert "if __MCP_orig_SWD == nil then" in lua
+        assert "if __MCP_orig_UDS == nil then" in lua
+        assert "if __MCP_orig_IAP == nil then" in lua
+
+    def test_install_count_emitted(self):
+        """An install counter is printed so re-arm frequency is visible in
+        the log and stacking can be ruled out."""
+        lua = handoff.build_deal_shim_install_lua((1,))
+        assert "__MCP_shim_install_count" in lua
+        assert "install_count=" in lua
 
     def test_deal_items_enumerated(self):
         """Serialisation uses pDeal:Items() iteration."""

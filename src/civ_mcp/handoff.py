@@ -612,31 +612,55 @@ DEAL_SHIM_STATE = "DiplomacyDealView"
 
 
 def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
-    """Lua that wraps SendWorkingDeal and IsAutoPropose in DiplomacyDealView.
+    """Lua that wraps SendWorkingDeal, IsAutoPropose and UpdateDealStatus in
+    the DiplomacyDealView state.
 
-    - ``__MCP_orig_SWD``: original ``DealManager.SendWorkingDeal``
-    - ``__MCP_managed_deal``: global flag set before opening a session with a
-      managed target; ``IsAutoPropose`` returns false while it is set
-    - ``SendWorkingDeal`` wrapper: if the target is a managed player, suppress
-      ``INSPECT`` (the auto-propose), serialise ``PROPOSED`` to
-      ``MCPDEAL|...`` lines, and return without forwarding
+    Idempotent re-arm: the original of each wrapped function is captured once
+    (when ``__MCP_orig_*`` is nil) and restored before every subsequent
+    re-wrap, so repeated installs never stack wrappers.  Each wrapper calls
+    its original through a *local upvalue* (``origSWD``/``origUDS``) rather
+    than the ``__MCP_orig_*`` global — this is what makes re-install safe: a
+    second install cannot make a wrapper call itself.  An earlier version
+    read the global from inside the wrapper with the idempotency guards
+    removed; a second install pointed that global at wrapper1, so wrapper1
+    called itself -> infinite recursion -> Lua stack overflow -> hard crash
+    on deal-screen open.
+
+    - ``SendWorkingDeal`` wrapper: for a managed target, suppress ``INSPECT``
+      (action 7), and serialise ``PROPOSED`` (action 4) to ``MCPDEAL|...``
+      lines (or emit ``HUMAN_ACCEPTED`` when ``__MCP_deal_proposal_id`` is
+      set); other actions forward to the original.
+    - ``IsAutoPropose``: always returns false.
+    - ``UpdateDealStatus`` wrapper: force Accept/Refuse visible for managed
+      targets after the game hides them.
     """
     managed_entries = ",".join(f"[{p}]=true" for p in managed_ids)
 
     return (
-        # Per-player lookup table for the managed check
+        # Per-player lookup table for the managed check (idempotent overwrite).
         f"__MCP_managed_ids = {{{managed_entries}}} "
         "__MCP_managed_deal = false "
+        ""
+        # Install counter — persists across re-arms within one Lua state,
+        # resets on save load.  Lets us read re-arm frequency off the log and
+        # confirm re-arms no longer stack (each re-arm prints a new count and
+        # never crashes).
+        "__MCP_shim_install_count = (__MCP_shim_install_count or 0) + 1 "
         ""
         # -- IsAutoPropose override ----------------------------------------
         # Always return false.  With auto-propose off the human always sees
         # a Propose button and must click it explicitly, which gives us a
-        # clean PROPOSED to intercept.  For regular AI civs the human uses
-        # "What would make this work?" (EQUALIZE) to get a counter-offer
-        # instead of seeing it live.
-        # NOTE: always overwrites — the shim must update when the server
-        # restarts, since the old wrapper persists in the game's Lua state.
-        "__MCP_orig_IAP = IsAutoPropose "
+        # clean PROPOSED to intercept.
+        #
+        # Idempotent re-arm: capture the original ONCE (when nil).  The guard
+        # is load-bearing — without it a second install would capture the
+        # wrapper itself into __MCP_orig_IAP.  IAP never calls its original
+        # (always returns false), so it cannot recurse on its own; the guard
+        # exists to keep __MCP_orig_IAP pointing at the real function so
+        # uninstall/health-check restore the right thing.
+        "if __MCP_orig_IAP == nil then "
+        "  __MCP_orig_IAP = IsAutoPropose "
+        "end "
         "IsAutoPropose = function() return false end "
         ""
         # -- UpdateDealStatus wrapper: force Accept/Refuse for managed -----
@@ -644,10 +668,22 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
         # (because ms_OtherPlayerIsHuman is false), we force the buttons
         # back for managed targets.  We find the other player by scanning
         # for the open diplomacy session.
-        # NOTE: always overwrites for the same reason as IsAutoPropose.
-        "__MCP_orig_UDS = UpdateDealStatus "
+        # CRITICAL: capture the original ONCE (guard) and call it through a
+        # LOCAL upvalue (origUDS), not the global.  An earlier version read
+        # __MCP_orig_UDS as a *global* from inside the wrapper with the guard
+        # removed; a second install then pointed that global at wrapper1, so
+        # wrapper1 called itself -> infinite recursion -> Lua stack overflow
+        # -> hard crash on deal-screen open.  The guard keeps the global
+        # pointing at the real function; the local upvalue is defense-in-depth
+        # -- even if the guard were removed again, each wrapper still calls
+        # the real function it captured at creation, so it can only stack
+        # harmlessly, never self-recurse.
+        "if __MCP_orig_UDS == nil then "
+        "  __MCP_orig_UDS = UpdateDealStatus "
+        "end "
+        "local origUDS = __MCP_orig_UDS "
         "UpdateDealStatus = function() "
-        "    __MCP_orig_UDS() "
+        "    origUDS() "
         '    print("MCP_TRACE|UDS|proposal_id=" .. '
         '      tostring(__MCP_deal_proposal_id or "nil")) '
         "    local me = Game.GetLocalPlayer() "
@@ -676,9 +712,13 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
         "  end "
         ""
         # -- SendWorkingDeal wrapper ---------------------------------------
-        # NOTE: always overwrites — the shim must update when the server
-        # restarts, since the old wrapper persists in the game's Lua state.
-        "__MCP_orig_SWD = DealManager.SendWorkingDeal "
+        # Same guard + local-upvalue pattern as UDS: the guard keeps the
+        # global pointing at the real function; the local upvalue (origSWD)
+        # makes self-recursion impossible even if the guard is removed again.
+        "if __MCP_orig_SWD == nil then "
+        "  __MCP_orig_SWD = DealManager.SendWorkingDeal "
+        "end "
+        "local origSWD = __MCP_orig_SWD "
         "DealManager.SendWorkingDeal = function(action, fromP, toP) "
         # Diagnostic: log every call to trace what fires.
         '    print("MCP_TRACE|SWD|action=" .. tostring(action) '
@@ -739,9 +779,10 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
         "      end "
         # ACCEPTED (1) / REJECTED (2): allow through (forced-deal execution).
         "    end "
-        "    return __MCP_orig_SWD(action, fromP, toP) "
+        "    return origSWD(action, fromP, toP) "
         "  end "
-        '  print("DEALSHIM|installed") '
+        '  print("DEALSHIM|installed|install_count=" '
+        "    .. tostring(__MCP_shim_install_count)) "
         f'print("{SENTINEL}")'
     )
 

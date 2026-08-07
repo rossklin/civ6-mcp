@@ -783,6 +783,9 @@ behaviour without one.
 
 ### Plan: a server-side deal mailbox
 
+Note: the Civ 6 Diplo view Lua files are in: 
+C:\Program Files (x86)\Steam\steamapps\common\Sid Meier's Civilization VI\Base\Assets\UI
+
 Not yet built. **No mod is required** — every hook point below is a writable
 global in an addressable Lua state.
 
@@ -816,12 +819,7 @@ reply, so this needs a reader task that recognises `MCPDEAL|` and files it into
 the mailbox. That is the one genuinely new piece of plumbing. Polling
 `DealManager.GetWorkingDeal` on a timer is the fallback if push proves flaky.
 
-**5. Delivery.** Agents read pending proposals through `get_pending_trades` and
-answer with `respond_to_trade`. The human needs a surface: the web dashboard is
-the obvious candidate, being the only human-facing component that exists. A
-nicer option now that the screen works — raise the native screen and let the
-human answer there — is left for later; it needs the pending deal to be visible
-to `DealManager`, which the mailbox design deliberately avoids.
+**5. Delivery.** Agents read pending proposals from the game state and respond through execute_commands. The human will propose deals through the native trade screen.
 
 **6. Execution on acceptance** via the forced-deal primitive
 (`SendWorkingDeal(ACCEPTED, …)` with items added from both sides), followed by
