@@ -1198,11 +1198,11 @@ async def get_full_game_state(ctx: Context) -> str:
 
 @mcp.tool()
 async def execute_commands(ctx: Context, commands_json: str) -> str:
-    """Execute a batch of game commands.
+    """Execute a batch of game commands sequentially.
 
     Args:
         commands_json: A JSON array of command objects. Each object has:
-            - action: The command name (matching a game action)
+            - action: The command name (a game action name, case-sensitive)
             - params: Dict of parameters for that command
 
     Example:
@@ -1210,28 +1210,132 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
          {"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_SETTLER"}},
          {"action": "set_research", "params": {"tech_name": "TECH_IRON_WORKING"}}]
 
-    Use ``unit_index`` (from the idx field in the Units section), not unit_id.
-    Use ``target_x``/``target_y`` for the destination coordinates.
+    Commands execute in order. Movement/attack commands return visibility
+    intel (newly revealed tiles, enemy units) and combat results inline, so
+    you can call this tool multiple times per turn to scout first, then act
+    on what you learn. Prefer fewer, larger batches where possible.
 
-    Commands execute sequentially in order. Unit movement commands return
-    visibility intel (newly revealed tiles and enemy units) inline — you can
-    call this tool multiple times per turn to scout first, then act on new
-    intel. Prefer fewer calls where possible.
+    Conventions:
+      - Coordinates: ``target_x``/``target_y`` are map tiles.
+      - ``unit_index``: the ``idx`` field from the Units section of
+        get_full_game_state. Most unit commands take this.
+      - ``unit_id``: unit id from Units section.
+      - ``city_id``: city ID from the Cities section.
+      - Player IDs: ``other_player_id`` / ``city_state_player_id`` are the P0,
+        P1, ... IDs from get_seats.
+      - String enums are case-insensitive (uppercased internally). The
+        ``item_name``/``tech_name``/etc. values are GameInfo type strings
+        (e.g. UNIT_WARRIOR, TECH_IRON_WORKING) — use the names shown in
+        get_full_game_state's production/research lists.
 
-    Available commands include: move_unit, attack_unit, fortify_unit,
-    skip_unit, skip_remaining_units, automate_explore, heal_unit, alert_unit,
-    sleep_unit, delete_unit, found_city, improve_tile, remove_feature,
-    repair_improvement, build_route, spread_religion, activate_great_person,
-    make_trade_route, teleport_to_city, upgrade_unit, promote_unit,
-    set_city_production, purchase_item, purchase_tile, set_city_focus,
-    city_attack, set_research, set_civic, send_diplomatic_action,
-    respond_to_diplomacy, propose_trade, test_trade, respond_to_trade,
-    propose_peace, form_alliance, set_policies, appoint_governor,
-    assign_governor, promote_governor, send_envoy, change_government,
-    choose_dedication, choose_pantheon, found_religion, recruit_great_person,
-    patronize_great_person, reject_great_person, queue_wc_votes,
-    spy_travel, spy_mission, dismiss_popup, resolve_city_capture,
-    and more.
+    Command reference (params in parentheses; ``?`` = optional):
+
+    Units:
+      move_unit(unit_index, target_x, target_y) — move toward a tile
+      attack_unit(unit_index, target_x, target_y) — attack enemy at tile
+      fortify_unit(unit_index)
+      skip_unit(unit_index)
+      skip_remaining_units() — fortify combat units, then skip the rest
+      automate_explore(unit_index)
+      heal_unit(unit_index)
+      alert_unit(unit_index)
+      sleep_unit(unit_index)
+      delete_unit(unit_index)
+      enter_formation(unit_index, target_unit_index) — join escort formation
+      exit_formation(unit_index)
+      promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT
+      upgrade_unit(unit_id)
+      check_unit_upgrade(unit_id) — returns upgrade cost/availability
+
+    Settling & cities:
+      found_city(unit_index)
+      resolve_city_capture(action) — action: keep | reject | raze |
+        liberate_founder | liberate_previous
+      set_city_production(city_id, item_type, item_name, target_x?, target_y?)
+        item_type: UNIT | BUILDING | DISTRICT; item_name e.g. UNIT_WARRIOR,
+        BUILDING_GRANARY, DISTRICT_CAMPUS. DISTRICTs and wonders require
+        target_x/target_y (use get_district_advisor / get_wonder_advisor).
+      purchase_item(city_id, item_type, item_name, yield_type="YIELD_GOLD")
+        item_type: UNIT | BUILDING; yield_type: YIELD_GOLD | YIELD_FAITH.
+      list_city_production(city_id) — what the city can build now
+      set_city_focus(city_id, focus) — focus: DEFAULT (clear) | FOOD |
+        PRODUCTION | GOLD | SCIENCE | CULTURE | FAITH
+      purchase_tile(city_id, x, y)
+      city_attack(city_id, target_x, target_y) — ranged attack from a city
+
+    Builders & improvements:
+      improve_tile(unit_index, improvement_name) — e.g. IMPROVEMENT_MINE
+      remove_feature(unit_index)
+      repair_improvement(unit_index)
+      remove_improvement(unit_index)
+      build_route(unit_index)
+      sacrifice_builder_charges(unit_index)
+
+    Research & civics:
+      set_research(tech_name) — e.g. TECH_IRON_WORKING
+      set_civic(civic_name) — e.g. CIVIC_CRAFTSMANSHIP
+
+    Diplomacy & trade (other_player_id = target player ID):
+      send_diplomatic_action(other_player_id, action) — action: DIPLOMATIC_DELEGATION
+        | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE | OPEN_BORDERS
+        | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
+        | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
+        | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR
+      diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
+        | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
+      propose_peace(other_player_id)
+      form_alliance(other_player_id, alliance_type) — MILITARY | RESEARCH |
+        CULTURAL | ECONOMIC | RELIGIOUS
+      propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
+        offer_gold, offer_gold_per_turn, offer_resources (comma-separated
+        RESOURCE_TYPE names), offer_favor, offer_open_borders (bool), plus the
+        request_* equivalents; joint_war_target (player ID) for a joint war.
+      test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
+        Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
+        name, duration, subtype, city_id}.
+      respond_to_deal(other_player_id, accept: bool) — accept/reject an
+        AI-proposed deal.
+      respond_to_trade(other_player_id, accept: bool) — accept/reject an
+        incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
+
+    Governance:
+      set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"};
+        use "NONE" to clear a slot
+      change_government(government_type) — e.g. GOVERNMENT_OLIGARCHY
+      appoint_governor(governor_type) — e.g. GOVERNOR_THE_CARDINAL
+      assign_governor(governor_type, city_id)
+      promote_governor(governor_type, promotion_type)
+      send_envoy(city_state_player_id)
+      choose_dedication(dedication_index)
+
+    Religion & Great People:
+      choose_pantheon(belief_type) — e.g. BELIEF_RELIGIOUS_SETTLEMENTS
+      found_religion(religion_type, follower_belief, founder_belief)
+      recruit_great_person(individual_id)
+      patronize_great_person(individual_id, yield_type="YIELD_GOLD")
+      reject_great_person(individual_id)
+      activate_great_person(unit_index)
+      spread_religion(unit_index)
+
+    Trade routes & spies:
+      make_trade_route(unit_index, target_x, target_y)
+      teleport_to_city(unit_index, target_x, target_y) — relocate a trader
+      spy_travel(unit_index, target_x, target_y)
+      spy_mission(unit_index, mission_type, target_x, target_y) — mission_type:
+        COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST
+        | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS
+        | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL (offensive missions need
+        the spy in the target city first)
+
+    World Congress:
+      queue_wc_votes(votes) — votes: list of {hash, option (1=A|2=B), target,
+        votes}; registers a one-shot handler that casts them at end of turn
+      vote_world_congress(resolution_hash, option, target_index, num_votes)
+        — option 1=A, 2=B; target_index is 0-based
+      submit_congress() — submit votes and resume the turn
+
+    Misc:
+      dismiss_popup() — dismiss a blocking popup/notification
     """
     gs = _get_game(ctx)
     app = _app(ctx)
