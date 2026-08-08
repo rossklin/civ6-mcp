@@ -462,7 +462,11 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
         from_pid = -1
         to_pid = -1
         for part in parts:
-            if "=" in part:
+            if (part == "PROPOSED"):
+                action_code = 4
+            elif (part == "INSPECT"):
+                action_code = 7
+            elif "=" in part:
                 k, v = part.split("=", 1)
                 if k == "action":
                     try:
@@ -487,6 +491,8 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
             _pending_deal_items = []
             _pending_deal_from = from_pid
             _pending_deal_to = to_pid
+            log.info("DEAL TRACE: got %s", text)
+            log.info("DEAL TRACE: start parsing proposal from P%d to P%d", from_pid, to_pid)
             return None  # wait for items
 
         return {"type": "unknown", "action": str(action_code)}
@@ -515,6 +521,12 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
         _pending_deal_items = []
         _pending_deal_from = -1
         _pending_deal_to = -1
+        log.info(
+            "DEAL TRACE: finished parsing proposal from P%d to P%d (%d items)",
+            from_pid,
+            to_pid,
+            len(items),
+        )
         return {
             "type": "proposed",
             "action": "PROPOSED",
