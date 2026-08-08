@@ -24,6 +24,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from civ_mcp.connection import GameConnection
 from civ_mcp.lua._helpers import SENTINEL
@@ -611,6 +612,22 @@ async def wait_for_turn(
 DEAL_SHIM_STATE = "DiplomacyDealView"
 
 
+# Template Lua for the deal shim, kept in a separate file for readability.
+# Two tags are substituted per-call by build_deal_shim_install_lua():
+#   __MCP_MANAGED_IDS_TAG__  -> {[p]=true,...} for the managed IDs
+#   __MCP_SENTINEL_TAG__     -> the response sentinel (_helpers.SENTINEL)
+_DEAL_SHIM_PATH = Path(__file__).resolve().parent.parent / "lua" / "deal_shim.lua"
+_DEAL_SHIM_TEMPLATE: str | None = None
+
+
+def _load_deal_shim_template() -> str:
+    """Read and cache the deal-shim Lua template from disk."""
+    global _DEAL_SHIM_TEMPLATE
+    if _DEAL_SHIM_TEMPLATE is None:
+        _DEAL_SHIM_TEMPLATE = _DEAL_SHIM_PATH.read_text(encoding="utf-8")
+    return _DEAL_SHIM_TEMPLATE
+
+
 def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
     """Lua that wraps SendWorkingDeal, IsAutoPropose and UpdateDealStatus in
     the DiplomacyDealView state.
@@ -635,156 +652,12 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
       targets after the game hides them.
     """
     managed_entries = ",".join(f"[{p}]=true" for p in managed_ids)
+    managed_table = "{" + managed_entries + "}"
 
-    return (
-        # Per-player lookup table for the managed check (idempotent overwrite).
-        f"__MCP_managed_ids = {{{managed_entries}}} "
-        "__MCP_managed_deal = false "
-        ""
-        # Install counter — persists across re-arms within one Lua state,
-        # resets on save load.  Lets us read re-arm frequency off the log and
-        # confirm re-arms no longer stack (each re-arm prints a new count and
-        # never crashes).
-        "__MCP_shim_install_count = (__MCP_shim_install_count or 0) + 1 "
-        ""
-        # -- IsAutoPropose override ----------------------------------------
-        # Always return false.  With auto-propose off the human always sees
-        # a Propose button and must click it explicitly, which gives us a
-        # clean PROPOSED to intercept.
-        #
-        # Idempotent re-arm: capture the original ONCE (when nil).  The guard
-        # is load-bearing — without it a second install would capture the
-        # wrapper itself into __MCP_orig_IAP.  IAP never calls its original
-        # (always returns false), so it cannot recurse on its own; the guard
-        # exists to keep __MCP_orig_IAP pointing at the real function so
-        # uninstall/health-check restore the right thing.
-        "if __MCP_orig_IAP == nil then "
-        "  __MCP_orig_IAP = IsAutoPropose "
-        "end "
-        "IsAutoPropose = function() return false end "
-        ""
-        # -- UpdateDealStatus wrapper: force Accept/Refuse for managed -----
-        # After the game's UpdateProposalButtons runs and hides Accept
-        # (because ms_OtherPlayerIsHuman is false), we force the buttons
-        # back for managed targets.  We find the other player by scanning
-        # for the open diplomacy session.
-        # CRITICAL: capture the original ONCE (guard) and call it through a
-        # LOCAL upvalue (origUDS), not the global.  An earlier version read
-        # __MCP_orig_UDS as a *global* from inside the wrapper with the guard
-        # removed; a second install then pointed that global at wrapper1, so
-        # wrapper1 called itself -> infinite recursion -> Lua stack overflow
-        # -> hard crash on deal-screen open.  The guard keeps the global
-        # pointing at the real function; the local upvalue is defense-in-depth
-        # -- even if the guard were removed again, each wrapper still calls
-        # the real function it captured at creation, so it can only stack
-        # harmlessly, never self-recurse.
-        "if __MCP_orig_UDS == nil then "
-        "  __MCP_orig_UDS = UpdateDealStatus "
-        "end "
-        "local origUDS = __MCP_orig_UDS "
-        "UpdateDealStatus = function() "
-        "    origUDS() "
-        '    print("MCP_TRACE|UDS|proposal_id=" .. '
-        '      tostring(__MCP_deal_proposal_id or "nil")) '
-        "    local me = Game.GetLocalPlayer() "
-        "    local other = -1 "
-        "    for i = 0, 62 do "
-        "      if i ~= me then "
-        "        local sid = DiplomacyManager.FindOpenSessionID(me, i) "
-        "        if sid and sid >= 0 then other = i; break end "
-        "      end "
-        "    end "
-        "    if other >= 0 and __MCP_managed_ids[other] then "
-        "      Controls.AcceptDeal:SetHide(false) "
-        "      Controls.AcceptDeal:LocalizeAndSetText("
-        '        "LOC_DIPLOMACY_DEAL_ACCEPT_DEAL") '
-        "      Controls.RefuseDeal:SetHide(false) "
-        "      Controls.RefuseDeal:LocalizeAndSetText("
-        '        "LOC_DIPLOMACY_DEAL_REFUSE_DEAL") '
-        "      Controls.EqualizeDeal:SetHide(true) "
-        "      local cfg = PlayerConfigurations[other] "
-        "      local name = cfg and "
-        "        Locale.Lookup(cfg:GetLeaderName()) or "
-        '        ("P" .. tostring(other)) '
-        "      Controls.LeaderDialog:SetText("
-        "        name .. ' proposes the following deal:') "
-        "    end "
-        "  end "
-        ""
-        # -- SendWorkingDeal wrapper ---------------------------------------
-        # Same guard + local-upvalue pattern as UDS: the guard keeps the
-        # global pointing at the real function; the local upvalue (origSWD)
-        # makes self-recursion impossible even if the guard is removed again.
-        "if __MCP_orig_SWD == nil then "
-        "  __MCP_orig_SWD = DealManager.SendWorkingDeal "
-        "end "
-        "local origSWD = __MCP_orig_SWD "
-        "DealManager.SendWorkingDeal = function(action, fromP, toP) "
-        # Diagnostic: log every call to trace what fires.
-        '    print("MCP_TRACE|SWD|action=" .. tostring(action) '
-        '      .. "|fromP=" .. tostring(fromP) '
-        '      .. "|toP=" .. tostring(toP) '
-        '      .. "|proposal_id=" .. tostring(__MCP_deal_proposal_id or "nil")) '
-        # Only intercept for managed targets.
-        "    if __MCP_managed_ids[toP] or __MCP_managed_ids[fromP] then "
-        # INSPECT (7): suppress — we don't want the AI evaluating the deal.
-        "      if action == 7 then "
-        '        print("MCPDEAL|INSPECT|suppressed|from="'
-        "          .. tostring(fromP) .. \"|to=\" .. tostring(toP)) "
-        "        return "
-        "      end "
-        # PROPOSED (4): if __MCP_deal_proposal_id is set, this is the
-        # human accepting a mailbox deal; print HUMAN_ACCEPTED.  Otherwise
-        # it's a new proposal from the human — serialise and mailbox it.
-        "      if action == 4 then "
-        "        if __MCP_deal_proposal_id ~= nil then "
-        '          print("MCPDEAL|HUMAN_ACCEPTED|" '
-        "            .. tostring(__MCP_deal_proposal_id) "
-        '            .. "|from=" .. tostring(fromP) '
-        '            .. "|to=" .. tostring(toP)) '
-        "          __MCP_deal_proposal_id = nil "
-        "          return "
-        "        end "
-        '        print("MCPDEAL|PROPOSED|from=" .. tostring(fromP) '
-        '          .. "|to=" .. tostring(toP)) '
-        "        local pDeal = DealManager.GetWorkingDeal("
-        "          0, fromP, toP) "
-        "        if pDeal then "
-        "          for item in pDeal:Items() do "
-        "            local iType = item:GetType() "
-        "            local typeName = \"UNKNOWN\" "
-        "            if iType == DealItemTypes.GOLD then "
-        '              typeName = "GOLD" '
-        "            elseif iType == DealItemTypes.RESOURCES then "
-        '              typeName = "RESOURCE" '
-        "            elseif iType == DealItemTypes.AGREEMENTS then "
-        '              typeName = "AGREEMENT" '
-        "            elseif iType == DealItemTypes.FAVOR then "
-        '              typeName = "FAVOR" '
-        "            elseif iType == DealItemTypes.CITIES then "
-        '              typeName = "CITY" '
-        "            elseif iType == DealItemTypes.GREATWORK then "
-        '              typeName = "GREAT_WORK" '
-        "            end "
-        '            print("MCPDEAL_ITEM|" .. typeName '
-        "              .. \"|from=\" .. tostring(item:GetFromPlayerID()) "
-        "              .. \"|amount=\" .. tostring(item:GetAmount()) "
-        "              .. \"|duration=\" .. tostring(item:GetDuration()) "
-        "              .. \"|value=\" .. tostring(item:GetValueType() or -1) "
-        "              .. \"|sub=\" .. tostring(item:GetSubType() or -1)) "
-        "          end "
-        "        end "
-        '        print("MCPDEAL_END") '
-        "        return "
-        "      end "
-        # ACCEPTED (1) / REJECTED (2): allow through (forced-deal execution).
-        "    end "
-        "    return origSWD(action, fromP, toP) "
-        "  end "
-        '  print("DEALSHIM|installed|install_count=" '
-        "    .. tostring(__MCP_shim_install_count)) "
-        f'print("{SENTINEL}")'
-    )
+    lua = _load_deal_shim_template()
+    lua = lua.replace("__MCP_MANAGED_IDS_TAG__", managed_table)
+    lua = lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    return lua
 
 
 def build_deal_shim_uninstall_lua() -> str:
