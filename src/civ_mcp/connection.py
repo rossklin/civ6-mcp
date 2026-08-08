@@ -479,19 +479,6 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
                         to_pid = int(v)
                     except ValueError:
                         pass
-        # HUMAN_ACCEPTED: human clicked Accept on a presented mailbox deal.
-        # Format: MCPDEAL|HUMAN_ACCEPTED|<proposal_id>|from=X|to=Y
-        # rest = "HUMAN_ACCEPTED|<id>|from=X|to=Y", parts[1] is the id.
-        if "HUMAN_ACCEPTED" in rest:
-            proposal_id = (
-                parts[1] if len(parts) > 1 and "=" not in parts[1] else ""
-            )
-            return {
-                "type": "human_accepted",
-                "proposal_id": proposal_id,
-                "from": from_pid,
-                "to": to_pid,
-            }
         # INSPECT (7): suppressed for managed targets.
         if action_code == 7 or "suppressed" in rest:
             return {"type": "inspect_suppressed", "from": from_pid, "to": to_pid}

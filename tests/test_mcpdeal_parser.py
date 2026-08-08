@@ -123,25 +123,6 @@ class TestParseProposedDeal:
         assert item["item_type"] == "AGREEMENT"
         assert item["sub"] == 5
 
-
-class TestParseHumanAccepted:
-    def test_extracts_proposal_id(self):
-        result = _parse_mcpdeal_line(
-            _p("MCPDEAL|HUMAN_ACCEPTED|abc123|from=0|to=1")
-        )
-        assert result is not None
-        assert result["type"] == "human_accepted"
-        assert result["proposal_id"] == "abc123"
-        assert result["from"] == 0
-        assert result["to"] == 1
-
-    def test_longer_proposal_id(self):
-        result = _parse_mcpdeal_line(
-            _p("MCPDEAL|HUMAN_ACCEPTED|50ff6855f3f6|from=0|to=1")
-        )
-        assert result["proposal_id"] == "50ff6855f3f6"
-
-
 class TestParseClick:
     def test_click_with_pid(self):
         result = _parse_mcpdeal_line(

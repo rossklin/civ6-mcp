@@ -86,7 +86,7 @@ DealManager.SendWorkingDeal = function(action, fromP, toP)
     -- Only intercept for managed targets.
     if __MCP_managed_ids[toP] or __MCP_managed_ids[fromP] then
         -- INSPECT (7): suppress; we don't want the AI evaluating the deal.
-        if action == 7 then
+        if action == DealProposalAction.INSPECT then
             print("MCPDEAL|INSPECT|suppressed|from=" .. tostring(fromP) .. "|to=" .. tostring(toP))
             return
         end
@@ -94,13 +94,13 @@ DealManager.SendWorkingDeal = function(action, fromP, toP)
         -- PROPOSED (4): if __MCP_deal_proposal_id is set, this is the human
         -- accepting a mailbox deal (print HUMAN_ACCEPTED); otherwise it's a
         -- new proposal from the human (serialise and mailbox it).
-        if action == 4 then
+        if action == DealProposalAction.PROPOSED then
             if __MCP_deal_proposal_id ~= nil then
-                print("MCPDEAL|HUMAN_ACCEPTED|" .. tostring(__MCP_deal_proposal_id)
+                print("MCP_TRACE|HUMAN_ACCEPTED|" .. tostring(__MCP_deal_proposal_id)
                     .. "|from=" .. tostring(fromP)
                     .. "|to=" .. tostring(toP))
                 __MCP_deal_proposal_id = nil
-                return
+                return origSWD(DealProposalAction.ACCEPTED, fromP, toP)
             end
 
             print("MCPDEAL|PROPOSED|from=" .. tostring(fromP) .. "|to=" .. tostring(toP))

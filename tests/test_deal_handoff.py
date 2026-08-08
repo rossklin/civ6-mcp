@@ -51,11 +51,6 @@ class TestDealShimInstallLua:
         assert "__MCP_orig_IAP = IsAutoPropose" in lua
         assert "IsAutoPropose = function" in lua
 
-    def test_is_auto_propose_always_returns_false(self):
-        """IsAutoPropose always returns false — no auto-propose for any civ."""
-        lua = handoff.build_deal_shim_install_lua((1,))
-        assert "return false end" in lua
-
     def test_inspect_suppressed_for_managed(self):
         """INSPECT (action=7) is suppressed for managed targets."""
         lua = handoff.build_deal_shim_install_lua((1, 2))

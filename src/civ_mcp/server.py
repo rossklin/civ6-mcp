@@ -474,13 +474,6 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
                         conn, mailbox, data, cfg, gs
                     )
                 )
-            elif event_type == "human_accepted":
-                # Human clicked Accept on a presented mailbox deal.
-                asyncio.ensure_future(
-                    _handle_human_accepted_deal(
-                        conn, mailbox, data, cfg, gs
-                    )
-                )
             elif event_type == "trace":
                 log.info("DEAL TRACE: %s", data.get("msg", ""))
             elif event_type == "health":
@@ -866,50 +859,6 @@ def _handle_human_deal_proposed(
         len(items),
         proposal_id,
     )
-
-
-async def _handle_human_accepted_deal(
-    conn: GameConnection,
-    mailbox: DealMailbox,
-    data: dict,
-    cfg: HandoffConfig,
-    gs: GameState,
-) -> None:
-    """Callback: human clicked Accept on a presented mailbox deal.
-
-    Executes the deal via the forced-deal primitive and clears the
-    presentation state.
-    """
-    proposal_id = data.get("proposal_id", "")
-    proposal = mailbox.get(proposal_id)
-    if proposal is None:
-        log.warning("Human accepted unknown proposal %s", proposal_id)
-        return
-
-    # The accepter is the human.
-    human_pid = cfg.human_id
-
-    try:
-        lua = handoff.build_execute_deal_lua(proposal, human_pid)
-        lines = await conn.execute_write(lua, perspective=False)
-        result = next(
-            (l for l in lines if l.startswith("DEAL_EXECUTED|")),
-            "DEAL_EXECUTED|unknown",
-        )
-        mailbox.accept(proposal_id)
-        log.info("Human accepted and executed proposal %s: %s", proposal_id, result)
-
-        # Clear the managed-deal flag and close the session.
-        try:
-            await conn.execute_in_named_state(
-                handoff.DEAL_SHIM_STATE,
-                handoff.build_clear_deal_flag_lua(),
-            )
-        except Exception:
-            pass
-    except Exception:
-        log.warning("Human deal execution failed", exc_info=True)
-
 
 async def _handle_deal_notification_click(
     conn: GameConnection,
