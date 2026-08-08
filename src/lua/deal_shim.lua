@@ -124,6 +124,10 @@ DealManager.SendWorkingDeal = function(action, fromP, toP)
                         typeName = "GREAT_WORK"
                     end
 
+                    if (typeName == "UNKNOWN") then
+                        print("MCP_TRACE|Deal contained unknown item type " .. tostring(iType))
+                    end
+
                     print("MCPDEAL_ITEM|" .. typeName
                         .. "|from=" .. tostring(item:GetFromPlayerID())
                         .. "|amount=" .. tostring(item:GetAmount())
