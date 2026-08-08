@@ -18,23 +18,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Commands excluded from the dispatcher — these are standalone tools or
-# handled by the server layer.
-_EXCLUDED_COMMANDS: frozenset[str] = frozenset(
-    {
-        "end_turn",
-        "list_saves",
-        "load_save",
-        "load_game_save",
-        "get_game_identity",
-        "get_game_overview",
-        "get_diary_snapshot",
-        "get_rival_snapshot",
-        "check_game_over",
-        # All get_* read queries are excluded — they're in get_full_game_state
-    }
-)
-
 # Params whose name ends with "unit_id" and should be converted from
 # composite ID to unit_index.
 _UNIT_ID_PARAMS: frozenset[str] = frozenset({"unit_id", "trader_id"})
@@ -92,12 +75,6 @@ async def execute_commands(gs: GameState, commands_json: str) -> str:
 
         if not isinstance(params, dict):
             results.append(f"[{i + 1}/{total}] {action}: SKIPPED: params must be a dict")
-            continue
-
-        if action in _EXCLUDED_COMMANDS:
-            results.append(
-                f"[{i + 1}/{total}] {action}: REFUSED — use the standalone tool instead"
-            )
             continue
 
         # Convert params (unit_id → unit_index, etc.)

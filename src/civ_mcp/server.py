@@ -1333,9 +1333,6 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
       vote_world_congress(resolution_hash, option, target_index, num_votes)
         — option 1=A, 2=B; target_index is 0-based
       submit_congress() — submit votes and resume the turn
-
-    Misc:
-      dismiss_popup() — dismiss a blocking popup/notification
     """
     gs = _get_game(ctx)
     app = _app(ctx)
@@ -1349,6 +1346,56 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             return f"Invalid JSON: {e}"
         if not isinstance(commands, list):
             return "Error: commands_json must be a JSON array."
+
+        # Whitelist of actions documented in this tool's doc comment. Any
+        # command whose action is not in this set aborts the whole batch —
+        # nothing executes — so an unknown/typo'd action can never reach the
+        # engine.
+        _ALLOWED_ACTIONS = frozenset({
+            # Units
+            "move_unit", "attack_unit", "fortify_unit", "skip_unit",
+            "skip_remaining_units", "automate_explore", "heal_unit",
+            "alert_unit", "sleep_unit", "delete_unit", "enter_formation",
+            "exit_formation", "promote_unit", "upgrade_unit",
+            "check_unit_upgrade",
+            # Settling & cities
+            "found_city", "resolve_city_capture", "set_city_production",
+            "purchase_item", "list_city_production", "set_city_focus",
+            "purchase_tile", "city_attack",
+            # Builders & improvements
+            "improve_tile", "remove_feature", "repair_improvement",
+            "remove_improvement", "build_route", "sacrifice_builder_charges",
+            # Research & civics
+            "set_research", "set_civic",
+            # Diplomacy & trade
+            "send_diplomatic_action", "diplomacy_respond", "propose_peace",
+            "form_alliance", "propose_trade", "test_trade",
+            "respond_to_deal", "respond_to_trade",
+            # Governance
+            "set_policies", "change_government", "appoint_governor",
+            "assign_governor", "promote_governor", "send_envoy",
+            "choose_dedication",
+            # Religion & Great People
+            "choose_pantheon", "found_religion", "recruit_great_person",
+            "patronize_great_person", "reject_great_person",
+            "activate_great_person", "spread_religion",
+            # Trade routes & spies
+            "make_trade_route", "teleport_to_city", "spy_travel",
+            "spy_mission",
+            # World Congress
+            "queue_wc_votes", "vote_world_congress", "submit_congress",
+        })
+        unknown = sorted(
+            {cmd.get("action", "") for cmd in commands}
+            - _ALLOWED_ACTIONS
+        )
+        if unknown:
+            return (
+                "Error: refusing to execute commands — unknown action(s): "
+                + ", ".join(unknown)
+                + ". Only actions listed in the execute_commands doc "
+                "comment are permitted."
+            )
 
         results: list[str] = []
         remaining: list[dict] = []
