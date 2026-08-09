@@ -54,13 +54,13 @@ class TestDealShimInstallLua:
     def test_inspect_suppressed_for_managed(self):
         """INSPECT (action=7) is suppressed for managed targets."""
         lua = handoff.build_deal_shim_install_lua((1, 2))
-        assert "action == 7" in lua
+        assert "action == DealProposalAction.INSPECT" in lua
         assert "MCPDEAL|INSPECT|suppressed" in lua
 
     def test_proposed_serialized_for_managed(self):
         """PROPOSED (action=4) is serialised to MCPDEAL lines."""
         lua = handoff.build_deal_shim_install_lua((1,))
-        assert "action == 4" in lua
+        assert "action == DealProposalAction.PROPOSED" in lua
         assert "MCPDEAL|PROPOSED|from=" in lua
         assert "MCPDEAL_ITEM|" in lua
         assert "MCPDEAL_END" in lua
