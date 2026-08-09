@@ -4,7 +4,7 @@ Covers:
   - ``build_check_proposal_eligibility`` / ``_eligibility_guard_lua`` (the
     shared guard that ``build_propose_peace`` and ``build_form_alliance`` now
     embed, so the mailbox routing check and the engine path cannot drift).
-  - ``_parse_trade_params`` producing PEACE / ALLIANCE agreement items.
+  - ``_parse_trade_params`` producing MAKE_PEACE / ALLIANCE agreement items.
   - ``_lua_add_deal_item`` handling both sub_type encodings (agent enum name
     vs. human int), alliance value-type resolution, and resource index
     resolution by name.
@@ -36,7 +36,7 @@ from civ_mcp.seats import Seat, SeatRegistry
 
 class TestEligibilityGuard:
     def test_peace_guard_checks_war_and_canmakepeace(self):
-        lua = _eligibility_guard_lua(3, "PEACE")
+        lua = _eligibility_guard_lua(3, "MAKE_PEACE")
         assert "IsAtWarWith(target)" in lua
         assert "CanMakePeaceWith(target)" in lua
         assert "ERR:NOT_AT_WAR" in lua
@@ -53,7 +53,7 @@ class TestEligibilityGuard:
         assert "ERR:NO_CIVIC" in lua
 
     def test_peace_guard_does_not_mention_alliance_conditions(self):
-        lua = _eligibility_guard_lua(3, "PEACE")
+        lua = _eligibility_guard_lua(3, "MAKE_PEACE")
         assert "CIVIC_DIPLOMATIC_SERVICE" not in lua
         assert "GetDiplomaticStateIndex" not in lua
 
@@ -64,12 +64,12 @@ class TestEligibilityGuard:
 
 class TestCheckProposalEligibilityBuilder:
     def test_peace_ok_on_success(self):
-        lua = build_check_proposal_eligibility(3, "PEACE")
+        lua = build_check_proposal_eligibility(3, "MAKE_PEACE")
         # Declares the locals the guard expects, then prints OK and sentinel.
         assert "local me = Game.GetLocalPlayer()" in lua
         assert "local target = 3" in lua
         assert "local pDiplo = Players[me]:GetDiplomacy()" in lua
-        assert 'print("OK|PEACE")' in lua
+        assert 'print("OK|MAKE_PEACE")' in lua
         assert "---END---" in lua
 
     def test_alliance_ok_on_success(self):
@@ -80,15 +80,15 @@ class TestCheckProposalEligibilityBuilder:
 
     def test_does_not_open_session_or_send_deal(self):
         """The check is pure — it must not mutate any working deal or session."""
-        lua = build_check_proposal_eligibility(3, "PEACE")
+        lua = build_check_proposal_eligibility(3, "MAKE_PEACE")
         assert "RequestSession" not in lua
         assert "SendWorkingDeal" not in lua
         assert "ClearWorkingDeal" not in lua
         assert "AddItemOfType" not in lua
 
     def test_kind_normalised(self):
-        lua = build_check_proposal_eligibility(3, "peace")
-        assert 'print("OK|PEACE")' in lua
+        lua = build_check_proposal_eligibility(3, "make_peace")
+        assert 'print("OK|MAKE_PEACE")' in lua
 
 
 class TestBuildersReuseGuard:
@@ -126,7 +126,7 @@ class TestParseTradeParamsPeaceAlliance:
         offer, request = server._parse_trade_params(
             {"other_player_id": 0, "offer_peace": True}
         )
-        assert offer == [{"type": "AGREEMENT", "subtype": "PEACE"}]
+        assert offer == [{"type": "AGREEMENT", "subtype": "MAKE_PEACE"}]
         assert request == []
 
     def test_offer_peace_false_omitted(self):
@@ -189,8 +189,8 @@ class TestLuaAddDealItemAgreement:
         assert "SetSubType(OPEN_BORDERS)" not in lua  # no bare form
 
     def test_agent_peace_uses_enum_name(self):
-        lua = _lua_add_deal_item("me", _item(sub_type="PEACE"))
-        assert "SetSubType(DealAgreementTypes.PEACE)" in lua
+        lua = _lua_add_deal_item("me", _item(sub_type="MAKE_PEACE"))
+        assert "SetSubType(DealAgreementTypes.MAKE_PEACE)" in lua
 
     def test_human_int_subtype_rendered_bare(self):
         """Human-constructed items carry the enum's integer value; the int
@@ -225,7 +225,7 @@ class TestLuaAddDealItemAgreement:
         assert "SetValueType" not in lua
 
     def test_peace_has_no_value_type(self):
-        lua = _lua_add_deal_item("me", _item(sub_type="PEACE"))
+        lua = _lua_add_deal_item("me", _item(sub_type="MAKE_PEACE"))
         assert "SetValueType" not in lua
 
 
@@ -291,10 +291,10 @@ class _FakeConn:
 class TestCheckProposalEligibility:
     def test_ok(self):
         gs = types.SimpleNamespace(
-            conn=_FakeConn(["OK|PEACE", "---END---"])
+            conn=_FakeConn(["OK|MAKE_PEACE", "---END---"])
         )
         ok, reason = asyncio.run(
-            server._check_proposal_eligibility(gs, 3, "PEACE")
+            server._check_proposal_eligibility(gs, 3, "MAKE_PEACE")
         )
         assert ok is True
         assert reason == ""
@@ -304,7 +304,7 @@ class TestCheckProposalEligibility:
             conn=_FakeConn(["ERR:NOT_AT_WAR|Not at war with player 3", "---END---"])
         )
         ok, reason = asyncio.run(
-            server._check_proposal_eligibility(gs, 3, "PEACE")
+            server._check_proposal_eligibility(gs, 3, "MAKE_PEACE")
         )
         assert ok is False
         assert reason == "NOT_AT_WAR|Not at war with player 3"
@@ -312,7 +312,7 @@ class TestCheckProposalEligibility:
     def test_no_result_treated_as_failure(self):
         gs = types.SimpleNamespace(conn=_FakeConn(["---END---"]))
         ok, reason = asyncio.run(
-            server._check_proposal_eligibility(gs, 3, "PEACE")
+            server._check_proposal_eligibility(gs, 3, "MAKE_PEACE")
         )
         assert ok is False
         assert "no result" in reason
@@ -324,7 +324,7 @@ class TestCheckProposalEligibility:
 
         gs = types.SimpleNamespace(conn=_BoomConn())
         ok, reason = asyncio.run(
-            server._check_proposal_eligibility(gs, 3, "PEACE")
+            server._check_proposal_eligibility(gs, 3, "MAKE_PEACE")
         )
         assert ok is False
         assert "eligibility check failed" in reason

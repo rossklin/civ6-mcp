@@ -980,7 +980,7 @@ def _eligibility_guard_lua(other_player_id: int, kind: str) -> str:
     mailbox routing check (``build_check_proposal_eligibility``) and the
     engine-path builders can never drift apart.
     """
-    if kind == "PEACE":
+    if kind == "MAKE_PEACE":
         return (
             f'if not pDiplo:IsAtWarWith(target) then {_bail("ERR:NOT_AT_WAR|Not at war with player " + str(other_player_id))} end '
             "local canPeace = pDiplo:CanMakePeaceWith(target) "
@@ -1009,7 +1009,7 @@ def build_check_proposal_eligibility(other_player_id: int, kind: str) -> str:
     used to gate mailbox routing of ``propose_peace``/``form_alliance`` to
     managed civs before converting them into ``propose_trade`` filings.
 
-    ``kind`` is ``"PEACE"`` or ``"ALLIANCE"``.
+    ``kind`` is ``"MAKE_PEACE"`` or ``"ALLIANCE"``.
     """
     kind = kind.upper()
     return f"""
@@ -1094,7 +1094,7 @@ def build_propose_peace(other_player_id: int) -> str:
 local me = Game.GetLocalPlayer()
 local target = {other_player_id}
 local pDiplo = Players[me]:GetDiplomacy()
-{_eligibility_guard_lua(other_player_id, "PEACE")}
+{_eligibility_guard_lua(other_player_id, "MAKE_PEACE")}
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
 DiplomacyManager.RequestSession(me, target, "MAKE_PEACE")
 local sid = DiplomacyManager.FindOpenSessionID(me, target)

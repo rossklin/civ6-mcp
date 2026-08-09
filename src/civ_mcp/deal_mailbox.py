@@ -34,7 +34,7 @@ class SerializedDealItem:
     value_type: int = -1  # resource index, great work type, etc.
     # Agreement subtype. Two encodings coexist:
     #  - agent-constructed items carry the DealAgreementTypes enum NAME
-    #    (e.g. "OPEN_BORDERS", "PEACE", "ALLIANCE"); rendered in Lua as
+    #    (e.g. "OPEN_BORDERS", "MAKE_PEACE", "ALLIANCE"); rendered in Lua as
     #    DealAgreementTypes.<name>.
     #  - human-constructed items (read off the engine via item:GetSubType())
     #    carry the enum's integer value; rendered bare.

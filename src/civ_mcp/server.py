@@ -1439,7 +1439,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                     # through the deal mailbox instead.  Check eligibility
                     # first (same guards the engine path uses), then convert
                     # to a propose_trade mailbox filing.
-                    kind = "PEACE" if action == "propose_peace" else "ALLIANCE"
+                    kind = "MAKE_PEACE" if action == "propose_peace" else "ALLIANCE"
                     if kind == "ALLIANCE":
                         alliance_type = params.get("alliance_type")
                         if not alliance_type:
@@ -1455,7 +1455,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                         results.append(f"{action}: {reason}")
                         continue
                     mail_params: dict = {"other_player_id": target}
-                    if kind == "PEACE":
+                    if kind == "MAKE_PEACE":
                         mail_params["offer_peace"] = True
                     else:
                         mail_params["offer_alliance"] = alliance_type
@@ -2639,7 +2639,8 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
     if offer_ob:
         offer_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
     if offer_peace:
-        offer_items.append({"type": "AGREEMENT", "subtype": "PEACE"})
+        offer_items.append({"type": "AGREEMENT", "subtype": "MAKE_PEACE"})
+        request_items.append({"type": "AGREEMENT", "subtype": "MAKE_PEACE"})
     if offer_alliance:
         offer_items.append(
             {"type": "AGREEMENT", "subtype": "ALLIANCE", "alliance_type": offer_alliance.upper()}
