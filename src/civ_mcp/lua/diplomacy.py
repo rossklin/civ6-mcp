@@ -17,6 +17,36 @@ from civ_mcp.lua.models import (
     VisibleCity,
 )
 
+# ---------------------------------------------------------------------------
+# Diplomatic-action constants (shared by the engine builder and the mailbox)
+# ---------------------------------------------------------------------------
+
+# Actions whose target gets to accept or reject. Only these are mailbox-routed
+# to managed civs; one-way actions (denounce, war declarations) always go
+# straight to the engine.
+RESPONSEABLE_DIPLO_ACTIONS: frozenset[str] = frozenset(
+    {"DECLARE_FRIENDSHIP", "DIPLOMATIC_DELEGATION", "RESIDENT_EMBASSY"}
+)
+
+# action_name -> DiplomacyManager.RequestSession string. Single source of truth
+# for build_send_diplo_action and the diplo mailbox (which must open the same
+# session type when the proposer later executes an accepted proposal).
+DIPLO_SESSION_STRING_MAP: dict[str, str] = {
+    "DECLARE_FRIENDSHIP": "DECLARE_FRIEND",
+    "DIPLOMATIC_DELEGATION": "DIPLOMATIC_DELEGATION",
+    "RESIDENT_EMBASSY": "RESIDENT_EMBASSY",
+    "DENOUNCE": "DENOUNCE",
+    # War declarations — session strings match action names.
+    "DECLARE_SURPRISE_WAR": "DECLARE_SURPRISE_WAR",
+    "DECLARE_FORMAL_WAR": "DECLARE_FORMAL_WAR",
+    "DECLARE_HOLY_WAR": "DECLARE_HOLY_WAR",
+    "DECLARE_LIBERATION_WAR": "DECLARE_LIBERATION_WAR",
+    "DECLARE_RECONQUEST_WAR": "DECLARE_RECONQUEST_WAR",
+    "DECLARE_PROTECTORATE_WAR": "DECLARE_PROTECTORATE_WAR",
+    "DECLARE_COLONIAL_WAR": "DECLARE_COLONIAL_WAR",
+    "DECLARE_TERRITORIAL_WAR": "DECLARE_TERRITORIAL_WAR",
+}
+
 
 def build_diplomacy_query() -> str:
     """Rich diplomacy query — runs in InGame context for GetDiplomaticAI access."""
@@ -333,23 +363,8 @@ def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
     """
     # Map action_name to the correct RequestSession string
     # Game source: DiplomacyActionView.lua line 472 uses "DECLARE_FRIEND"
-    session_string_map = {
-        "DECLARE_FRIENDSHIP": "DECLARE_FRIEND",
-        "DIPLOMATIC_DELEGATION": "DIPLOMATIC_DELEGATION",
-        "RESIDENT_EMBASSY": "RESIDENT_EMBASSY",
-        "DENOUNCE": "DENOUNCE",
-        # War declarations — session strings match action names
-        "DECLARE_SURPRISE_WAR": "DECLARE_SURPRISE_WAR",
-        "DECLARE_FORMAL_WAR": "DECLARE_FORMAL_WAR",
-        "DECLARE_HOLY_WAR": "DECLARE_HOLY_WAR",
-        "DECLARE_LIBERATION_WAR": "DECLARE_LIBERATION_WAR",
-        "DECLARE_RECONQUEST_WAR": "DECLARE_RECONQUEST_WAR",
-        "DECLARE_PROTECTORATE_WAR": "DECLARE_PROTECTORATE_WAR",
-        "DECLARE_COLONIAL_WAR": "DECLARE_COLONIAL_WAR",
-        "DECLARE_TERRITORIAL_WAR": "DECLARE_TERRITORIAL_WAR",
-    }
     is_war = action_name.endswith("_WAR") and action_name.startswith("DECLARE_")
-    session_str = session_string_map.get(action_name, action_name)
+    session_str = DIPLO_SESSION_STRING_MAP.get(action_name, action_name)
 
     # War declarations use CanDeclareWarOn; other actions use IsDiplomaticActionValid
     if is_war:

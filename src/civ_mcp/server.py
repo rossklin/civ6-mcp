@@ -44,6 +44,8 @@ from civ_mcp.telemetry import (
     TelemetryEmitter,
 )
 from civ_mcp.deal_mailbox import DealMailbox, PendingProposal, SerializedDealItem
+from civ_mcp.diplo_mailbox import DiploMailbox, PendingDiploProposal
+from civ_mcp.lua.diplomacy import RESPONSEABLE_DIPLO_ACTIONS
 from civ_mcp.web_api import create_app
 
 log = logging.getLogger(__name__)
@@ -71,6 +73,9 @@ class AppContext:
     # Deal mailbox — intercepts trades with managed civs so the built-in AI
     # doesn't auto-answer them.
     mailbox: DealMailbox | None = None
+    # Diplomacy mailbox — same idea for response-able diplo actions
+    # (friendship/delegation/embassy) to managed civs. See diplo_mailbox.py.
+    diplo_mailbox: DiploMailbox | None = None
 
 
 async def _auto_boot(conn: GameConnection, save_name: str) -> None:
@@ -438,6 +443,8 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
 
     # Deal mailbox — intercepts trades with managed civs.
     mailbox = DealMailbox()
+    # Diplomacy mailbox — intercepts response-able diplo actions to managed civs.
+    diplo_mailbox = DiploMailbox()
     _deal_notify_task: asyncio.Task | None = None
     if cfg.enabled:
         # Install the DiplomacyDealView shim (idempotent).
@@ -540,6 +547,7 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
             handoff_config=cfg,
             keeper=keeper,
             mailbox=mailbox,
+            diplo_mailbox=diplo_mailbox,
         )
     finally:
         await emitter.close()
@@ -1191,6 +1199,42 @@ async def get_full_game_state(ctx: Context) -> str:
         except Exception:
             log.debug("Failed to append mailbox deals", exc_info=True)
 
+        # Append diplo mailbox (response-able actions to managed civs).
+        try:
+            app = _app(ctx)
+            diplo_mb = app.diplo_mailbox
+            if diplo_mb is not None:
+                seat = _get_seat(ctx)
+                incoming = diplo_mb.get_pending_for(seat.player_id)
+                outgoing = diplo_mb.get_sent_by(seat.player_id)
+                if incoming or outgoing:
+                    text += "\n\n=== DIPLOMACY MAILBOX ==="
+                    for p in incoming:
+                        text += (
+                            f"\n\nIncoming from P{p.from_player}"
+                            f" (proposal {p.proposal_id}): {p.action_name}"
+                        )
+                        text += (
+                            "\n  Use execute_commands with "
+                            "action='respond_to_diplo_action'"
+                            f" (other_player_id={p.from_player}, "
+                            "accept=True/False)"
+                        )
+                    for p in outgoing:
+                        if p.status == "pending":
+                            status = "awaiting response"
+                        elif p.status == "accepted":
+                            status = "accepted — takes effect next turn"
+                        else:
+                            status = "rejected"
+                        text += (
+                            f"\n\nOutgoing to P{p.to_player}"
+                            f" (proposal {p.proposal_id}): {p.action_name}"
+                            f" — {status}."
+                        )
+        except Exception:
+            log.debug("Failed to append diplo mailbox", exc_info=True)
+
         return text
 
     return await _logged(ctx, "get_full_game_state", {}, _run)
@@ -1280,7 +1324,14 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE | OPEN_BORDERS
         | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
         | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
-        | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR
+        | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR.
+        For the three response-able actions (DIPLOMATIC_DELEGATION,
+        RESIDENT_EMBASSY, DECLARE_FRIENDSHIP) targeting a managed civ, the
+        proposal is filed in the DIPLOMACY MAILBOX instead of the engine —
+        opening a session would let the target's built-in AI auto-respond. The
+        target answers on its own turn; your action takes effect on your next
+        turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go
+        straight to the engine.
       diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
         | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
       propose_peace(other_player_id) — propose white peace. Targeting a
@@ -1304,6 +1355,10 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         AI-proposed deal.
       respond_to_trade(other_player_id, accept: bool) — accept/reject an
         incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
+      respond_to_diplo_action(other_player_id, accept: bool) — accept/reject
+        an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy)
+        from a managed civ. Accept marks it; the proposer's action takes effect
+        on the proposer's next turn. Reject discards it.
 
     Governance:
       set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"};
@@ -1377,7 +1432,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             # Diplomacy & trade
             "send_diplomatic_action", "diplomacy_respond", "propose_peace",
             "form_alliance", "propose_trade", "test_trade",
-            "respond_to_deal", "respond_to_trade",
+            "respond_to_deal", "respond_to_trade", "respond_to_diplo_action",
             # Governance
             "set_policies", "change_government", "appoint_governor",
             "assign_governor", "promote_governor", "send_envoy",
@@ -1468,6 +1523,26 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                 # gs.form_alliance (the default AI responds).
                 remaining.append(cmd)
                 continue
+            elif action == "send_diplomatic_action" and app.diplo_mailbox is not None:
+                target = params.get("other_player_id", -1)
+                action_name = params.get("action_name", "")
+                # Only response-able actions (friendship/delegation/embassy)
+                # to a managed target are mailbox-routed. One-way actions
+                # (denounce, war declarations) always go to the engine, and
+                # so do response-able actions to non-managed (built-in AI)
+                # civs — the AI responding is the correct behaviour there.
+                if (
+                    target in app.handoff_config.managed_ids
+                    and action_name in RESPONSEABLE_DIPLO_ACTIONS
+                ):
+                    result = await _mailbox_propose_diplo(
+                        app, seat, target, action_name
+                    )
+                    results.append(f"send_diplomatic_action: {result}")
+                    continue
+                # Non-managed target or one-way action — engine path.
+                remaining.append(cmd)
+                continue
             elif action == "respond_to_trade" and app.handoff_config.enabled:
                 target = params.get("other_player_id", -1)
                 accept = params.get("accept", False)
@@ -1493,6 +1568,43 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                     else:
                         # Not a mailbox deal — fall through to engine.
                         remaining.append(cmd)
+                    continue
+                remaining.append(cmd)
+                continue
+            elif action == "respond_to_diplo_action" and app.handoff_config.enabled:
+                target = params.get("other_player_id", -1)
+                accept = params.get("accept", False)
+                if isinstance(accept, str):
+                    accept = accept.lower() in ("true", "yes", "1", "accept")
+                # Look up a pending diplo proposal from `target` to this seat.
+                diplo_mb = app.diplo_mailbox
+                if diplo_mb is not None:
+                    pending = diplo_mb.get_pending_for(seat.player_id)
+                    proposal = next(
+                        (p for p in pending if p.from_player == target), None
+                    )
+                    if proposal is not None:
+                        if accept:
+                            # Mark accepted; the proposer executes the action
+                            # on its next turn (see _drain_diplo_proposals).
+                            diplo_mb.accept(proposal.proposal_id)
+                            result = (
+                                f"Accepted P{target}'s {proposal.action_name} "
+                                f"proposal — takes effect on P{target}'s next "
+                                f"turn."
+                            )
+                        else:
+                            diplo_mb.reject(proposal.proposal_id)
+                            result = (
+                                f"Rejected P{target}'s "
+                                f"{proposal.action_name} proposal."
+                            )
+                        results.append(f"respond_to_diplo_action: {result}")
+                        continue
+                    # No mailbox proposal — fall through to engine
+                    # respond_to_diplomacy (a real AI-opened session caught by
+                    # _check_mid_turn_diplomacy).
+                    remaining.append(cmd)
                     continue
                 remaining.append(cmd)
                 continue
@@ -1667,11 +1779,35 @@ async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
             "before waiting for a turn."
         )
     timeout = max(1.0, min(float(timeout_seconds), 600.0))
+
+    async def _wait_and_drain() -> str:
+        report = await handoff.wait_for_turn(
+            seat.game, seat, app.handoff_config, timeout
+        )
+        # If the turn actually started (not a timeout), drain diplo proposals
+        # this seat filed that the target has since answered. The proposer is
+        # local now, so executing them via the engine path is safe.
+        diplo_mb = app.diplo_mailbox
+        if diplo_mb is not None and diplo_mb.pending_count:
+            try:
+                own = await handoff.try_ownership(seat.game.conn)
+            except Exception:
+                own = None
+            if own is not None and own.local_player == seat.player_id:
+                drain = await _drain_diplo_proposals(
+                    seat.game, diplo_mb, seat.player_id
+                )
+                if drain:
+                    report = report + "\n\n=== DIPLOMACY RESOLVED ===\n" + "\n".join(
+                        drain
+                    )
+        return report
+
     return await _logged(
         ctx,
         "wait_for_turn",
         {"timeout_seconds": timeout},
-        lambda: handoff.wait_for_turn(seat.game, seat, app.handoff_config, timeout),
+        _wait_and_drain,
     )
 
 
@@ -2604,6 +2740,73 @@ async def _mailbox_propose_trade(
         f"Trade proposed to P{target} — awaiting response. "
         f"Proposal: {proposal_id}"
     )
+
+
+async def _mailbox_propose_diplo(
+    app, seat, target: int, action_name: str
+) -> str:
+    """File a response-able diplo action to a managed civ in the diplo mailbox.
+
+    The action is NOT sent to the engine here.  Opening a session would let the
+    target's built-in AI auto-respond: during this turn only the proposer is
+    human-type, so every other player (managed or not) is AI to the engine and
+    answers a freshly-opened session within seconds.  The target instead records
+    accept/reject on its own turn, and the proposer executes the action on its
+    *next* turn via :func:`_drain_diplo_proposals` — reusing the engine path
+    that forces ``POSITIVE`` and closes same-frame, before the target's AI can
+    decide.  Because the proposer opens the session, the action's direction
+    (delegation/embassy belong to the proposer) is correct.
+    """
+    diplo_mb = app.diplo_mailbox
+    if diplo_mb is None:
+        return "Error: diplo mailbox not available"
+    agent_pid = seat.player_id
+    proposal = PendingDiploProposal(
+        from_player=agent_pid,
+        to_player=target,
+        action_name=action_name,
+        proposed_by="agent",
+    )
+    proposal_id = diplo_mb.propose(proposal)
+    return (
+        f"{action_name} proposed to P{target} — awaiting response. "
+        f"Proposal: {proposal_id}"
+    )
+
+
+async def _drain_diplo_proposals(
+    gs, diplo_mb: DiploMailbox, proposer_pid: int
+) -> list[str]:
+    """Execute/report diplo proposals the proposer filed that have been answered.
+
+    Called at the start of the proposer's turn (the proposer is local again), so
+    :meth:`GameState.send_diplomatic_action` — which forces ``POSITIVE`` and
+    closes the session same-frame — is safe: the target pre-consented via the
+    mailbox, and the target's AI never gets a turn to decide.  Re-validation
+    inside the engine builder drops proposals that became invalid (war declared,
+    delegation obsolete, etc.); those surface as a failure line rather than a
+    crash.  Returns one message line per drained proposal.
+    """
+    lines: list[str] = []
+    for proposal in diplo_mb.get_drainable_by(proposer_pid):
+        if proposal.status == "accepted":
+            try:
+                result = await gs.send_diplomatic_action(
+                    proposal.to_player, proposal.action_name
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                result = f"execution failed: {e}"
+            lines.append(
+                f"Your {proposal.action_name} to P{proposal.to_player} "
+                f"took effect: {result}"
+            )
+        else:  # rejected
+            lines.append(
+                f"P{proposal.to_player} rejected your "
+                f"{proposal.action_name} proposal."
+            )
+        diplo_mb.remove(proposal.proposal_id)
+    return lines
 
 
 def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
