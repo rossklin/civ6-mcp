@@ -246,14 +246,14 @@ class TestInjectDealLua:
         assert "SetValueType(23)" in lua
 
     def test_agreement_item_injection(self):
-        """Agreement items pass sub_type to the deal."""
+        """Agreement items pass subtype to the deal."""
         proposal = PendingProposal(
             proposal_id="a1",
             from_player=1, to_player=0,
             items_from_proposer=[
                 SerializedDealItem(
                     item_type="AGREEMENT", from_player_id=1, amount=0,
-                    duration=0, sub_type=8
+                    duration=0, subtype=8
                 ),
             ],
         )

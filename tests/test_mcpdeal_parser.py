@@ -113,7 +113,7 @@ class TestParseProposedDeal:
         assert item["value"] == 23
 
     def test_agreement_item_fields(self):
-        """Agreement items pass through sub_type correctly."""
+        """Agreement items pass through subtype correctly."""
         _parse_mcpdeal_line(_p("MCPDEAL|action=4|from=0|to=1"))
         _parse_mcpdeal_line(
             _p("MCPDEAL_ITEM|AGREEMENT|from=1|amount=0|duration=0|value=-1|sub=5")

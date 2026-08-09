@@ -2645,6 +2645,9 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
         offer_items.append(
             {"type": "AGREEMENT", "subtype": "ALLIANCE", "alliance_type": offer_alliance.upper()}
         )
+        request_items.append(
+            {"type": "AGREEMENT", "subtype": "ALLIANCE", "alliance_type": offer_alliance.upper()}
+        )
     if req_gold > 0:
         request_items.append({"type": "GOLD", "amount": req_gold, "duration": 0})
     if req_gpt > 0:

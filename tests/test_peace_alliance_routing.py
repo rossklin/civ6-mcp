@@ -5,7 +5,7 @@ Covers:
     shared guard that ``build_propose_peace`` and ``build_form_alliance`` now
     embed, so the mailbox routing check and the engine path cannot drift).
   - ``_parse_trade_params`` producing MAKE_PEACE / ALLIANCE agreement items.
-  - ``_lua_add_deal_item`` handling both sub_type encodings (agent enum name
+  - ``_lua_add_deal_item`` handling both subtype encodings (agent enum name
     vs. human int), alliance value-type resolution, and resource index
     resolution by name.
   - ``_check_proposal_eligibility`` parsing the Lua guard's output.
@@ -127,7 +127,7 @@ class TestParseTradeParamsPeaceAlliance:
             {"other_player_id": 0, "offer_peace": True}
         )
         assert offer == [{"type": "AGREEMENT", "subtype": "MAKE_PEACE"}]
-        assert request == []
+        assert request == [{"type": "AGREEMENT", "subtype": "MAKE_PEACE"}]
 
     def test_offer_peace_false_omitted(self):
         offer, _ = server._parse_trade_params({"offer_peace": False})
@@ -140,21 +140,23 @@ class TestParseTradeParamsPeaceAlliance:
         assert offer == [
             {"type": "AGREEMENT", "subtype": "ALLIANCE", "alliance_type": "MILITARY"}
         ]
-        assert request == []
+        assert request == [
+            {"type": "AGREEMENT", "subtype": "ALLIANCE", "alliance_type": "MILITARY"}
+        ]
 
     def test_offer_alliance_uppercases_type(self):
         offer, _ = server._parse_trade_params({"offer_alliance": "Research"})
         assert offer[0]["alliance_type"] == "RESEARCH"
 
     def test_peace_and_alliance_are_offer_only(self):
-        """Both are mutual agreements added once from the proposer's side,
-        mirroring build_form_alliance."""
+        """Both are mutual agreements and should be present on both sides of the deal."""
         offer, request = server._parse_trade_params(
             {"offer_peace": True, "offer_alliance": "cultural"}
         )
         assert all(it["type"] == "AGREEMENT" for it in offer)
         assert len(offer) == 2
-        assert request == []
+        assert all(it["type"] == "AGREEMENT" for it in request)
+        assert len(request) == 2
 
     def test_open_borders_still_supported(self):
         offer, request = server._parse_trade_params(
@@ -184,24 +186,24 @@ class TestLuaAddDealItemAgreement:
     def test_agent_string_subtype_gets_enum_prefix(self):
         """Agent-constructed items carry the enum NAME — must render as
         DealAgreementTypes.<name>, not a bare global lookup (which is nil)."""
-        lua = _lua_add_deal_item("me", _item(sub_type="OPEN_BORDERS"))
+        lua = _lua_add_deal_item("me", _item(subtype="OPEN_BORDERS"))
         assert "SetSubType(DealAgreementTypes.OPEN_BORDERS)" in lua
         assert "SetSubType(OPEN_BORDERS)" not in lua  # no bare form
 
     def test_agent_peace_uses_enum_name(self):
-        lua = _lua_add_deal_item("me", _item(sub_type="MAKE_PEACE"))
+        lua = _lua_add_deal_item("me", _item(subtype="MAKE_PEACE"))
         assert "SetSubType(DealAgreementTypes.MAKE_PEACE)" in lua
 
     def test_human_int_subtype_rendered_bare(self):
         """Human-constructed items carry the enum's integer value; the int
         works directly since enum members are ints."""
-        lua = _lua_add_deal_item("me", _item(sub_type=547027585))
+        lua = _lua_add_deal_item("me", _item(subtype=547027585))
         assert "SetSubType(547027585)" in lua
         assert "DealAgreementTypes.547027585" not in lua
 
     def test_alliance_agent_resolves_value_by_name(self):
         lua = _lua_add_deal_item(
-            "me", _item(sub_type="ALLIANCE", alliance_type="military")
+            "me", _item(subtype="ALLIANCE", alliance_type="military")
         )
         assert "SetSubType(DealAgreementTypes.ALLIANCE)" in lua
         assert 'GameInfo.Alliances["ALLIANCE_MILITARY"]' in lua
@@ -213,7 +215,7 @@ class TestLuaAddDealItemAgreement:
         """Human alliance items carry the int alliance-type index from the
         engine; no GameInfo lookup, but still guarded by the alliance check."""
         lua = _lua_add_deal_item(
-            "me", _item(sub_type=547027585, value_type=2)
+            "me", _item(subtype=547027585, value_type=2)
         )
         assert "SetSubType(547027585)" in lua
         assert "ai:SetValueType(2)" in lua
@@ -221,11 +223,11 @@ class TestLuaAddDealItemAgreement:
         assert "GameInfo.Alliances" not in lua
 
     def test_non_alliance_agreement_has_no_value_type(self):
-        lua = _lua_add_deal_item("me", _item(sub_type="OPEN_BORDERS"))
+        lua = _lua_add_deal_item("me", _item(subtype="OPEN_BORDERS"))
         assert "SetValueType" not in lua
 
     def test_peace_has_no_value_type(self):
-        lua = _lua_add_deal_item("me", _item(sub_type="MAKE_PEACE"))
+        lua = _lua_add_deal_item("me", _item(subtype="MAKE_PEACE"))
         assert "SetValueType" not in lua
 
 

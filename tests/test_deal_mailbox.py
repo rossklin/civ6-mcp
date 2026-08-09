@@ -38,7 +38,7 @@ class TestSerializedDealItem:
             item_type="FAVOR", from_player_id=2, amount=50, duration=0
         )
         assert item.value_type == -1
-        assert item.sub_type == -1
+        assert item.subtype == -1
 
 
 # ---------------------------------------------------------------------------
