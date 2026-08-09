@@ -38,7 +38,7 @@ class SerializedDealItem:
     #    DealAgreementTypes.<name>.
     #  - human-constructed items (read off the engine via item:GetSubType())
     #    carry the enum's integer value; rendered bare.
-    sub_type: int | str = -1
+    subtype: int | str = -1
     name: str = ""  # resource type string for agent-constructed RESOURCE items
     alliance_type: str = ""  # e.g. "MILITARY" for agent-constructed ALLIANCE items
 

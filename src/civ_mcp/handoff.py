@@ -923,7 +923,7 @@ def _lua_add_deal_item(from_var: str, item) -> str:
     ``from_var`` is the Lua variable/expression for the player id that
     *provides* the item (e.g. ``"me"`` or ``"other"``).
 
-    Agreement ``sub_type`` has two encodings (see :class:`SerializedDealItem`):
+    Agreement ``subtype`` has two encodings (see :class:`SerializedDealItem`):
     agent-constructed items carry the enum *name* (rendered as
     ``DealAgreementTypes.<name>``); human-constructed items carry the enum's
     integer value (rendered bare, since the enum members are ints).  Alliance
@@ -964,7 +964,7 @@ def _lua_add_deal_item(from_var: str, item) -> str:
             f"if fi then fi:SetAmount({amount}) end end "
         )
     elif t == "AGREEMENT":
-        sub = item.sub_type
+        sub = item.subtype
         if isinstance(sub, str) and sub:
             sub_expr = f"DealAgreementTypes.{sub}"
         else:

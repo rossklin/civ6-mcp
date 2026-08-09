@@ -831,7 +831,7 @@ def _handle_human_deal_proposed(
             amount=it.get("amount", 0),
             duration=it.get("duration", 0),
             value_type=it.get("value", -1),
-            sub_type=it.get("sub", -1),
+            subtype=it.get("sub", -1),
         )
         for it in items_data
     ]
@@ -2145,7 +2145,7 @@ def _format_mailbox_item(item: SerializedDealItem, indent: str = "  ") -> str:
     elif t == "FAVOR":
         return f"{indent}- {item.amount} Diplomatic Favor\n"
     elif t == "AGREEMENT":
-        return f"{indent}- Agreement (sub={item.sub_type})\n"
+        return f"{indent}- Agreement (sub={item.subtype})\n"
     elif t == "CITY":
         return f"{indent}- City (id={item.value_type})\n"
     else:
@@ -2572,7 +2572,7 @@ async def _mailbox_propose_trade(
             amount=it.get("amount", 0),
             duration=it.get("duration", 0),
             value_type=it.get("value_type", -1),
-            sub_type=it.get("sub_type", -1),
+            subtype=it.get("subtype", -1),
             name=it.get("name", ""),
             alliance_type=it.get("alliance_type", ""),
         )
@@ -2585,7 +2585,7 @@ async def _mailbox_propose_trade(
             amount=it.get("amount", 0),
             duration=it.get("duration", 0),
             value_type=it.get("value_type", -1),
-            sub_type=it.get("sub_type", -1),
+            subtype=it.get("subtype", -1),
             name=it.get("name", ""),
             alliance_type=it.get("alliance_type", ""),
         )
