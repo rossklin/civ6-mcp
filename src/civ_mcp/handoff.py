@@ -922,6 +922,14 @@ def _lua_add_deal_item(from_var: str, item) -> str:
 
     ``from_var`` is the Lua variable/expression for the player id that
     *provides* the item (e.g. ``"me"`` or ``"other"``).
+
+    Agreement ``sub_type`` has two encodings (see :class:`SerializedDealItem`):
+    agent-constructed items carry the enum *name* (rendered as
+    ``DealAgreementTypes.<name>``); human-constructed items carry the enum's
+    integer value (rendered bare, since the enum members are ints).  Alliance
+    items additionally need ``SetValueType`` with the ``GameInfo.Alliances``
+    index — agent items carry the type *name* and resolve it in Lua; human
+    items carry the int ``value_type`` straight from the engine.
     """
     t = item.item_type.upper()
     dt = _DEAL_ITEM_TYPE_LUA.get(t, "DealItemTypes.GOLD")
@@ -935,9 +943,18 @@ def _lua_add_deal_item(from_var: str, item) -> str:
             f"gi:SetDuration({duration}) end end "
         )
     elif t == "RESOURCE":
+        # Agent-constructed items carry the resource type name (resolve via
+        # GameInfo here); human-constructed items carry the int value_type
+        # from the engine.
+        if item.value_type is not None and item.value_type >= 0:
+            vt = f"{item.value_type}"
+        elif item.name:
+            vt = f'(GameInfo.Resources["{item.name}"] and GameInfo.Resources["{item.name}"].Index or -1)'
+        else:
+            vt = "-1"
         return (
             f"do local ri = deal:AddItemOfType({dt}, {from_var}) "
-            f"if ri then ri:SetValueType({item.value_type}) "
+            f"if ri then ri:SetValueType({vt}) "
             f"ri:SetAmount({amount}) "
             f"ri:SetDuration({duration}) end end "
         )
@@ -947,9 +964,36 @@ def _lua_add_deal_item(from_var: str, item) -> str:
             f"if fi then fi:SetAmount({amount}) end end "
         )
     elif t == "AGREEMENT":
+        sub = item.sub_type
+        if isinstance(sub, str) and sub:
+            sub_expr = f"DealAgreementTypes.{sub}"
+        else:
+            sub_expr = str(sub)  # int — enum members are ints, so this works
+        parts = [f"ai:SetSubType({sub_expr})"]
+        # Alliance items additionally need SetValueType with the
+        # GameInfo.Alliances index.  Detect in Lua so it works for both
+        # encodings (agent name → DealAgreementTypes.ALLIANCE; human int →
+        # the enum's integer value).
+        at = getattr(item, "alliance_type", "") or ""
+        has_vt = item.value_type is not None and item.value_type >= 0
+        if at:
+            # Agent item: resolve the index by alliance-type name.
+            vt_lua = (
+                f'pcall(function() local r=GameInfo.Alliances["ALLIANCE_{at.upper()}"] '
+                f"if r then ai:SetValueType(r.Index) end end)"
+            )
+        elif has_vt:
+            # Human item: int alliance-type index straight from the engine.
+            vt_lua = f"ai:SetValueType({item.value_type})"
+        else:
+            vt_lua = ""
+        if vt_lua:
+            parts.append(
+                f"if {sub_expr} == DealAgreementTypes.ALLIANCE then {vt_lua} end"
+            )
         return (
             f"do local ai = deal:AddItemOfType({dt}, {from_var}) "
-            f"if ai then ai:SetSubType({item.sub_type}) end end "
+            f"if ai then {' '.join(parts)} end end "
         )
     elif t == "CITY":
         return (

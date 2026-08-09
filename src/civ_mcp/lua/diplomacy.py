@@ -971,6 +971,57 @@ def parse_test_trade_response(lines: list[str]) -> TestTradeResult:
     return result
 
 
+def _eligibility_guard_lua(other_player_id: int, kind: str) -> str:
+    """Lua guard that bails with ``ERR:...`` if a peace/alliance proposal is invalid.
+
+    Assumes ``me``, ``target`` and ``pDiplo`` are already declared in scope.
+    Single source of truth for the conditions also embedded in
+    :func:`build_propose_peace` and :func:`build_form_alliance`, so the
+    mailbox routing check (``build_check_proposal_eligibility``) and the
+    engine-path builders can never drift apart.
+    """
+    if kind == "PEACE":
+        return (
+            f'if not pDiplo:IsAtWarWith(target) then {_bail("ERR:NOT_AT_WAR|Not at war with player " + str(other_player_id))} end '
+            "local canPeace = pDiplo:CanMakePeaceWith(target) "
+            f'if not canPeace then {_bail("ERR:CANNOT_MAKE_PEACE|10-turn war cooldown or other restriction")} end'
+        )
+    # ALLIANCE
+    return (
+        f'if not Players[target] or not Players[target]:IsAlive() then {_bail("ERR:INVALID_PLAYER|Player not found")} end '
+        f'if not pDiplo:HasMet(target) then {_bail("ERR:NOT_MET|Have not met this civilization")} end '
+        f'if pDiplo:IsAtWarWith(target) then {_bail("ERR:AT_WAR|Cannot ally while at war")} end '
+        "local ai = Players[target]:GetDiplomaticAI() "
+        "local stateIdx = ai:GetDiplomaticStateIndex(me) "
+        f'if stateIdx == 0 then {_bail("ERR:ALREADY_ALLIED|Already in an alliance")} end '
+        f'if stateIdx ~= 1 then {_bail("ERR:NOT_FRIENDS|Must be declared friends first")} end '
+        "local hasDiploService = false "
+        'pcall(function() local civic = GameInfo.Civics["CIVIC_DIPLOMATIC_SERVICE"] if civic then hasDiploService = Players[me]:GetCulture():HasCivic(civic.Index) end end) '
+        f'if not hasDiploService then {_bail("ERR:NO_CIVIC|Diplomatic Service civic required for alliances")} end'
+    )
+
+
+def build_check_proposal_eligibility(other_player_id: int, kind: str) -> str:
+    """Pure eligibility check for a peace/alliance proposal (InGame context).
+
+    Prints ``OK|<kind>`` if the proposal is allowed, otherwise bails with
+    ``ERR:REASON|...``.  Does NOT open a session or touch any working deal —
+    used to gate mailbox routing of ``propose_peace``/``form_alliance`` to
+    managed civs before converting them into ``propose_trade`` filings.
+
+    ``kind`` is ``"PEACE"`` or ``"ALLIANCE"``.
+    """
+    kind = kind.upper()
+    return f"""
+local me = Game.GetLocalPlayer()
+local target = {other_player_id}
+local pDiplo = Players[me]:GetDiplomacy()
+{_eligibility_guard_lua(other_player_id, kind)}
+print("OK|{kind}")
+print("{SENTINEL}")
+"""
+
+
 def build_form_alliance(other_player_id: int, alliance_type: str) -> str:
     """Form an alliance with another civilization (InGame context).
 
@@ -983,19 +1034,7 @@ local target = {other_player_id}
 local allianceRow = GameInfo.Alliances["{alliance_key}"]
 local type_idx = allianceRow and allianceRow.Index or 0
 local pDiplo = Players[me]:GetDiplomacy()
-if not Players[target] or not Players[target]:IsAlive() then {_bail("ERR:INVALID_PLAYER|Player not found")} end
-if not pDiplo:HasMet(target) then {_bail("ERR:NOT_MET|Have not met this civilization")} end
-if pDiplo:IsAtWarWith(target) then {_bail("ERR:AT_WAR|Cannot ally while at war")} end
-local ai = Players[target]:GetDiplomaticAI()
-local stateIdx = ai:GetDiplomaticStateIndex(me)
-if stateIdx == 0 then {_bail("ERR:ALREADY_ALLIED|Already in an alliance")} end
-if stateIdx ~= 1 then {_bail("ERR:NOT_FRIENDS|Must be declared friends first")} end
-local hasDiploService = false
-pcall(function()
-    local civic = GameInfo.Civics["CIVIC_DIPLOMATIC_SERVICE"]
-    if civic then hasDiploService = Players[me]:GetCulture():HasCivic(civic.Index) end
-end)
-if not hasDiploService then {_bail("ERR:NO_CIVIC|Diplomatic Service civic required for alliances")} end
+{_eligibility_guard_lua(other_player_id, "ALLIANCE")}
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
 -- Always clear — see the note in build_propose_trade. A leftover working deal
 -- would attach its items to the alliance proposal.
@@ -1055,9 +1094,7 @@ def build_propose_peace(other_player_id: int) -> str:
 local me = Game.GetLocalPlayer()
 local target = {other_player_id}
 local pDiplo = Players[me]:GetDiplomacy()
-if not pDiplo:IsAtWarWith(target) then {_bail("ERR:NOT_AT_WAR|Not at war with player " + str(other_player_id))} end
-local canPeace = pDiplo:CanMakePeaceWith(target)
-if not canPeace then {_bail("ERR:CANNOT_MAKE_PEACE|10-turn war cooldown or other restriction")} end
+{_eligibility_guard_lua(other_player_id, "PEACE")}
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
 DiplomacyManager.RequestSession(me, target, "MAKE_PEACE")
 local sid = DiplomacyManager.FindOpenSessionID(me, target)

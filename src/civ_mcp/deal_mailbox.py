@@ -32,7 +32,15 @@ class SerializedDealItem:
     amount: int
     duration: int  # 0 = lump sum, >0 = per-turn
     value_type: int = -1  # resource index, great work type, etc.
-    sub_type: int = -1  # agreement subtype (DealAgreementTypes enum)
+    # Agreement subtype. Two encodings coexist:
+    #  - agent-constructed items carry the DealAgreementTypes enum NAME
+    #    (e.g. "OPEN_BORDERS", "PEACE", "ALLIANCE"); rendered in Lua as
+    #    DealAgreementTypes.<name>.
+    #  - human-constructed items (read off the engine via item:GetSubType())
+    #    carry the enum's integer value; rendered bare.
+    sub_type: int | str = -1
+    name: str = ""  # resource type string for agent-constructed RESOURCE items
+    alliance_type: str = ""  # e.g. "MILITARY" for agent-constructed ALLIANCE items
 
     @property
     def is_gold_lump(self) -> bool:

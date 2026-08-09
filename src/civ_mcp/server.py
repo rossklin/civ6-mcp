@@ -1283,12 +1283,19 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR
       diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
         | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
-      propose_peace(other_player_id)
-      form_alliance(other_player_id, alliance_type) — MILITARY | RESEARCH |
-        CULTURAL | ECONOMIC | RELIGIOUS
+      propose_peace(other_player_id) — propose white peace. Targeting a
+        managed civ routes through the deal mailbox (the default AI would
+        otherwise auto-answer); eligibility (at war, past cooldown) is
+        checked first. Targeting an unmanaged civ goes to the engine.
+      form_alliance(other_player_id, alliance_type) — alliance_type:
+        MILITARY | RESEARCH | CULTURAL | ECONOMIC | RELIGIOUS (required).
+        Targeting a managed civ routes through the deal mailbox after an
+        eligibility check (declared friends + Diplomatic Service civic);
+        unmanaged targets go to the engine.
       propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
         offer_gold, offer_gold_per_turn, offer_resources (comma-separated
-        RESOURCE_TYPE names), offer_favor, offer_open_borders (bool), plus the
+        RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
+        offer_peace (bool), offer_alliance (alliance_type name), plus the
         request_* equivalents; joint_war_target (player ID) for a joint war.
       test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
         Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
@@ -1419,6 +1426,46 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                     "request_items": request_items,
                 }
                 cmd["params"] = converted
+                remaining.append(cmd)
+                continue
+            elif (
+                action in ("propose_peace", "form_alliance")
+                and app.mailbox is not None
+            ):
+                target = params.get("other_player_id", -1)
+                if target in app.handoff_config.managed_ids:
+                    # Managed target — the default AI would auto-answer a
+                    # peace/alliance proposal inside SendWorkingDeal, so route
+                    # through the deal mailbox instead.  Check eligibility
+                    # first (same guards the engine path uses), then convert
+                    # to a propose_trade mailbox filing.
+                    kind = "PEACE" if action == "propose_peace" else "ALLIANCE"
+                    if kind == "ALLIANCE":
+                        alliance_type = params.get("alliance_type")
+                        if not alliance_type:
+                            results.append(
+                                "form_alliance: alliance_type is required "
+                                "(MILITARY|RESEARCH|CULTURAL|ECONOMIC|RELIGIOUS)"
+                            )
+                            continue
+                    ok, reason = await _check_proposal_eligibility(
+                        gs, target, kind
+                    )
+                    if not ok:
+                        results.append(f"{action}: {reason}")
+                        continue
+                    mail_params: dict = {"other_player_id": target}
+                    if kind == "PEACE":
+                        mail_params["offer_peace"] = True
+                    else:
+                        mail_params["offer_alliance"] = alliance_type
+                    result = await _mailbox_propose_trade(
+                        app, seat, target, mail_params
+                    )
+                    results.append(f"{action}: {result}")
+                    continue
+                # Unmanaged target — fall through to gs.propose_peace /
+                # gs.form_alliance (the default AI responds).
                 remaining.append(cmd)
                 continue
             elif action == "respond_to_trade" and app.handoff_config.enabled:
@@ -2526,6 +2573,8 @@ async def _mailbox_propose_trade(
             duration=it.get("duration", 0),
             value_type=it.get("value_type", -1),
             sub_type=it.get("sub_type", -1),
+            name=it.get("name", ""),
+            alliance_type=it.get("alliance_type", ""),
         )
         for it in offer_items
     ]
@@ -2537,6 +2586,8 @@ async def _mailbox_propose_trade(
             duration=it.get("duration", 0),
             value_type=it.get("value_type", -1),
             sub_type=it.get("sub_type", -1),
+            name=it.get("name", ""),
+            alliance_type=it.get("alliance_type", ""),
         )
         for it in request_items
     ]
@@ -2565,6 +2616,8 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
     offer_res = params.get("offer_resources", "")
     offer_favor = params.get("offer_favor", 0)
     offer_ob = params.get("offer_open_borders", False)
+    offer_peace = params.get("offer_peace", False)
+    offer_alliance = params.get("offer_alliance", "")
     req_gold = params.get("request_gold", 0)
     req_gpt = params.get("request_gold_per_turn", 0)
     req_res = params.get("request_resources", "")
@@ -2585,6 +2638,12 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
         offer_items.append({"type": "FAVOR", "amount": offer_favor})
     if offer_ob:
         offer_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
+    if offer_peace:
+        offer_items.append({"type": "AGREEMENT", "subtype": "PEACE"})
+    if offer_alliance:
+        offer_items.append(
+            {"type": "AGREEMENT", "subtype": "ALLIANCE", "alliance_type": offer_alliance.upper()}
+        )
     if req_gold > 0:
         request_items.append({"type": "GOLD", "amount": req_gold, "duration": 0})
     if req_gpt > 0:
@@ -2603,6 +2662,31 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
         request_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
 
     return offer_items, request_items
+
+
+async def _check_proposal_eligibility(
+    gs: GameState, other_player_id: int, kind: str
+) -> tuple[bool, str]:
+    """Run the peace/alliance eligibility guard against the live game.
+
+    Returns ``(True, "")`` if the proposal is allowed, otherwise
+    ``(False, "<reason>")`` where ``<reason>`` is the ``ERR:REASON|...``
+    string the Lua guard bailed with (or a connection error message).
+    """
+    from civ_mcp.lua import diplomacy as diplo_lua
+
+    lua = diplo_lua.build_check_proposal_eligibility(other_player_id, kind)
+    try:
+        lines = await gs.conn.execute_write(lua, perspective=False)
+    except Exception as e:
+        return False, f"eligibility check failed: {e}"
+    for line in lines:
+        if line.startswith("OK|"):
+            return True, ""
+        if line.startswith("ERR:"):
+            # Strip the leading "ERR:" for a cleaner message.
+            return False, line[4:]
+    return False, "eligibility check returned no result"
 
 
 async def _execute_mailbox_deal(
@@ -2629,188 +2713,6 @@ async def _execute_mailbox_deal(
         )
     except Exception as e:
         return f"Deal execution failed: {e}"
-
-
-# @mcp.tool()
-async def propose_trade(
-    ctx: Context,
-    other_player_id: int,
-    offer_gold: int = 0,
-    offer_gold_per_turn: int = 0,
-    offer_resources: str = "",
-    offer_favor: int = 0,
-    offer_open_borders: bool = False,
-    request_gold: int = 0,
-    request_gold_per_turn: int = 0,
-    request_resources: str = "",
-    request_favor: int = 0,
-    request_open_borders: bool = False,
-    joint_war_target: int = 0,
-    mode: str = "send",
-) -> str:
-    """Propose a trade deal to another civilization.
-
-    Args:
-        other_player_id: The player ID (from get_diplomacy output)
-        offer_gold: Lump sum gold to give them
-        offer_gold_per_turn: Gold per turn to give them (30-turn duration)
-        offer_resources: Comma-separated resource types to offer, e.g. "RESOURCE_SILK,RESOURCE_TEA"
-        offer_favor: Diplomatic favor to offer
-        offer_open_borders: True to offer our open borders
-        request_gold: Lump sum gold to request from them
-        request_gold_per_turn: Gold per turn to request (30-turn duration)
-        request_resources: Comma-separated resource types to request
-        request_favor: Diplomatic favor to request from them
-        request_open_borders: True to request their open borders
-        joint_war_target: Player ID of a third civ to declare joint war against
-        mode: "send" to commit the deal, "test" to preview AI's counter-offer without committing
-
-    Examples: Gift 100 gold: offer_gold=100. Trade silk for 3 gpt: offer_resources="RESOURCE_SILK", request_gold_per_turn=3.
-    Mutual open borders: offer_open_borders=True, request_open_borders=True.
-    Test a deal first: mode="test" to see what the AI thinks is fair, then mode="send" to commit.
-    """
-    gs = _get_game(ctx)
-
-    offer_items: list[dict] = []
-    request_items: list[dict] = []
-    if offer_gold > 0:
-        offer_items.append({"type": "GOLD", "amount": offer_gold, "duration": 0})
-    if offer_gold_per_turn > 0:
-        offer_items.append(
-            {"type": "GOLD", "amount": offer_gold_per_turn, "duration": 30}
-        )
-    for res in (r.strip() for r in offer_resources.split(",") if r.strip()):
-        offer_items.append(
-            {"type": "RESOURCE", "name": res, "amount": 1, "duration": 30}
-        )
-    if offer_favor > 0:
-        offer_items.append({"type": "FAVOR", "amount": offer_favor})
-    if offer_open_borders:
-        offer_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
-    if request_gold > 0:
-        request_items.append({"type": "GOLD", "amount": request_gold, "duration": 0})
-    if request_gold_per_turn > 0:
-        request_items.append(
-            {"type": "GOLD", "amount": request_gold_per_turn, "duration": 30}
-        )
-    for res in (r.strip() for r in request_resources.split(",") if r.strip()):
-        request_items.append(
-            {"type": "RESOURCE", "name": res, "amount": 1, "duration": 30}
-        )
-    if request_favor > 0:
-        request_items.append({"type": "FAVOR", "amount": request_favor})
-    if request_open_borders:
-        request_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
-    if joint_war_target > 0:
-        # Joint war is mutual — both sides commit
-        offer_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
-        request_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
-
-    if not offer_items and not request_items:
-        return "Error: must specify at least one offer or request item"
-
-    if mode == "test":
-        return await _logged(
-            ctx,
-            "test_trade",
-            {
-                "other_player_id": other_player_id,
-                "offer_items": offer_items,
-                "request_items": request_items,
-            },
-            lambda: gs.test_trade(other_player_id, offer_items, request_items),
-        )
-
-    # In handoff mode, deals to managed civs go through the mailbox so the
-    # built-in AI doesn't auto-answer them.
-    app = _app(ctx)
-    cfg = app.handoff_config
-    if cfg.enabled and _is_managed_target(other_player_id, cfg):
-        mailbox = _get_mailbox(ctx)
-        if mailbox is None:
-            return "Error: deal mailbox not available"
-        seat = _get_seat(ctx)
-        agent_pid = seat.player_id
-
-        # Serialize offer items (agent gives) and request items (agent wants).
-        proposer_items = [
-            SerializedDealItem(
-                item_type=it["type"],
-                from_player_id=agent_pid,
-                amount=it.get("amount", 0),
-                duration=it.get("duration", 0),
-            )
-            for it in offer_items
-        ]
-        target_items = [
-            SerializedDealItem(
-                item_type=it["type"],
-                from_player_id=other_player_id,
-                amount=it.get("amount", 0),
-                duration=it.get("duration", 0),
-            )
-            for it in request_items
-        ]
-
-        proposal = PendingProposal(
-            proposal_id="",
-            from_player=agent_pid,
-            to_player=other_player_id,
-            items_from_proposer=proposer_items,
-            items_from_target=target_items,
-            turn_proposed=0,
-            proposed_by="agent",
-        )
-        proposal_id = mailbox.propose(proposal)
-        result_msg = (
-            f"Trade proposed to P{other_player_id} — awaiting response. "
-            f"The deal will be delivered when the human reviews it on their "
-            f"next turn. Proposal id: {proposal_id}"
-        )
-
-        async def _mailbox_result() -> str:
-            return result_msg
-
-        return await _logged(
-            ctx,
-            "propose_trade",
-            {
-                "other_player_id": other_player_id,
-                "offer_items": offer_items,
-                "request_items": request_items,
-            },
-            _mailbox_result,
-        )
-
-    return await _logged(
-        ctx,
-        "propose_trade",
-        {
-            "other_player_id": other_player_id,
-            "offer_items": offer_items,
-            "request_items": request_items,
-        },
-        lambda: gs.propose_trade(other_player_id, offer_items, request_items),
-    )
-
-
-# @mcp.tool()
-async def propose_peace(ctx: Context, other_player_id: int) -> str:
-    """Propose white peace to a civilization you're at war with.
-
-    Args:
-        other_player_id: The player ID (from get_diplomacy output)
-
-    Requires being at war and past the 10-turn war cooldown.
-    The AI may accept or reject based on war score and relationship.
-    """
-    gs = _get_game(ctx)
-    return await _logged(
-        ctx,
-        "propose_peace",
-        {"other_player_id": other_player_id},
-        lambda: gs.propose_peace(other_player_id),
-    )
 
 
 # @mcp.tool()
@@ -2893,28 +2795,6 @@ async def send_diplomatic_action(
         "send_diplomatic_action",
         {"other_player_id": other_player_id, "action": action},
         lambda: gs.send_diplomatic_action(other_player_id, action),
-    )
-
-
-# @mcp.tool()
-async def form_alliance(
-    ctx: Context, other_player_id: int, alliance_type: str = "MILITARY"
-) -> str:
-    """Form an alliance with another civilization.
-
-    Args:
-        other_player_id: The player ID (from get_diplomacy output)
-        alliance_type: One of: MILITARY, RESEARCH, CULTURAL, ECONOMIC, RELIGIOUS
-
-    Requires declared friendship and Diplomatic Service civic.
-    Use get_trade_options to check alliance eligibility first.
-    """
-    gs = _get_game(ctx)
-    return await _logged(
-        ctx,
-        "form_alliance",
-        {"other_player_id": other_player_id, "alliance_type": alliance_type},
-        lambda: gs.form_alliance(other_player_id, alliance_type.upper()),
     )
 
 
