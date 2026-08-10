@@ -117,10 +117,10 @@ Each city multiplies your districts, yields, and Great Person generation. The ga
 Stagnant cities fall behind exponentially. If any city has food surplus ≤ 0, that's worth fixing this turn (Farm, Granary, domestic Trade Route, or `set_city_focus(city_id, "FOOD")`). Turns-to-growth over 15 is a signal the city needs food or housing.
 
 ### Exploration
-You can't settle what you can't see, and you can't counter threats you don't know exist. A scout set to `automate` is one of the best investments in the early game. If a scout is lost or stuck, replacing it early keeps the information flow going.
+You can't settle what you can't see, and you can't counter threats you don't know exist. A scout set to `automate_explore` is one of the best investments in the early game. If a scout is lost or stuck, replacing it early keeps the information flow going.
 
 ### Diplomacy
-NOTE diplomacy / deals temporarily disabled due to a bug in the MCP, skip for now
+Diplomatic and trade actions are issued through `execute_commands`; see the Diplomacy reference section for the full action list. In shared (handoff) games, proposals to managed civs are routed through a mailbox so the built-in AI does not auto-answer them.
 
 ### Favor resource
 Diplomacy generates yield: each alliance +1 favor/turn per alliance level, each suzerainty +1 favor/turn. Government tier also gives favor. This compounds. Friendships don't give favor directly but enable alliances (which do). Delegations (25g) are cheap on first meeting. Friendships open up when a civ is Friendly. Alliances require friendship (30+ turns) and Diplomatic Service civic. Embassies are available once Writing is researched.
@@ -131,7 +131,7 @@ If favor is accumulating above 100 with no World Congress imminent, it's worth t
 War declarations take effect for diplomacy immediately but the **combat engine does not sync until the next turn**. After declaring war via `send_diplomatic_action`, units cannot attack the new enemy until the following turn. Plan accordingly: declare war on turn N, position units adjacent to targets, then attack on turn N+1. Do not reload or retry if attacks return `NO_ENEMY` on the declaration turn — this is expected behavior.
 
 ### Wartime
-Cities with walls can fire at enemies via `city_action(city_id, "attack", target_x, target_y)` (range 2). Cities that fall are expensive to recover — when you capture a city, `city_action` with `keep`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
+Cities with walls can fire at enemies via `city_attack(city_id, target_x, target_y)` (range 2). Cities that fall are expensive to recover — when you capture a city, `resolve_city_capture(action)` with `keep`, `reject`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(other_player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
 
 ### Military Readiness
 Keep an eye on opponents' military strength. A neighbor at 2x+ your strength who isn't a friend or ally is a risk worth taking seriously. Make sure you have a plan to handle if your opponent becomes aggressive. Units become progressively weaker relative to rivals if not upgraded (Slinger→Archer with Archery, Warrior→Swordsman with Iron Working) — use `upgrade_unit`.
@@ -142,7 +142,7 @@ Camps upgrade with the era — an Ancient-era camp spawns Warriors; the same cam
 ### Religion
 Religious victory is the easiest win condition to miss because it produces no notifications and unfolds slowly. If a rival religion reaches majority in most civs, the window for a response narrows quickly. Religious units bought from a city carry **that city's majority religion** — buy them from cities where your own religion is majority, not a converted city.
 
-To found a religion: build a Holy Site → earn a Great Prophet → `get_religion_beliefs()` to see available beliefs → `found_religion(name, beliefs)`. The Great Prophet pool fills early (roughly half the major civs).
+To found a religion: build a Holy Site → earn a Great Prophet → `get_religion_beliefs()` to see available beliefs → `found_religion(religion_type, follower_belief, founder_belief)`. The Great Prophet pool fills early (roughly half the major civs).
 
 Trade routes spread the origin city's religion to the destination — worth factoring into routing decisions if conversion pressure is a concern.
 
@@ -180,31 +180,31 @@ When unsure about game mechanics (movement costs, combat formulas, tech prerequi
 
 | Action | Effect | Notes |
 |--------|--------|-------|
-| `move` | Move to tile | target_x, target_y required |
-| `attack` | Attack enemy | Shows damage estimate; melee/ranged auto-detected |
-| `fortify` | +4 defense, heals | Military only |
-| `heal` | Fortify until full HP | Auto-wakes at full HP |
-| `alert` | Sleep, wake on enemy | Sentry use |
-| `sleep` | Sleep indefinitely | Manual wake required |
-| `skip` | End unit's turn | Always works |
-| `automate` | Auto-explore | Scouts only |
-| `delete` | Disband unit | Removes maintenance |
+| `move_unit` | Move to tile | unit_index, target_x, target_y required |
+| `attack_unit` | Attack enemy | unit_index, target_x, target_y; shows damage estimate; melee/ranged auto-detected |
+| `fortify_unit` | +4 defense, heals | Military only |
+| `heal_unit` | Fortify until full HP | Auto-wakes at full HP |
+| `alert_unit` | Sleep, wake on enemy | Sentry use |
+| `sleep_unit` | Sleep indefinitely | Manual wake required |
+| `skip_unit` | End unit's turn | Always works |
+| `automate_explore` | Auto-explore | Scouts only |
+| `delete_unit` | Disband unit | Removes maintenance |
 | `found_city` | Settle | Settlers only |
-| `improve` | Build improvement | Builders and Military Engineers; see improvements below |
+| `improve_tile` | Build improvement | Builders and Military Engineers; see improvements below |
 | `remove_feature` | Chop/harvest feature | Builders only; removes forest, jungle, or marsh from tile |
 | `build_route` | Build road/railroad | Military Engineers only; on current tile; no charges used |
-| `trade_route` | Start route | Traders; target_x/y of destination city |
-| `teleport` | Move idle trader | Traders only; target_x/y of city |
-| `activate` | Use Great Person | Must be on completed matching district |
+| `make_trade_route` | Start route | Traders; target_x/y of destination city |
+| `teleport_to_city` | Move idle trader | Traders only; target_x/y of city |
+| `activate_great_person` | Use Great Person | Must be on completed matching district |
 | `spread_religion` | Spread religion | Missionaries/Apostles |
 
 Common improvements: `IMPROVEMENT_FARM`, `IMPROVEMENT_MINE`, `IMPROVEMENT_QUARRY`, `IMPROVEMENT_PLANTATION`, `IMPROVEMENT_PASTURE`, `IMPROVEMENT_CAMP`, `IMPROVEMENT_FISHING_BOATS`, `IMPROVEMENT_LUMBER_MILL`
 
-Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `remove_feature` to chop/harvest the feature first, then `improve` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature.
+Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `remove_feature` to chop/harvest the feature first, then `improve_tile` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature.
 
-Builders repair tile improvements. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
+Builders repair tile improvements via `repair_improvement(unit_index)`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
 
-Military Engineers (requires Encampment + Armory): `build_route` builds a railroad on the current tile (no charges consumed; costs 1 Iron + 1 Coal per tile). `improve` with `IMPROVEMENT_FORT` or `IMPROVEMENT_AIRSTRIP` uses charges. Building a railroad consumes all movement — one tile per engineer per turn.
+Military Engineers (requires Encampment + Armory): `build_route` builds a railroad on the current tile (no charges consumed; costs 1 Iron + 1 Coal per tile). `improve_tile` with `IMPROVEMENT_FORT` or `IMPROVEMENT_AIRSTRIP` uses charges. Building a railroad consumes all movement — one tile per engineer per turn.
 
 | Other unit tools | |
 |--------|--------|
@@ -223,28 +223,28 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 - **Pantheon/Religion**: faith threshold reached — `get_pantheon_beliefs` → `choose_pantheon`; for founding: `get_religion_beliefs` → `found_religion`
 - **Envoys**: tokens available — `send_envoy`
 - **Dedication**: new era — `get_dedications` → `choose_dedication`
-- **City Capture**: conquered or disloyal city — `city_action(city_id, "keep"/"raze"/"liberate_founder"/"liberate_previous")`
+- **City Capture**: conquered or disloyal city — `resolve_city_capture("keep"/"reject"/"raze"/"liberate_founder"/"liberate_previous")`
 - Move responses show the **target tile**, not arrival position (async pathfinding)
 
 ## Diplomacy
 
-**Reactive (AI-initiated):** AI encounters block turn progression. Use `respond_to_diplomacy` (POSITIVE/NEGATIVE, 2-3 rounds). Diplomacy sessions do not affect unit movement or orders — continue commanding units normally afterward.
+**Reactive (AI-initiated):** AI encounters block turn progression. Use `diplomacy_respond(other_player_id, response)` with POSITIVE/NEGATIVE/EXIT to reply to an open leader dialogue. Diplomacy sessions do not affect unit movement or orders — continue commanding units normally afterward.
 
-**Proactive: this section is temporarily disabled, do not use**
-- `send_diplomatic_action(action="DIPLOMATIC_DELEGATION")` — 25g, worth sending on first meeting
-- `send_diplomatic_action(action="DECLARE_FRIENDSHIP")` — requires Friendly status
-- `send_diplomatic_action(action="RESIDENT_EMBASSY")` — requires Writing tech
-- `form_alliance(player_id, type)` — types: MILITARY/RESEARCH/CULTURAL/ECONOMIC/RELIGIOUS; requires friendship 30t + Diplomatic Service civic
-- `propose_trade(player_id, ...)` — trade gold/GPT/resources/favor/open borders/cities. Use `mode="test"` first to see the AI's counter-offer without committing, then `mode="send"` to finalize. Cities use `city_id` from `get_trade_options`.
-- `propose_peace(player_id)` — white peace; 10t war cooldown required
-- `get_trade_options(other_player_id)` — see what a civ has available to trade (gold, resources, favor, cities, agreements)
-- `get_pending_trades` — check incoming trade offers; `respond_to_trade(player_id, accept)` to accept/reject
-- Check `get_diplomacy` for defensive pacts before declaring war
-- `get_diplomacy` shows leader agendas — historical agendas are always visible; random agendas require Secret diplomatic visibility (spy in their capital or alliance). Use agendas to predict AI behavior and avoid relationship penalties.
+**Proactive:**
+- `send_diplomatic_action(other_player_id, action)` — action: DIPLOMATIC_DELEGATION (25g, worth sending on first meeting), DECLARE_FRIENDSHIP (requires Friendly status), RESIDENT_EMBASSY (requires Writing tech), plus DENOUNCE and the war declarations. For the three response-able actions (delegation/embassy/friendship) targeting a managed civ, the proposal is filed in the DIPLOMACY MAILBOX instead of the engine — the target answers on its own turn and your action takes effect on your next turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go straight to the engine.
+- `form_alliance(other_player_id, alliance_type)` — alliance_type: MILITARY/RESEARCH/CULTURAL/ECONOMIC/RELIGIOUS; requires declared friendship + Diplomatic Service civic. Targeting a managed civ routes through the deal mailbox after an eligibility check.
+- `propose_trade(other_player_id, ...)` — pass FLAT params: offer_gold, offer_gold_per_turn, offer_resources (comma-separated RESOURCE_TYPE names), offer_favor, offer_open_borders, plus the request_* equivalents; joint_war_target (player ID) for a joint war. Targeting a managed civ routes through the deal mailbox.
+- `test_trade(other_player_id, offer_items, request_items)` — dry-run check against the default AI player without committing. Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount, name, duration, subtype, city_id}.
+- `propose_peace(other_player_id)` — white peace; eligibility (at war, past cooldown) is checked first. Targeting a managed civ routes through the deal mailbox.
+- `respond_to_deal(other_player_id, accept)` — accept/reject an AI-proposed deal.
+- `respond_to_trade(other_player_id, accept)` — accept/reject an incoming mailbox deal from a managed civ (see DEAL MAILBOX in get_full_game_state).
+- `respond_to_diplo_action(other_player_id, accept)` — accept/reject an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy) from a managed civ. Accept marks it; the proposer's action takes effect on the proposer's next turn.
+- Check the diplomacy section of `get_full_game_state` for defensive pacts before declaring war.
+- Leader agendas appear in the diplomacy section of `get_full_game_state` — historical agendas are always visible; random agendas require Secret diplomatic visibility (spy in their capital or alliance). Use agendas to predict AI behavior and avoid relationship penalties.
 
-**Espionage:** `spy_action(spy_id, action, ...)`. Actions: `travel` to a city first, then run operations (steal tech, neutralize governors, etc.). Offensive missions only work after the spy arrives.
+**Espionage:** `spy_travel(unit_index, target_x, target_y)` to a city first, then `spy_mission(unit_index, mission_type, target_x, target_y)` to run operations. mission_type: COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL. Offensive missions only work after the spy arrives.
 
-**City-states:** `send_envoy`. Suzerainty = +1 favor/turn. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic.
+**City-states:** `send_envoy(city_state_player_id)`. Suzerainty = +1 favor/turn. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic.
 
 ## Production & Research
 
@@ -272,7 +272,7 @@ In addition, there is a general +1 per 2 adjacent districts.
 ## Trade Routes
 
 - `get_trade_destinations(unit_id)` → available destinations
-- `unit_action(action='trade_route', target_x, target_y)` → start route
+- `make_trade_route(unit_index, target_x, target_y)` → start route
 - Domestic routes: food + production to new cities. International: gold.
 - Capacity: 1 from Foreign Trade civic, +1 per Market/Lighthouse
 - Idle routes are free yields going uncollected
@@ -283,7 +283,7 @@ In addition, there is a general +1 per 2 adjacent districts.
 - `patronize_great_person(individual_id)` — buy instantly with gold or faith
 - `reject_great_person(individual_id)` — pass, advance to next candidate in that class
 - Rivals will recruit what you pass on — recruiting quickly tends to be worth it
-- Once recruited, move the GP to its matching completed district; `unit_action(action='activate')`
+- Once recruited, move the GP to its matching completed district; `activate_great_person(unit_index)`
 - If activation fails, the error message includes the requirements (district type, buildings needed)
 - Don't delete GPs — they show 0 builder charges but that's a different system; they're not consumed until activated
 
