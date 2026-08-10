@@ -449,7 +449,7 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
     if cfg.enabled:
         # Install the DiplomacyDealView shim (idempotent).
         try:
-            shim_status = await handoff.install_deal_shim(conn, cfg.agent_ids)
+            shim_status = await handoff.install_deal_shim(conn, cfg.managed_ids)
             log.info("Deal shim: %s", shim_status)
         except Exception:
             log.warning("Deal shim install failed", exc_info=True)
@@ -457,7 +457,7 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
         # Register the notification click handler in InGame.
         try:
             note_lines = await conn.execute_write(
-                handoff.build_notification_handler_lua(cfg.agent_ids),
+                handoff.build_notification_handler_lua(cfg.managed_ids),
                 perspective=False,
             )
             note_status = next(
@@ -503,12 +503,12 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
         # Re-arm the deal shim and notification handler on every keeper cycle
         # (UI contexts are rebuilt on save load and lose their wrappers).
         async def _rearm_deal_shim():
-            await handoff.install_deal_shim(conn, cfg.agent_ids)
+            await handoff.install_deal_shim(conn, cfg.managed_ids)
 
         async def _rearm_note_handler():
             try:
                 lines = await conn.execute_write(
-                    handoff.build_notification_handler_lua(cfg.agent_ids),
+                    handoff.build_notification_handler_lua(cfg.managed_ids),
                     perspective=False,
                 )
                 status = next(
@@ -821,7 +821,7 @@ def _get_mailbox(ctx: Context) -> DealMailbox | None:
 
 def _is_managed_target(player_id: int, cfg: HandoffConfig) -> bool:
     """True if *player_id* is an agent-managed civ (not the human)."""
-    return player_id in cfg.agent_ids
+    return player_id in cfg.managed_ids
 
 
 def _handle_human_deal_proposed(
