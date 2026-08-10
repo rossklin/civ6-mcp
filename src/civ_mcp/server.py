@@ -632,7 +632,7 @@ if HANDOFF_CONFIG.enabled:
         "players are taking their turns, so you can scout and plan off the "
         "clock. Write tools work only during your own turn.\n"
         "Turn flow: get_full_game_state → execute_commands → end_turn → "
-        "update_diary(next_turn_plan=..., long_term_plans=...) → "
+        "update_diary(next_turn_plan=..., long_term_plans=..., notes=...) → "
         "wait_for_turn(). wait_for_turn() blocks until your next turn starts; "
         "call it again on timeout without changing the diary."
     )
@@ -1159,7 +1159,8 @@ async def get_full_game_state(ctx: Context) -> str:
             plans = _get_current_plans(path)
             ntp = plans.get("next_turn_plan", "").strip()
             ltp = plans.get("long_term_plans", "").strip()
-            if ltp or ntp:
+            notes = plans.get("notes", "").strip()
+            if ltp or ntp or notes:
                 text += "\n\n=== DIARY ==="
                 if ltp:
                     text += f"\nLong-term Plans:\n{ltp}"
@@ -1169,6 +1170,8 @@ async def get_full_game_state(ctx: Context) -> str:
                     text += f"\n\nPlan for This Turn (from last turn):\n{ntp}"
                 else:
                     text += "\n\nPlan for This Turn: (none)"
+                if notes:
+                    text += f"\n\nNotes (accumulated learnings):\n{notes}"
         except Exception:
             log.debug("Failed to append diary to full game state", exc_info=True)
 
@@ -1892,8 +1895,9 @@ async def end_turn(ctx: Context) -> str:
     before ending the turn.
 
     After end_turn(), think about what to do next turn and call
-    update_diary(next_turn_plan=..., long_term_plans=...) to record your
-    plans. Then call wait_for_turn() to block until your next turn starts.
+    update_diary(next_turn_plan=..., long_term_plans=..., notes=...) to
+    record your plans. Then call wait_for_turn() to block until your next
+    turn starts.
     """
     gs = _get_game(ctx)
 
@@ -2227,6 +2231,7 @@ async def update_diary(
     ctx: Context,
     next_turn_plan: str = "",
     long_term_plans: str = "",
+    notes: str = "",
 ) -> str:
     """Record your plans for the next turn and your long-term strategy.
 
@@ -2243,6 +2248,13 @@ async def update_diary(
             goals, tech progression, diplomatic posture. Pass the complete
             current version when something changes. Leave empty to keep the
             existing long-term plans unchanged — the previous value persists.
+        notes: Learnings worth remembering — game rules you discovered,
+            mistakes you made and corrected, things the civilopedia taught
+            you. Unlike the plan fields, notes are APPENDED to the existing
+            notes each call rather than replacing them, so they accumulate
+            across turns. Leave empty to leave the notes unchanged. Use this
+            for durable facts (e.g. "tried to move onto an enemy unit's tile
+            — illegal; must declare war first"), not transient plans.
     """
     gs = _get_game(ctx)
     try:
@@ -2264,18 +2276,28 @@ async def update_diary(
 
     ntp = next_turn_plan.strip()
     ltp = long_term_plans.strip()
+    notes_in = notes.strip()
 
     # Inherit previous long-term plans if the agent left them empty.
     # next_turn_plan is always overwritten (empty = no plan for next turn).
+    # notes is append-only: a non-empty value is appended to the running
+    # body (with a turn marker); an empty value preserves the existing notes.
+    previous = _get_current_plans(path)
     if not ltp:
-        previous = _get_current_plans(path)
         ltp = previous.get("long_term_plans", "")
+    prev_notes = previous.get("notes", "")
+    if notes_in:
+        entry = f"[Turn {diary_turn}] {notes_in}"
+        combined_notes = f"{prev_notes}\n{entry}" if prev_notes else entry
+    else:
+        combined_notes = prev_notes
 
     ts = datetime.now(timezone.utc).isoformat()
     row = {
         "turn": diary_turn,
         "next_turn_plan": ntp,
         "long_term_plans": ltp,
+        "notes": combined_notes,
         "timestamp": ts,
     }
 
@@ -2295,6 +2317,8 @@ async def update_diary(
         parts.append(f"Next-turn plan recorded ({len(next_turn_plan)} chars).")
     if long_term_plans.strip():
         parts.append(f"Long-term plans recorded ({len(long_term_plans)} chars).")
+    if notes_in:
+        parts.append(f"Notes appended ({len(notes_in)} chars).")
     return " ".join(parts)
 
 @mcp.tool(annotations={"readOnlyHint": True})

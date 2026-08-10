@@ -1,8 +1,10 @@
 """Diary feature — persistent plans written once per turn, always on.
 
-Writes JSONL diary files stored in ~/.civ6-mcp/.  Each row has two plan fields:
+Writes JSONL diary files stored in ~/.civ6-mcp/.  Each row has three fields:
 - ``next_turn_plan`` — overwritten each turn (only the most recent matters)
 - ``long_term_plans`` — passed in full each time; last write wins
+- ``notes`` — append-only learnings; each call's content is appended to the
+  running body (with a turn marker), so notes accumulate across turns
 """
 
 from __future__ import annotations
@@ -20,28 +22,29 @@ def diary_path(civ: str, seed: int, run_id: str) -> Path:
 
 
 def get_current_plans(path: Path) -> dict[str, str]:
-    """Return the most recent ``next_turn_plan`` and ``long_term_plans``.
+    """Return the most recent ``next_turn_plan``, ``long_term_plans``, and ``notes``.
 
     Reads the last entry in the JSONL file.  Returns ``{"next_turn_plan": "",
-    "long_term_plans": ""}`` if the file is missing or empty.
+    "long_term_plans": "", "notes": ""}`` if the file is missing or empty.
     """
     if not path.exists():
-        return {"next_turn_plan": "", "long_term_plans": ""}
+        return {"next_turn_plan": "", "long_term_plans": "", "notes": ""}
     lines = path.read_text().strip().splitlines()
     if not lines:
-        return {"next_turn_plan": "", "long_term_plans": ""}
-    # Walk backwards to find the last valid row with plan fields
+        return {"next_turn_plan": "", "long_term_plans": "", "notes": ""}
+    # Walk backwards to find the last valid row with plan/notes fields
     for i in range(len(lines) - 1, -1, -1):
         try:
             row = json.loads(lines[i])
-            if "next_turn_plan" in row or "long_term_plans" in row:
+            if "next_turn_plan" in row or "long_term_plans" in row or "notes" in row:
                 return {
                     "next_turn_plan": row.get("next_turn_plan", ""),
                     "long_term_plans": row.get("long_term_plans", ""),
+                    "notes": row.get("notes", ""),
                 }
         except json.JSONDecodeError:
             continue
-    return {"next_turn_plan": "", "long_term_plans": ""}
+    return {"next_turn_plan": "", "long_term_plans": "", "notes": ""}
 
 
 def read_diary_entries(path: Path) -> list[dict]:
@@ -61,7 +64,7 @@ def format_diary_entry(e: dict) -> str:
     t = e.get("turn", "?")
 
     # New plan-format entry
-    if "next_turn_plan" in e or "long_term_plans" in e:
+    if "next_turn_plan" in e or "long_term_plans" in e or "notes" in e:
         return _format_plan_entry(e)
 
     # New flat format (v2) — detected by "v" key
@@ -73,10 +76,11 @@ def format_diary_entry(e: dict) -> str:
 
 
 def _format_plan_entry(e: dict) -> str:
-    """Format a plan-format diary entry (next_turn_plan + long_term_plans)."""
+    """Format a plan-format diary entry (next_turn_plan + long_term_plans + notes)."""
     t = e.get("turn", "?")
     ntp = e.get("next_turn_plan", "").strip()
     ltp = e.get("long_term_plans", "").strip()
+    notes = e.get("notes", "").strip()
 
     header = f"=== Turn {t} Plans ==="
     parts = [header]
@@ -88,6 +92,8 @@ def _format_plan_entry(e: dict) -> str:
         parts.append(f"Next-Turn Plan:\n{ntp}")
     else:
         parts.append("Next-Turn Plan: (none)")
+    if notes:
+        parts.append(f"Notes:\n{notes}")
     return "\n".join(parts)
 
 

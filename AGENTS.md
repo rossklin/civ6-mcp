@@ -81,15 +81,16 @@ Each turn in order:
 4. If unit movements reveal new intel (visible in the command results), you may call `execute_commands` again to act on it. Prefer fewer calls where possible.
 5. `end_turn` — advance the turn and get your post-turn report.
 6. Think about what to do next turn and whether your long-term plans need updating.
-7. `update_diary(next_turn_plan=..., long_term_plans=...)` — record your plans.
+7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
 
 ## Diary
 
-The diary is your persistent memory across sessions and turns. When you start a turn, `get_full_game_state` includes your diary, so you pick up exactly where you left off. The diary has two parts:
+The diary is your persistent memory across sessions and turns. When you start a turn, `get_full_game_state` includes your diary, so you pick up exactly where you left off. The diary has three parts:
 
 - **`next_turn_plan`**: Your concrete plan for the NEXT turn. Be specific — unit movements, production choices, research targets. This is overwritten each turn, so only the most recent entry matters. Write this from the perspective of what you intend to do when you get the turn back.
 - **`long_term_plans`**: Your long-term strategy — victory path, expansion goals, tech progression timeline, diplomatic posture. Pass the complete current version each time you call `update_diary`; last write wins.
+- **`notes`**: Durable learnings worth remembering across the whole game — game rules you discovered, mistakes you made and corrected, things the civilopedia taught you. Unlike the plan fields, notes are **appended** to the existing notes each call (with a turn marker) rather than replacing them, so they accumulate over the game. Leave empty to leave the notes unchanged. Use this for facts, not transient plans. Example: you tried to move onto an enemy unit's tile and the action was rejected — read the civilopedia, learned you must declare war first — record that in `notes` so you never repeat the mistake.
 
 Call `update_diary` after `end_turn()` and before `wait_for_turn()` — once per turn cycle. Think while other players are on the clock: based on what you observed this turn and the post-turn report (which `wait_for_turn` will return), what should you do next? Do your long-term plans still hold? Write the answers into the diary so your next invocation starts with context.
 
