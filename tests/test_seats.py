@@ -110,14 +110,12 @@ class TestSeatRegistry:
         assert reg.resolve(100).player_id == 1
         assert reg.resolve(200).player_id == 2
 
-    def test_reconnecting_client_can_take_its_seat_back(self):
-        """A dropped session leaves the seat bound; the agent must be able to
-        reclaim it rather than being locked out of its own civ."""
+    def test_reconnecting_client_can_not_take_its_seat_back(self):
+        """A dropped session leaves the seat bound and it can't be taken back."""
         reg = _registry()
         reg.claim(1, session_key=100)
         seat, _ = reg.claim(1, session_key=101)
-        assert seat.session_key == 101
-        assert reg.resolve(100) is reg.default
+        assert seat is None
 
     def test_release(self):
         reg = _registry()

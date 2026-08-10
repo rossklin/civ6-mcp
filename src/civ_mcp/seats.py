@@ -176,7 +176,7 @@ class SeatRegistry:
                 f"Agent seats: {available}."
             )
         if seat.session_key is not None and seat.session_key != session_key:
-            return f"Seat P{player_id} is already claimed by another agent."
+            return None, f"Seat P{player_id} is already claimed by another agent."
         
         existing = self.for_session(session_key)
         if existing is not None and existing is not seat:
