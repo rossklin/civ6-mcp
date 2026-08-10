@@ -1149,6 +1149,10 @@ async def get_full_game_state(ctx: Context) -> str:
                 gs.spatial = spatial
             except Exception:
                 pass
+
+        # The available governors section is to verbose to appear here, there is
+        # a separate tool to get the governors available to appoint.
+        state.governors.available_to_appoint = []
         text = narrate_full_state(state)
 
         # Append diary plans (long-term + next-turn) from the JSONL file
@@ -1839,6 +1843,21 @@ async def get_pathing_estimate(
         {"unit_id": unit_id, "target_x": target_x, "target_y": target_y},
         _run,
     )
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_available_governors(ctx: Context) -> str:
+    """Get available governors and their bonuses.
+
+    Shows which governors are unlocked, their promotion trees, and
+    the bonuses they provide. Use appoint_governor to assign one to a city.
+    """
+    gs = _get_game(ctx)
+
+    async def _run():
+        status = await gs.get_governors()
+        return nr.narrate_governors(status)
+
+    return await _logged(ctx, "get_available_governors", {}, _run)
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_pantheon_beliefs(ctx: Context) -> str:
