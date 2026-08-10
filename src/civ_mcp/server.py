@@ -1322,7 +1322,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
 
     Diplomacy & trade (other_player_id = target player ID):
       send_diplomatic_action(other_player_id, action) — action: DIPLOMATIC_DELEGATION
-        | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE | OPEN_BORDERS
+        | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE
         | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
         | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
         | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR.
@@ -1347,8 +1347,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
       propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
         offer_gold, offer_gold_per_turn, offer_resources (comma-separated
         RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
-        offer_peace (bool), offer_alliance (alliance_type name), plus the
-        request_* equivalents; joint_war_target (player ID) for a joint war.
+        plus the request_* equivalents; joint_war_target (player ID) for a joint war.
       test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
         Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
         name, duration, subtype, city_id}.
