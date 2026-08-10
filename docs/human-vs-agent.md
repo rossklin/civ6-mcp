@@ -294,7 +294,7 @@ Play at least the first turn yourself so the game is fully loaded.
 
 ```powershell
 # PowerShell — human is P0, agents play P1 and P2
-$env:CIV_MCP_AGENT_PLAYERS="1,2"; uv run civ-mcp
+$env:CIV_MCP_AGENT_PLAYERS="1,2"; $env:CIV_MCP_DISABLE_LUA="1"; uv run civ-mcp
 ```
 
 ```bash

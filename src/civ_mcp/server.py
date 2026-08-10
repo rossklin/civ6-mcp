@@ -2579,6 +2579,7 @@ def main():
 
     if os.environ.get("CIV_MCP_DISABLE_LUA"):
         mcp._tool_manager.remove_tool("run_lua")
+        log.info("Removed run_lua tool because CIV_MCP_DISABLE_LUA is set")
 
     if not HANDOFF_CONFIG.enabled:
         for name in _HANDOFF_TOOLS:
