@@ -183,6 +183,82 @@ class TestParseNotifySent:
         assert result == {"type": "notify_sent", "proposal_id": "abc123"}
 
 
+class TestParseChatSend:
+    """MCPCHAT|SEND lines from the chat shim (human typed a message)."""
+
+    @staticmethod
+    def _hex(s: str) -> str:
+        return s.encode("utf-8").hex()
+
+    def test_basic_message(self):
+        text = "hello world"
+        result = _parse_mcpdeal_line(
+            _p(
+                "MCPCHAT|SEND|from=0|to=2|ttype=2|hex=" + self._hex(text)
+            )
+        )
+        assert result is not None
+        assert result["type"] == "chat_send"
+        assert result["from"] == 0
+        assert result["to"] == 2
+        assert result["ttype"] == 2
+        assert result["text"] == text
+
+    def test_message_without_target_fields(self):
+        """The shim emits only from= and hex= (it intercepts before the
+        target is computed). to/ttype must be absent, not defaulted."""
+        text = "hi there"
+        result = _parse_mcpdeal_line(
+            _p("MCPCHAT|SEND|from=0|hex=" + self._hex(text))
+        )
+        assert result is not None
+        assert result["type"] == "chat_send"
+        assert result["from"] == 0
+        assert result["text"] == text
+        assert "to" not in result
+        assert "ttype" not in result
+
+    def test_text_with_pipes_and_newlines(self):
+        """Hex encoding survives pipe/newline/quote characters."""
+        text = "line1\nline2|with|pipes \"quotes\""
+        result = _parse_mcpdeal_line(
+            _p("MCPCHAT|SEND|from=1|to=3|ttype=2|hex=" + self._hex(text))
+        )
+        assert result["text"] == text
+
+    def test_empty_text(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPCHAT|SEND|from=0|to=1|ttype=0|hex=")
+        )
+        assert result["type"] == "chat_send"
+        assert result["text"] == ""
+
+    def test_non_utf8_falls_back_to_replace(self):
+        """Invalid UTF-8 hex decodes to replacement chars, not an exception."""
+        # 0xff is invalid as a standalone UTF-8 leading byte.
+        result = _parse_mcpdeal_line(
+            _p("MCPCHAT|SEND|from=0|to=1|ttype=0|hex=ff")
+        )
+        assert result["type"] == "chat_send"
+        assert "�" in result["text"]
+
+    def test_non_send_verb_returns_none(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPCHAT|OTHER|from=0")
+        )
+        assert result is None
+
+    def test_missing_numeric_fields_do_not_crash(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPCHAT|SEND|from=abc|to=1|ttype=0|hex=68")
+        )
+        assert result is not None
+        assert result["type"] == "chat_send"
+        assert "from" not in result  # bad int dropped
+        assert result["to"] == 1
+        assert result["text"] == "h"
+
+
 # ---------------------------------------------------------------------------
 # Non-MCPDEAL lines
 # ---------------------------------------------------------------------------

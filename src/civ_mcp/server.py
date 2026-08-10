@@ -45,6 +45,7 @@ from civ_mcp.telemetry import (
 )
 from civ_mcp.deal_mailbox import DealMailbox, PendingProposal, SerializedDealItem
 from civ_mcp.diplo_mailbox import DiploMailbox, PendingDiploProposal
+from civ_mcp.message_mailbox import Message, MessageMailbox
 from civ_mcp.lua.diplomacy import RESPONSEABLE_DIPLO_ACTIONS
 from civ_mcp.web_api import create_app
 
@@ -76,6 +77,9 @@ class AppContext:
     # Diplomacy mailbox — same idea for response-able diplo actions
     # (friendship/delegation/embassy) to managed civs. See diplo_mailbox.py.
     diplo_mailbox: DiploMailbox | None = None
+    # Message mailbox — free-text chat between managed players and the human.
+    # See message_mailbox.py and docs/managed-player-messaging.md.
+    message_mailbox: MessageMailbox | None = None
 
 
 async def _auto_boot(conn: GameConnection, save_name: str) -> None:
@@ -445,6 +449,8 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
     mailbox = DealMailbox()
     # Diplomacy mailbox — intercepts response-able diplo actions to managed civs.
     diplo_mailbox = DiploMailbox()
+    # Message mailbox — free-text chat between managed players and the human.
+    message_mailbox = MessageMailbox()
     _deal_notify_task: asyncio.Task | None = None
     if cfg.enabled:
         # Install the DiplomacyDealView shim (idempotent).
@@ -453,6 +459,23 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
             log.info("Deal shim: %s", shim_status)
         except Exception:
             log.warning("Deal shim install failed", exc_info=True)
+
+        # Install the chat shim (ChatPanel state) and unhide the chat panel
+        # (WorldTracker state). Both are idempotent. The shim reroutes the
+        # human's typed messages to the message mailbox; the unhide force-shows
+        # the native chat panel in single-player.
+        try:
+            chat_status = await handoff.install_chat_shim(conn)
+            log.info("Chat shim: %s", chat_status)
+        except Exception:
+            log.warning("Chat shim install failed", exc_info=True)
+        try:
+            await conn.execute_in_named_state(
+                handoff.WORLDTRACKER_STATE,
+                handoff.build_unhide_chat_lua(),
+            )
+        except Exception:
+            log.warning("Chat panel unhide failed", exc_info=True)
 
         # Register the notification click handler in InGame.
         try:
@@ -489,6 +512,16 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
 
         conn.add_deal_callback(_on_deal_event)
 
+        # Register the chat event callback (same drain channel as deal events).
+        def _on_chat_event(event_type: str, data: dict) -> None:
+            if event_type == "chat_send":
+                # Human typed a message in the native chat panel.
+                asyncio.ensure_future(
+                    _handle_human_chat(conn, message_mailbox, data, cfg, gs)
+                )
+
+        conn.add_deal_callback(_on_chat_event)
+
         # Start the background deal monitor.
         await conn.start_deal_monitor()
 
@@ -522,6 +555,23 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
         keeper.add_post_install_hook(_rearm_deal_shim)
         keeper.add_post_install_hook(_rearm_note_handler)
 
+        # Re-arm the chat shim and chat-panel unhide on every keeper cycle
+        # (the ChatPanel and WorldTracker contexts are rebuilt on save load).
+        async def _rearm_chat_shim():
+            await handoff.install_chat_shim(conn)
+
+        async def _rearm_chat_unhide():
+            try:
+                await conn.execute_in_named_state(
+                    handoff.WORLDTRACKER_STATE,
+                    handoff.build_unhide_chat_lua(),
+                )
+            except Exception:
+                log.debug("Chat unhide re-arm failed", exc_info=True)
+
+        keeper.add_post_install_hook(_rearm_chat_shim)
+        keeper.add_post_install_hook(_rearm_chat_unhide)
+
         # Stash for cleanup.
 
     # Start the web dashboard API as a background task.
@@ -548,6 +598,7 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
             keeper=keeper,
             mailbox=mailbox,
             diplo_mailbox=diplo_mailbox,
+            message_mailbox=message_mailbox,
         )
     finally:
         await emitter.close()
@@ -1006,6 +1057,180 @@ async def _send_deal_notifications(
             )
 
 
+# ---------------------------------------------------------------------------
+# Managed-player messaging (chat)
+# ---------------------------------------------------------------------------
+
+
+async def _current_turn(conn: GameConnection) -> int:
+    """Fetch the current game turn (one round-trip). Chat is infrequent."""
+    try:
+        lines = await conn.execute_read(
+            "print(tostring(Game.GetCurrentGameTurn())) print('---END---')",
+            perspective=False,
+        )
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith("---"):
+                try:
+                    return int(float(line))
+                except ValueError:
+                    continue
+    except Exception:
+        log.debug("current turn fetch failed", exc_info=True)
+    return 0
+
+
+async def _send_message(app, seat, params: dict) -> str:
+    """Post a chat message from the calling seat to a target player.
+
+    - Target is a managed civ: file in the mailbox only (the target agent reads
+      it in ``get_full_game_state`` next turn). No UI action.
+    - Target is the human: file in the mailbox AND render into the human's
+      native chat panel via ``OnChat`` in the ChatPanel state.
+    - Target is an unmanaged (built-in AI) civ: file for the log, but no agent
+      reads it.
+    """
+    mb = app.message_mailbox
+    if mb is None:
+        return "Error: message mailbox not available"
+    target = params.get("other_player_id", -1)
+    text = params.get("text", "")
+    if not isinstance(target, int) or target < 0 or not text:
+        return "Error: other_player_id (int) and non-empty text are required"
+    agent_pid = seat.player_id
+    cfg = app.handoff_config
+    conn = app.game.conn
+    turn = await _current_turn(conn)
+
+    mb.post(Message(
+        from_player=agent_pid,
+        to_player=target,
+        text=text,
+        turn=turn,
+        direction="out",
+    ))
+
+    if target == cfg.human_id:
+        try:
+            await conn.execute_in_named_state(
+                handoff.CHAT_SHIM_STATE,
+                handoff.build_send_chat_message_lua(agent_pid, target, text),
+            )
+        except Exception:
+            log.warning("Chat message push to human failed", exc_info=True)
+            return f"Posted to mailbox but UI push failed: {text[:60]!r}"
+        # Record last sender so the human's reply routes back to this agent.
+        mb.set_last_inbound_sender(target, agent_pid)
+        return f"Message sent to human P{target}: {text[:60]!r}"
+
+    if target in cfg.managed_ids:
+        return f"Message sent to P{target} (managed): {text[:60]!r}"
+
+    return (
+        f"Message logged to P{target} (unmanaged AI — no agent reads it): "
+        f"{text[:60]!r}"
+    )
+
+
+async def _handle_human_chat(
+    conn: GameConnection,
+    mb: MessageMailbox,
+    data: dict,
+    cfg: HandoffConfig,
+    gs: GameState,
+) -> None:
+    """Human typed a message in the native chat panel — route to the mailbox.
+
+    The recipient is resolved by :func:`_resolve_chat_recipient` (which may
+    strip a leader-name prefix from ``data["text"]``). If no recipient can be
+    resolved, a hint is echoed back to the human's chat log.
+    """
+    try:
+        human_pid = data.get("from", cfg.human_id)
+        text = data.get("text", "")
+        if not text:
+            return
+        target = await _resolve_chat_recipient(conn, mb, data, cfg)
+        log.info(
+            "Human chat: from P%d, text=%r, resolved target=%s",
+            human_pid, text, target,
+        )
+        if target is None:
+            try:
+                await conn.execute_in_named_state(
+                    handoff.CHAT_SHIM_STATE,
+                    handoff.build_send_chat_message_lua(
+                        human_pid,
+                        human_pid,
+                        "(No recipient resolved. Address a leader by name "
+                        "or reply after they message you.)",
+                    ),
+                )
+            except Exception:
+                log.warning("Chat hint echo failed", exc_info=True)
+            return
+        final_text = data.get("text", text)
+        turn = await _current_turn(conn)
+        mb.post(Message(
+            from_player=human_pid,
+            to_player=target,
+            text=final_text,
+            turn=turn,
+            direction="in",
+        ))
+    except Exception:
+        log.warning("_handle_human_chat failed", exc_info=True)
+
+
+async def _resolve_chat_recipient(
+    conn: GameConnection,
+    mb: MessageMailbox,
+    data: dict,
+    cfg: HandoffConfig,
+) -> int | None:
+    """Decide which managed civ a human's chat message is addressed to.
+
+    The native chat pulldown cannot target managed civs (they are AI to the
+    engine during another player's turn), so routing is decided here, in
+    priority order:
+
+    1. Explicit whisper ``targetID`` that is a managed civ.
+    2. A leader/civ name prefix in the text (stripped from the stored text).
+    3. Reply to last sender (most recent managed civ that messaged this human).
+    4. ``None`` — caller echoes a hint.
+    """
+    human_pid = cfg.human_id
+
+    # 1. Explicit whisper target that is a managed civ.
+    target_id = data.get("to", -1)
+    if isinstance(target_id, int) and target_id in cfg.managed_ids:
+        return target_id
+
+    text = data.get("text", "")
+
+    # 2. Name-in-text prefix. Resolve via the roster: {pid: (civ, leader, alive)}.
+    roster = await handoff.get_roster(conn, cfg.managed_ids)
+    if roster:
+        # Longest leader-name-first so longer names win prefix matches.
+        candidates = sorted(roster.items(), key=lambda kv: -len(kv[1][1]))
+        for pid, (civ, leader, _alive) in candidates:
+            if pid == human_pid:
+                continue
+            for name in (leader, civ):
+                if name and name != "?" and text.lower().startswith(name.lower()):
+                    # Strip the matched prefix from the stored text.
+                    data["text"] = text[len(name):].lstrip(" :,-")
+                    return pid
+
+    # 3. Reply to last sender.
+    last = mb.last_inbound_sender(human_pid)
+    if last is not None and last in cfg.managed_ids:
+        return last
+
+    return None
+
+
 async def _logged(
     ctx: Context,
     tool_name: str,
@@ -1243,6 +1468,26 @@ async def get_full_game_state(ctx: Context) -> str:
         except Exception:
             log.debug("Failed to append diplo mailbox", exc_info=True)
 
+        # Append chat messages (managed-player messaging).
+        try:
+            app = _app(ctx)
+            mb = app.message_mailbox
+            if mb is not None:
+                seat = _get_seat(ctx)
+                msgs = mb.for_player(seat.player_id, limit=50)
+                if msgs:
+                    text += "\n\n=== MESSAGES ==="
+                    for m in msgs:
+                        if m.from_player == seat.player_id:
+                            who = "To"
+                            other = m.to_player
+                        else:
+                            who = "From"
+                            other = m.from_player
+                        text += f"\n[{who} P{other} (T{m.turn})] {m.text}"
+        except Exception:
+            log.debug("Failed to append messages", exc_info=True)
+
         return text
 
     return await _logged(ctx, "get_full_game_state", {}, _run)
@@ -1367,6 +1612,13 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         from a managed civ. Accept marks it; the proposer's action takes effect
         on the proposer's next turn. Reject discards it.
 
+    Messaging (managed-player chat; see MESSAGES in state):
+      send_message(other_player_id, text) — send a free-text message to a
+        managed civ or the human. To a managed civ it is filed for that agent
+        to read next turn; to the human it is also rendered in their native
+        in-game chat panel. Incoming messages to this seat appear in the
+        === MESSAGES === section of get_full_game_state.
+
     Governance:
       set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"};
         use "NONE" to clear a slot
@@ -1440,6 +1692,8 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             "send_diplomatic_action", "diplomacy_respond", "propose_peace",
             "form_alliance", "propose_trade", "test_trade",
             "respond_to_deal", "respond_to_trade", "respond_to_diplo_action",
+            # Messaging (managed-player chat)
+            "send_message",
             # Governance
             "set_policies", "change_government", "appoint_governor",
             "assign_governor", "promote_governor", "send_envoy",
@@ -1471,6 +1725,11 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         for cmd in commands:
             action = cmd.get("action", "")
             params = cmd.get("params", {})
+            if action == "send_message" and app.message_mailbox is not None:
+                # Managed-player chat — never reaches the engine.
+                result = await _send_message(app, seat, params)
+                results.append(f"send_message: {result}")
+                continue
             if action == "propose_trade" and app.mailbox is not None:
                 target = params.get("other_player_id", -1)
                 if target in app.handoff_config.managed_ids:

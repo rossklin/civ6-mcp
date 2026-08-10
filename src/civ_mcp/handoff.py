@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from civ_mcp.connection import GameConnection
-from civ_mcp.lua._helpers import SENTINEL
+from civ_mcp.lua._helpers import SENTINEL, lua_quote
 
 log = logging.getLogger(__name__)
 
@@ -708,6 +708,120 @@ async def install_deal_shim(
     )
     log.info("Deal shim: %s", status)
     return status
+
+
+# ---------------------------------------------------------------------------
+# Chat shim — wraps Network.SendChat in the ChatPanel state
+# ---------------------------------------------------------------------------
+
+CHAT_SHIM_STATE = "ChatPanel"
+WORLDTRACKER_STATE = "WorldTracker"
+
+# Template Lua for the chat shim, kept in a separate file for readability.
+# One tag is substituted per-call by build_chat_shim_install_lua():
+#   __MCP_SENTINEL_TAG__  -> the response sentinel (_helpers.SENTINEL)
+_CHAT_SHIM_PATH = Path(__file__).resolve().parent.parent / "lua" / "chat_shim.lua"
+_CHAT_SHIM_TEMPLATE: str | None = None
+
+
+def _load_chat_shim_template() -> str:
+    """Read and cache the chat-shim Lua template from disk."""
+    global _CHAT_SHIM_TEMPLATE
+    if _CHAT_SHIM_TEMPLATE is None:
+        _CHAT_SHIM_TEMPLATE = _CHAT_SHIM_PATH.read_text(encoding="utf-8")
+    return _CHAT_SHIM_TEMPLATE
+
+
+def build_chat_shim_install_lua() -> str:
+    """Lua that wraps ParseInputChatString in the ChatPanel state.
+
+    Idempotent re-arm (same pattern as the deal shim,
+    build_deal_shim_install_lua): the original is captured once in
+    ``__MCP_orig_ParseInputChatString`` and called through a local upvalue, so
+    repeated installs never stack wrappers.  The wrapper hex-encodes the
+    human's parsed text and prints an ``MCPCHAT|SEND|...`` line drained by the
+    deal monitor, then echoes the human's own message into the chat log
+    (``Network.SendChat`` does not echo locally in single-player).  It delegates
+    to the original so ``SendChat`` continues normally (clear box, sent sound).
+
+    Why ParseInputChatString and not Network.SendChat: ``Network`` is a
+    read-only table in the ChatPanel state (assignment raises "Attempt to
+    modify read-only table"), but ``ParseInputChatString`` is a plain global
+    (declared in ChatLogic.lua, include()'d into the ChatPanel state) and thus
+    writable — the same kind of hook the deal shim uses for IsAutoPropose /
+    UpdateDealStatus.  It is called once per message inside SendChat
+    (ChatPanel.lua:301), on Enter-key commit.
+    """
+    lua = _load_chat_shim_template()
+    lua = lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    return lua
+
+
+def build_chat_shim_uninstall_lua() -> str:
+    """Restore the original ParseInputChatString in the ChatPanel state."""
+    return (
+        "if __MCP_orig_ParseInputChatString ~= nil then "
+        "  ParseInputChatString = __MCP_orig_ParseInputChatString "
+        "  __MCP_orig_ParseInputChatString = nil "
+        "end "
+        'print("CHATSHIM|removed") '
+        f'print("{SENTINEL}")'
+    )
+
+
+async def install_chat_shim(conn: GameConnection) -> str:
+    """Install the chat shim in the ChatPanel state. Returns status string."""
+    index = await conn.state_index_for(CHAT_SHIM_STATE)
+    if index is None:
+        log.warning("Chat shim: %s state not found", CHAT_SHIM_STATE)
+        return "absent"
+    lines = await conn.execute_in_named_state(
+        CHAT_SHIM_STATE, build_chat_shim_install_lua()
+    )
+    status = next(
+        (l[9:] for l in lines if l.startswith("CHATSHIM|")), "unknown"
+    )
+    log.info("Chat shim: %s", status)
+    return status
+
+
+def build_unhide_chat_lua() -> str:
+    """Lua (WorldTracker state) that force-shows the chat panel in single-player.
+
+    Reverses the WorldTracker.LateInitialize gate (which hides the chat panel and
+    its toggle checkbox when not in network multiplayer) by calling the global
+    ``UpdateChatPanel(false)`` and unhiding ``ChatCheck``.  Idempotent: safe to
+    call repeatedly.  ``UpdateChatPanel`` sets the internal ``m_hideChat`` flag,
+    the container hide, and the checkbox check, so the WorldTracker's own
+    resize/show-hide logic stays consistent.
+    """
+    return (
+        "UpdateChatPanel(false) "
+        "Controls.ChatCheck:SetHide(false) "
+        'print("CHATUNHID") '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_send_chat_message_lua(
+    from_pid: int, to_pid: int, text: str
+) -> str:
+    """Lua (ChatPanel state) that renders one message into the human's chat log.
+
+    Calls the global ``OnChat`` so the message uses the native render path:
+    sender name from ``PlayerConfigurations[from_pid]``, whisper color, and a
+    diplomacy-ribbon portrait flash via ``LuaEvents.ChatPanel_OnChatReceived``.
+    ``OnChat`` and ``ChatTargetTypes`` are globals in the ChatPanel state.
+    """
+    safe_text = lua_quote(text)
+    return (
+        f"local fromP = {from_pid} "
+        f"local toP = {to_pid} "
+        f"local text = {safe_text} "
+        "OnChat(fromP, toP, text, ChatTargetTypes.CHATTARGET_PLAYER, true) "
+        'print("CHATSENT") '
+        f'print("{SENTINEL}")'
+    )
 
 
 # ---------------------------------------------------------------------------

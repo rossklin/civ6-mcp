@@ -4,6 +4,17 @@ from __future__ import annotations
 
 SENTINEL = "---END---"
 
+
+def lua_quote(s: str) -> str:
+    """Produce a safe Lua double-quoted string literal.
+
+    Escapes backslashes, double quotes and newlines so arbitrary text (chat
+    messages) can be embedded in generated Lua without breaking the string.
+    """
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "")
+    s = s.replace("\n", "\\n")
+    return '"' + s + '"'
+
 # Item type → GameInfo table name (shared by produce + purchase builders)
 _ITEM_TABLE_MAP: dict[str, str] = {
     "UNIT": "Units",

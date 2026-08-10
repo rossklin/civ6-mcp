@@ -38,9 +38,10 @@ response, I prefer option B"), we implement **option B**.
 **Option B is fully feasible within the existing architecture.** The chat
 panel's *render* layer has zero multiplayer dependency; only its *transport*
 (`Network.SendChat` / `Events.MultiplayerChat`) requires a network session. We
-bypass both: we wrap `Network.SendChat` (outbound) and call the panel's display
-function directly (inbound). Both target functions are **globals** in the
-`ChatPanel` Lua state, reachable the same way the existing deal shim reaches the
+bypass both: we wrap `ParseInputChatString` (outbound — `Network` itself is a
+read-only table and cannot be wrapped) and call the panel's display function
+directly (inbound). Both target functions are **globals** in the `ChatPanel`
+Lua state, reachable the same way the existing deal shim reaches the
 `DiplomacyDealView` state.
 
 ---
@@ -130,7 +131,9 @@ The `__MCP_orig_*` guard captures the original **once**; the **local upvalue**
 (`origSWD`) is what the wrapper calls through, so a second install can never
 make a wrapper call itself (which once caused a Lua stack-overflow hard crash —
 see the docstring at handoff.py:631-644). The new `chat_shim.lua` (section 5.2)
-uses the identical pattern on `Network.SendChat`.
+uses the identical pattern on `ParseInputChatString` (a writable global —
+`Network.SendChat` cannot be wrapped because `Network` is a read-only table;
+see §3.3).
 
 The template is loaded and tag-substituted by `build_deal_shim_install_lua()`
 (handoff.py:631) and installed by `install_deal_shim()` (handoff.py:695) via
@@ -222,16 +225,29 @@ state): `CHATTARGET_ALL`, `CHATTARGET_TEAM`, `CHATTARGET_PLAYER`. Use
 `ChatTargetTypes.CHATTARGET_PLAYER` for a directed message so it renders with the
 whisper color and includes the recipient name.
 
-### 3.3 The transport layer is what we replace
+### 3.3 The transport layer is what we replace (and a read-only-table caveat)
 
 `Network.SendChat(text, targetType, targetID)` is the engine network call. In
 pure single-player there is no network session, so calling it does nothing
-useful (no `Events.MultiplayerChat` echoes back). `Network` is a per-state
-engine table — wrapping `Network.SendChat` **in the ChatPanel state** affects
-only the ChatPanel's calls (exactly as the deal shim wraps
-`DealManager.SendWorkingDeal` in the `DiplomacyDealView` state). The only in-game
-caller is `ChatPanel.lua:318`. (Staging-room and end-game chat use separate
-states and are unaffected — we don't care about them.)
+useful (no `Events.MultiplayerChat` echoes back, and no local echo of the
+human's own message).
+
+**`Network` is a read-only table in the ChatPanel state** — assigning to
+`Network.SendChat` raises `Runtime Error: Attempt to modify read-only table`.
+This differs from `DealManager` in the `DiplomacyDealView` state (which is
+writable, so the deal shim can wrap `DealManager.SendWorkingDeal`). Engine
+wrapper tables are not uniformly writable across states.
+
+So instead of wrapping `Network.SendChat`, the shim wraps
+**`ParseInputChatString`** — a plain global function (declared without `local`
+in `ChatLogic.lua:29`, which is `include()`'d into the ChatPanel state at
+`ChatPanel.lua:6`, making it a writable global there). It is called exactly
+once per message inside `SendChat` at `ChatPanel.lua:301`, on Enter-key commit
+(not per keystroke). This is the same kind of hook the deal shim uses for
+`IsAutoPropose` / `UpdateDealStatus`. The wrapper routes the parsed text to
+Python and delegates to the original so `SendChat` continues normally
+(`Network.SendChat` echoes the human's own message locally itself, so the
+wrapper adds no echo of its own).
 
 ### 3.4 Recipient picker excludes AI / managed civs
 
@@ -241,9 +257,10 @@ player's turn (see memory: "other managed civs are AI to the engine"), so the
 human **cannot** select a managed civ from the native whisper pulldown, and `/w
 <name>` name-matching also filters to humans. This is why we use **recipient
 selection option (a)**: route by "reply to last sender" by default, with
-optional name-in-text resolution, decided Python-side in our `Network.SendChat`
-wrapper. The pulldown's actual `targetID` is effectively ignored for routing
-(though we still read it).
+optional name-in-text resolution, decided Python-side in our
+`ParseInputChatString` wrapper. The pulldown's actual `targetID` is not
+available at the intercept point (and cannot target a managed civ anyway), so
+routing falls through to name-in-text / last-sender.
 
 ### 3.5 Immersion cue: diplomacy ribbon portrait flash
 
@@ -273,11 +290,15 @@ leader-screen immersion of option A, at no extra cost.
 
 ### 4.2 Human → Agent
 
-1. Human types in the chat box and presses Enter → `SendChat` → our wrapped
-   `Network.SendChat(text, targetType, targetID)` in the ChatPanel state.
-2. The wrapper hex-encodes the text and `print("MCPCHAT|SEND|from=..|to=..|ttype=..|hex=..")`.
+1. Human types in the chat box and presses Enter → `SendChat` calls our wrapped
+   `ParseInputChatString(text, m_playerTarget)` in the ChatPanel state.
+2. The wrapper delegates to the original (so `SendChat` continues: clear box,
+   sent sound, `Network.SendChat` no-op), then hex-encodes the parsed text and
+   `print("MCPCHAT|SEND|from=..|hex=..")`, and echoes the human's own message
+   into the chat log via `OnChat`.
 3. `_deal_monitor_loop` drains it; `_parse_mcpdeal_line` (extended, section 5.4)
-   parses it into `{"type":"chat_send","from":..,"to":..,"ttype":..,"text":..}`.
+   parses it into `{"type":"chat_send","from":..,"text":..}` (`to`/`ttype`
+   absent — the wrapper intercepts before they are computed).
 4. `_on_chat_event` callback (section 5.5) resolves the recipient (section 5.6)
    and files a `Message(from=human, to=<resolved agent>, direction="in")` in
    `MessageMailbox`.
@@ -309,8 +330,9 @@ panel (force-shown in single-player, transport rerouted here); agents send via
 the ``send_message`` action and read via the ``=== MESSAGES ===`` section of
 ``get_full_game_state``.
 
-No mod is required — the chat shim wraps ``Network.SendChat`` in the ChatPanel
-state, and inbound display calls the global ``OnChat`` in the same state.
+No mod is required — the chat shim wraps ``ParseInputChatString`` (a writable
+global in the ChatPanel state; ``Network`` itself is read-only) and inbound
+display calls the global ``OnChat`` in the same state.
 """
 
 from __future__ import annotations
@@ -382,11 +404,13 @@ class MessageMailbox:
 
 ### 5.2 `src/lua/chat_shim.lua` (new file)
 
-Mirror `deal_shim.lua`'s idempotent pattern. Wraps `Network.SendChat` in the
-ChatPanel state. No managed-id tag is needed (routing is decided Python-side).
+Mirror `deal_shim.lua`'s idempotent pattern. Wraps **`ParseInputChatString`**
+(a writable global in the ChatPanel state) — not `Network.SendChat`, which is a
+read-only-table field and cannot be reassigned (see §3.3). No managed-id tag is
+needed (routing is decided Python-side).
 
 ```lua
--- Chat shim: wraps Network.SendChat in the ChatPanel state so the human's
+-- Chat shim: wraps ParseInputChatString in the ChatPanel state so the human's
 -- typed messages are routed to the Python message mailbox instead of the
 -- (absent in single-player) network transport.
 --
@@ -394,32 +418,50 @@ ChatPanel state. No managed-id tag is needed (routing is decided Python-side).
 -- handoff.py. One tag is substituted before the Lua is sent to the game:
 --   __MCP_SENTINEL_TAG__  -> the response sentinel (see _helpers.SENTINEL)
 --
--- Idempotent re-arm: the original SendChat is captured once (when
--- __MCP_orig_SendChat is nil) and called through a LOCAL upvalue, so repeated
--- installs never stack wrappers and can never self-recurse. Same pattern as
--- deal_shim.lua.
+-- Why ParseInputChatString and not Network.SendChat?
+--   Network is a READ-ONLY table in the ChatPanel state (assigning to
+--   Network.SendChat raises "Attempt to modify read-only table").
+--   ParseInputChatString, by contrast, is a plain global function (declared
+--   in ChatLogic.lua, which is include()'d into the ChatPanel state), so it
+--   is writable — the same kind of hook the deal shim uses for IsAutoPropose
+--   and UpdateDealStatus. It is called exactly once per message, inside
+--   SendChat (ChatPanel.lua:301), on Enter-key commit.
+--
+-- Idempotent re-arm: the original is captured once (when
+-- __MCP_orig_ParseInputChatString is nil) and called through a LOCAL upvalue,
+-- so repeated installs never stack wrappers and can never self-recurse. Same
+-- pattern as deal_shim.lua.
 
 __MCP_chat_install_count = (__MCP_chat_install_count or 0) + 1
 
-if __MCP_orig_SendChat == nil then
-    __MCP_orig_SendChat = Network.SendChat
+if __MCP_orig_ParseInputChatString == nil then
+    __MCP_orig_ParseInputChatString = ParseInputChatString
 end
-local origSendChat = __MCP_orig_SendChat
+local origPICT = __MCP_orig_ParseInputChatString
 
-Network.SendChat = function(text, targetType, targetID)
-    -- Hex-encode the text so pipes, newlines and quotes cannot break the
-    -- pipe-delimited drain line. Python decodes with bytes.fromhex().
-    local hex = ""
-    for i = 1, #text do
-        hex = hex .. string.format("%02x", string.byte(text, i))
+ParseInputChatString = function(chatText, playerTargetData)
+    -- Delegate first so slash-command parsing still runs and SendChat
+    -- continues normally (ClearString, sent sound, Network.SendChat).
+    local parsedText, chatTargetChanged, printHelp =
+        origPICT(chatText, playerTargetData)
+
+    -- Route the parsed text to the Python mailbox. parsedText is empty for
+    -- pure slash-commands (e.g. "/t" mode switches) — skip those.
+    -- We do NOT echo the human's own message here: in single-player
+    -- Network.SendChat (called by SendChat after we return) echoes the
+    -- message locally itself, so a second OnChat would duplicate it.
+    if parsedText and parsedText ~= "" then
+        local me = Game.GetLocalPlayer()
+        local hex = ""
+        for i = 1, #parsedText do
+            hex = hex .. string.format("%02x", string.byte(parsedText, i))
+        end
+        print("MCPCHAT|SEND"
+            .. "|from=" .. tostring(me)
+            .. "|hex=" .. hex)
     end
-    print("MCPCHAT|SEND"
-        .. "|from=" .. tostring(Game.GetLocalPlayer())
-        .. "|to="   .. tostring(targetID)
-        .. "|ttype=" .. tostring(targetType)
-        .. "|hex="  .. hex)
-    -- Do NOT call origSendChat: there is no network session in single-player,
-    -- and the message must route to the mailbox, not the network.
+
+    return parsedText, chatTargetChanged, printHelp
 end
 
 print("CHATSHIM|installed|install_count=" .. tostring(__MCP_chat_install_count))
@@ -427,11 +469,22 @@ print("__MCP_SENTINEL_TAG__")
 ```
 
 Notes:
-- `Network` is a per-state table, so this wrap only affects the ChatPanel state.
-- We intentionally never call `origSendChat` in single-player. If hotseat/
-  network multi-agent is ever supported, gate on
-  `GameConfiguration.IsNetworkMultiplayer()` and fall through to
-  `origSendChat(text, targetType, targetID)` in that branch.
+- The wrapper delegates to the original and returns its three results, so
+  `SendChat` runs unchanged afterwards — the box clears, the sent sound plays,
+  and `Network.SendChat` is called. In single-player `Network.SendChat` has no
+  network to send to but **does** echo the message locally (the human sees their
+  own line in the chat log via the local `Events.MultiplayerChat` → `OnChat`
+  path), so the wrapper must not add its own echo — that was the original
+  double-echo bug observed in testing.
+- This avoids any need to re-register the EditBox commit callback (the EditBox
+  holds the original `SendChat` reference, so reassigning the `SendChat` global
+  alone would not intercept it).
+- Because we intercept at `ParseInputChatString`, the `MCPCHAT|SEND` line
+  carries only `from=` and `hex=` (not `to=`/`ttype=`, which `SendChat`
+  computes afterwards). The parser and `_resolve_chat_recipient` treat absent
+  `to`/`ttype` as "no explicit managed target" and fall through to name-in-text
+  / last-sender routing — which is the intended option-(a) behaviour, since the
+  native pulldown cannot target managed civs anyway.
 - Hex encoding is used (not base64) because Lua has no built-in base64 but
   `string.byte`/`string.format` are always available. Hex chars are `[0-9a-f]`,
   so they never collide with the `|` delimiters.
@@ -463,11 +516,14 @@ def _load_chat_shim_template() -> str:
 
 ```python
 def build_chat_shim_install_lua() -> str:
-    """Lua that wraps Network.SendChat in the ChatPanel state.
+    """Lua that wraps ParseInputChatString in the ChatPanel state.
 
     Idempotent re-arm — see deal_shim pattern (handoff.py:631). The wrapper
-    hex-encodes the human's typed text and prints an MCPCHAT|SEND|... line
-    drained by the deal monitor, instead of calling the (absent in SP) network.
+    hex-encodes the human's parsed text and prints an MCPCHAT|SEND|... line
+    drained by the deal monitor, and delegates to the original so SendChat
+    continues normally (Network.SendChat echoes the human's own message locally
+    itself, so the wrapper adds no echo). Network.SendChat cannot be wrapped
+    directly (Network is a read-only table).
     """
     lua = _load_chat_shim_template()
     lua = lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
@@ -475,11 +531,11 @@ def build_chat_shim_install_lua() -> str:
 
 
 def build_chat_shim_uninstall_lua() -> str:
-    """Restore the original Network.SendChat in the ChatPanel state."""
+    """Restore the original ParseInputChatString in the ChatPanel state."""
     return (
-        "if __MCP_orig_SendChat ~= nil then "
-        "  Network.SendChat = __MCP_orig_SendChat "
-        "  __MCP_orig_SendChat = nil "
+        "if __MCP_orig_ParseInputChatString ~= nil then "
+        "  ParseInputChatString = __MCP_orig_ParseInputChatString "
+        "  __MCP_orig_ParseInputChatString = nil "
         "end "
         'print("CHATSHIM|removed") '
         f'print("{SENTINEL}")'
@@ -595,7 +651,11 @@ Add a branch to `_parse_mcpdeal_line()` (connection.py:413) that recognizes
 ```
 
 The hex field is always last and contains only `[0-9a-f]`, so `split("|")` is
-safe. Empty messages yield `hex=` (empty) → `text == ""`.
+safe. Empty messages yield `hex=` (empty) → `text == ""`. The `to`/`ttype`
+fields are optional — the shim emits only `from=` and `hex=` (it intercepts at
+`ParseInputChatString`, before `SendChat` computes the target); when absent
+they are simply not added to `data`, and `_resolve_chat_recipient` treats a
+missing `to` as "no explicit managed target".
 
 No changes to the monitor loop or callback dispatch are needed —
 `_deal_monitor_loop` (connection.py:181) already routes every parsed event to
@@ -909,10 +969,13 @@ async def _resolve_chat_recipient(
   and notification handler are re-armed (server.py:522-523).
 - **Multi-agent hotseat / network.** If the game is ever launched as network
   multiplayer, the native gate already shows the chat panel, and
-  `Network.SendChat` would actually transmit. The shim currently suppresses the
-  real call unconditionally. If hotseat/network multi-agent is supported later,
-  gate the wrapper: `if GameConfiguration.IsNetworkMultiplayer() then return
-  origSendChat(text, targetType, targetID) end` before the print.
+  `Network.SendChat` (called by the original `SendChat` after our wrapper
+  returns) would actually transmit over the network. In that mode the shim's
+  `MCPCHAT|SEND` routing and `OnChat` self-echo would still fire on top of the
+  native delivery, producing duplicates. If hotseat/network multi-agent is
+  supported later, gate the wrapper body on
+  `not GameConfiguration.IsNetworkMultiplayer()` (early-return the original's
+  results without the print/echo) so native chat works untouched in MP.
 - **Human not currently the local player.** `OnChat` pushes to the chat panel
   regardless of whose turn it is (the panel is part of the human's UI always).
   The unhide ensures the panel is visible. No turn check needed for display.
@@ -996,7 +1059,7 @@ addressable Lua state, matching the existing deal-notification architecture.
 
 New files:
 - `src/civ_mcp/message_mailbox.py` — `Message`, `MessageMailbox` (5.1).
-- `src/lua/chat_shim.lua` — `Network.SendChat` wrapper template (5.2).
+- `src/lua/chat_shim.lua` — `ParseInputChatString` wrapper template (5.2).
 
 Modified files:
 - `src/civ_mcp/handoff.py` — `CHAT_SHIM_STATE`, `WORLDTRACKER_STATE`,

@@ -423,6 +423,7 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
          "items": [{"type": "GOLD", "from": int, "amount": 200, ...}, ...]}
         {"type": "click", "proposal_id": str, "pid": int}
         {"type": "health", "ok": bool}
+        {"type": "chat_send", "from": int, "to": int, "ttype": int, "text": str}
     """
     global _pending_deal_items, _pending_deal_from, _pending_deal_to
 
@@ -453,6 +454,37 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
     # Notification sent acknowledgment
     if text.startswith("NOTIFY_SENT|"):
         return {"type": "notify_sent", "proposal_id": text[len("NOTIFY_SENT|"):].strip()}
+
+    # Chat shim: human typed a message in the native chat panel.
+    # Format: MCPCHAT|SEND|from=<pid>|to=<pid>|ttype=<enum>|hex=<hex text>
+    # The text is hex-encoded by the shim so pipes/newlines/quotes cannot
+    # break the pipe-delimited line. The hex field is always last and contains
+    # only [0-9a-f], so split("|") is safe.
+    if text.startswith("MCPCHAT|"):
+        rest = text[len("MCPCHAT|"):]
+        parts = rest.split("|")
+        verb = parts[0] if parts else ""
+        if verb == "SEND":
+            data: dict = {"type": "chat_send"}
+            for part in parts[1:]:
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    if k in ("from", "to", "ttype"):
+                        try:
+                            data[k] = int(v)
+                        except ValueError:
+                            pass
+                    elif k == "hex":
+                        data["hex"] = v
+            if "hex" in data:
+                try:
+                    data["text"] = bytes.fromhex(data["hex"]).decode(
+                        "utf-8", errors="replace"
+                    )
+                except ValueError:
+                    data["text"] = ""
+            return data
+        return None
 
     # Deal proposal header
     if text.startswith("MCPDEAL|"):
