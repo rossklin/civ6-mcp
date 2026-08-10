@@ -165,10 +165,8 @@ class SeatRegistry:
         """Bind a session to a seat.  Returns ``(seat, message)``.
 
         Re-claiming the seat a session already holds is a no-op.  Taking over a
-        seat held by a session that has gone away is allowed — a reconnecting
-        agent must be able to get its civ back — but stealing from a live
-        session is not distinguishable from that here, so the takeover is
-        logged loudly.
+        seat held by a session that has gone away is not allowed. If an agent
+        loses its connection, restart the server and let agents claim seats again.
         """
         seat = self._seats.get(player_id)
         if seat is None:
@@ -177,17 +175,13 @@ class SeatRegistry:
                 f"P{player_id} is not an agent seat in this game. "
                 f"Agent seats: {available}."
             )
+        if seat.session_key is not None and seat.session_key != session_key:
+            return f"Seat P{player_id} is already claimed by another agent."
+        
         existing = self.for_session(session_key)
         if existing is not None and existing is not seat:
             existing.session_key = None
             existing.client_name = ""
-        if seat.session_key is not None and seat.session_key != session_key:
-            log.warning(
-                "Seat P%d reassigned from session %s to %s",
-                player_id,
-                seat.session_key,
-                session_key,
-            )
         seat.session_key = session_key
         seat.client_name = client_name
         return seat, f"Claimed {seat.describe()}"
