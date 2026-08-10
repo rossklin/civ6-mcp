@@ -319,23 +319,13 @@ All victories trigger immediately when the condition is met — they do not wait
 
 `end_turn` runs a victory proximity scan every turn and a full snapshot every 10 turns. These warnings are the primary signal for invisible victories — worth paying attention to.
 
-## Game Recovery
+## Additional getters
+Some parts of the game state were deemed rarely needed and kept in separate getters:
 
-**MCP autosaves:** `end_turn` automatically saves every turn as `0_MCP_NNNN` (last 5 kept). These are your primary recovery points.
-
-**Load by name** (preferred — no `list_saves` needed):
-```
-load_game_save("0_MCP_0079")  # load specific turn (~5s via Lua, ~90s via menu fallback)
-get_game_overview              # verify load
-```
-
-**When the game hangs** (AI turn loop):
-```
-restart_and_load("0_MCP_NNNN")   # kill + relaunch + load (~90s)
-get_game_overview                 # verify load
-```
-
-**Turn regression detection:** If you accidentally load a wrong save (e.g. the T1 scenario save instead of your autosave), `end_turn` will emit a CRITICAL warning with the correct autosave name to reload.
-
-Other tools: `list_saves`, `load_save(index)`, `kill_game`, `launch_game`, `load_save_from_menu(name)`.
-Save names omit extension: `"AutoSave_0221"` not `"AutoSave_0221.Civ6Save"`.
+get_pathing_estimate
+get_available_governors
+get_pantheon_beliefs
+get_religion_beliefs
+get_dedications
+get_trade_destinations
+get_available_governors
