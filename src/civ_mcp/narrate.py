@@ -4,9 +4,10 @@ All functions are pure: data in, string out. No side effects, no I/O.
 """
 
 from __future__ import annotations
+import logging
 
 from civ_mcp import lua as lq
-
+log = logging.getLogger(__name__)
 
 def narrate_overview(ov: lq.GameOverview) -> str:
     diff_str = f" | {ov.difficulty}" if ov.difficulty else ""
@@ -1622,6 +1623,7 @@ def narrate_world_congress(status: lq.WorldCongressStatus) -> str:
             lines.append(
                 "World Congress: FIRES THIS TURN — use queue_wc_votes() before end_turn()!"
             )
+            log.info(f"World congress narrator: actual tuns_until_next value: \"{status.turns_until_next}\"")
         # Build clear cost table: "N votes = X favor total"
         costs = status.favor_costs
         if costs and len(costs) > 1:
