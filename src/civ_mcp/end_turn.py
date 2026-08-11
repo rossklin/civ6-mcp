@@ -604,6 +604,12 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
             if n_res == 0 and not wc_status.is_in_session:
                 log.info("WC fires this turn with 0 resolutions — auto-proceeding")
             else:
+                log.info("DEBUG end turn WC: is_in_session=%s, turns_until_next=%s, proposals=%s, resolutions=%s",
+                    wc_status.is_in_session,
+                    wc_status.turns_until_next,
+                    wc_status.proposals,
+                    n_res,
+                )
                 handler_lines = await gs.conn.execute_write(
                     f'print(__civmcp_wc_handler and "HANDLER_SET" or "NO_HANDLER"); '
                     f'print("{lq.SENTINEL}")'
