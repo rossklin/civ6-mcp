@@ -260,14 +260,28 @@ The diary appears in `get_full_game_state` output — no separate tool needed. W
 ## Strategic Patterns
 
 ### Moving units
+Moving into a tile costs movement points depending on the terrain and features. Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit which hasn't moved yet can always move into an adjacent tile regardless of cost, but once it has moved it can't 
+enter an adjacent tile unless it has sufficient points left. Map tiles show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route 
+units along roads when possible.
+
 Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort.
 
-Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit with 2 base moves arriving on forest-hills uses all movement and can't act until next turn. Route through flat terrain when possible, or plan to arrive one turn early. Map tiles now show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route units along roads when possible.
+`get_pathing_estimate(unit_id, target_x, target_y)` estimates how many turns a unit needs to reach a destination, using the game's actual pathfinding. Use it before committing units to long marches, but beware that it may take a weird path to avoid temporary blockage such as 
+units or unexplored tiles.
 
-`get_pathing_estimate(unit_id, target_x, target_y)` estimates how many turns a unit needs to reach a destination, using the game's actual pathfinding. Use it before committing units to long marches.
+Common reasons unit movement does not go as expected:
+- failure to account for map features like crossing a river
+- miscalculated adjacency, eg (x+1, y+1) is adjacent to (x,y) but (x+2, y+2) is not adjacent to (x+1, y+1)
+- zone of control (ZOC): when your unit moves adjacent to an object which exerts ZOC, it can't move further that turn
+except to attack the ZOC object. Melee units (land and naval), cities, encampments and units with a ZOC promotion exert ZOC.
+However cavalry units ignore ZOC.
 
 ### Builder Management
 Idle builders are wasted production. The builder tasks section shows all tiles needing improvements across your empire, prioritized (URGENT > HIGH > NORMAL), with the nearest idle builder for each task. These tasks are naive recommendations and you need to make your own judgement. For instance they may recommend you to build a mine when it is better to keep the forest on the hill, or to place an improvement that you do not have the required tech to place.
+
+Before building an improvement, consider whether it actually improves the yields of the city. For instance if your city is currently working
+a grassland hill with forest (2 food, 2 production), building a farm on a plains would create a 2 food 1 production tile which would not
+be worthwhile for the city to work. 
 
 ### Spending Gold & Faith
 Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it.
