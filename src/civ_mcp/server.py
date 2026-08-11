@@ -14,6 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import uvicorn
@@ -667,26 +668,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 
 _INSTRUCTIONS = (
-    "Read game state and issue commands to a running Civ 6 game. "
-    "Call get_full_game_state first to orient yourself."
+    "Read game state and issue commands to a running Civ 6 game."
+    "Call get_agent_reference first to orient yourself."
+    "Then call get_full_game_state to get the info needed to make decisions."
 )
-
-if HANDOFF_CONFIG.enabled:
-    _INSTRUCTIONS = (
-        "Read game state and issue commands to a running Civ 6 game. This game "
-        "is shared: a human plays one civ in the game's own UI and one or more "
-        "agents play rival civs through this server, taking turns in order.\n"
-        "Start by calling get_seats() and then claim_seat(player_id=N) — every "
-        "other tool is refused until you hold a seat. Then call "
-        "get_full_game_state() to orient yourself.\n"
-        "Read tools always answer for your own civ, including while other "
-        "players are taking their turns, so you can scout and plan off the "
-        "clock. Write tools work only during your own turn.\n"
-        "Turn flow: get_full_game_state → execute_commands → end_turn → "
-        "update_diary(next_turn_plan=..., long_term_plans=..., notes=...) → "
-        "wait_for_turn(). wait_for_turn() blocks until your next turn starts; "
-        "call it again on timeout without changing the diary."
-    )
 
 mcp = FastMCP(
     "Civilization VI",
@@ -737,6 +722,14 @@ def _get_map_capture(ctx: Context) -> MapCapture:
 def _get_watchdog(ctx: Context) -> GameOverWatchdog:
     return _app(ctx).watchdog
 
+def _load_instructions() -> str:
+    """Load INSTRUCTIONS.md (the packaged agent reference) for the agent.
+    """
+    path = Path(__file__).resolve().parent / "INSTRUCTIONS.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    log.warning("INSTRUCTIONS.md not found; server instructions will be empty.")
+    return ""
 
 # ---------------------------------------------------------------------------
 # Turn-ownership gating (handoff mode only)
@@ -1334,6 +1327,12 @@ async def _logged(
         pass
     return result
 
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_agent_reference(ctx: Context) -> str:
+    """Get the agent reference instructions.
+    Describes the game rules, game concepts and how to use the other tools.
+    """
+    return _load_instructions()
 
 # ---------------------------------------------------------------------------
 # Unified tools — get_full_game_state and execute_commands
@@ -1495,165 +1494,8 @@ async def get_full_game_state(ctx: Context) -> str:
 
 @mcp.tool()
 async def execute_commands(ctx: Context, commands_json: str) -> str:
-    """Execute a batch of game commands sequentially.
-
-    Args:
-        commands_json: A JSON array of command objects. Each object has:
-            - action: The command name (a game action name, case-sensitive)
-            - params: Dict of parameters for that command
-
-    Example:
-        [{"action": "move_unit", "params": {"unit_index": 0, "target_x": 10, "target_y": 20}},
-         {"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_SETTLER"}},
-         {"action": "set_research", "params": {"tech_name": "TECH_IRON_WORKING"}}]
-
-    Commands execute in order. Movement/attack commands return visibility
-    intel (newly revealed tiles, enemy units) and combat results inline, so
-    you can call this tool multiple times per turn to scout first, then act
-    on what you learn. Prefer fewer, larger batches where possible.
-
-    Conventions:
-      - Coordinates: ``target_x``/``target_y`` are map tiles.
-      - ``unit_index``: the ``idx`` field from the Units section of
-        get_full_game_state. Most unit commands take this.
-      - ``unit_id``: unit id from Units section.
-      - ``city_id``: city ID from the Cities section.
-      - Player IDs: ``other_player_id`` / ``city_state_player_id`` are the P0,
-        P1, ... IDs from get_seats.
-      - String enums are case-insensitive (uppercased internally). The
-        ``item_name``/``tech_name``/etc. values are GameInfo type strings
-        (e.g. UNIT_WARRIOR, TECH_IRON_WORKING) — use the names shown in
-        get_full_game_state's production/research lists.
-
-    Command reference (params in parentheses; ``?`` = optional):
-
-    Units:
-      move_unit(unit_index, target_x, target_y) — move toward a tile
-      attack_unit(unit_index, target_x, target_y) — attack enemy at tile
-      fortify_unit(unit_index)
-      skip_unit(unit_index)
-      skip_remaining_units() — fortify combat units, then skip the rest
-      automate_explore(unit_index)
-      heal_unit(unit_index)
-      alert_unit(unit_index)
-      sleep_unit(unit_index)
-      delete_unit(unit_index)
-      enter_formation(unit_index, target_unit_index) — join escort formation
-      exit_formation(unit_index)
-      promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT
-      upgrade_unit(unit_id)
-      check_unit_upgrade(unit_id) — returns upgrade cost/availability
-
-    Settling & cities:
-      found_city(unit_index)
-      resolve_city_capture(action) — action: keep | reject | raze |
-        liberate_founder | liberate_previous
-      set_city_production(city_id, item_type, item_name, target_x?, target_y?)
-        item_type: UNIT | BUILDING | DISTRICT; item_name e.g. UNIT_WARRIOR,
-        BUILDING_GRANARY, DISTRICT_CAMPUS. DISTRICTs and wonders require
-        target_x/target_y (use get_district_advisor / get_wonder_advisor).
-      purchase_item(city_id, item_type, item_name, yield_type="YIELD_GOLD")
-        item_type: UNIT | BUILDING; yield_type: YIELD_GOLD | YIELD_FAITH.
-      list_city_production(city_id) — what the city can build now
-      set_city_focus(city_id, focus) — focus: DEFAULT (clear) | FOOD |
-        PRODUCTION | GOLD | SCIENCE | CULTURE | FAITH
-      purchase_tile(city_id, x, y)
-      city_attack(city_id, target_x, target_y) — ranged attack from a city
-
-    Builders & improvements:
-      improve_tile(unit_index, improvement_name) — e.g. IMPROVEMENT_MINE
-      remove_feature(unit_index)
-      repair_improvement(unit_index)
-      remove_improvement(unit_index)
-      build_route(unit_index)
-      sacrifice_builder_charges(unit_index)
-
-    Research & civics:
-      set_research(tech_name) — e.g. TECH_IRON_WORKING
-      set_civic(civic_name) — e.g. CIVIC_CRAFTSMANSHIP
-
-    Diplomacy & trade (other_player_id = target player ID):
-      send_diplomatic_action(other_player_id, action) — action: DIPLOMATIC_DELEGATION
-        | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE
-        | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
-        | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
-        | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR.
-        For the three response-able actions (DIPLOMATIC_DELEGATION,
-        RESIDENT_EMBASSY, DECLARE_FRIENDSHIP) targeting a managed civ, the
-        proposal is filed in the DIPLOMACY MAILBOX instead of the engine —
-        opening a session would let the target's built-in AI auto-respond. The
-        target answers on its own turn; your action takes effect on your next
-        turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go
-        straight to the engine.
-      diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
-        | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
-      propose_peace(other_player_id) — propose white peace. Targeting a
-        managed civ routes through the deal mailbox (the default AI would
-        otherwise auto-answer); eligibility (at war, past cooldown) is
-        checked first. Targeting an unmanaged civ goes to the engine.
-      form_alliance(other_player_id, alliance_type) — alliance_type:
-        MILITARY | RESEARCH | CULTURAL | ECONOMIC | RELIGIOUS (required).
-        Targeting a managed civ routes through the deal mailbox after an
-        eligibility check (declared friends + Diplomatic Service civic);
-        unmanaged targets go to the engine.
-      propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
-        offer_gold, offer_gold_per_turn, offer_resources (comma-separated
-        RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
-        plus the request_* equivalents; joint_war_target (player ID) for a joint war.
-      test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
-        Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
-        name, duration, subtype, city_id}.
-      respond_to_deal(other_player_id, accept: bool) — accept/reject an
-        AI-proposed deal.
-      respond_to_trade(other_player_id, accept: bool) — accept/reject an
-        incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
-      respond_to_diplo_action(other_player_id, accept: bool) — accept/reject
-        an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy)
-        from a managed civ. Accept marks it; the proposer's action takes effect
-        on the proposer's next turn. Reject discards it.
-
-    Messaging (managed-player chat; see MESSAGES in state):
-      send_message(other_player_id, text) — send a free-text message to a
-        managed civ or the human. To a managed civ it is filed for that agent
-        to read next turn; to the human it is also rendered in their native
-        in-game chat panel. Incoming messages to this seat appear in the
-        === MESSAGES === section of get_full_game_state.
-
-    Governance:
-      set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"};
-        use "NONE" to clear a slot
-      change_government(government_type) — e.g. GOVERNMENT_OLIGARCHY
-      appoint_governor(governor_type) — e.g. GOVERNOR_THE_CARDINAL
-      assign_governor(governor_type, city_id)
-      promote_governor(governor_type, promotion_type)
-      send_envoy(city_state_player_id)
-      choose_dedication(dedication_index)
-
-    Religion & Great People:
-      choose_pantheon(belief_type) — e.g. BELIEF_RELIGIOUS_SETTLEMENTS
-      found_religion(religion_type, follower_belief, founder_belief)
-      recruit_great_person(individual_id)
-      patronize_great_person(individual_id, yield_type="YIELD_GOLD")
-      reject_great_person(individual_id)
-      activate_great_person(unit_index)
-      spread_religion(unit_index)
-
-    Trade routes & spies:
-      make_trade_route(unit_index, target_x, target_y)
-      teleport_to_city(unit_index, target_x, target_y) — relocate a trader
-      spy_travel(unit_index, target_x, target_y)
-      spy_mission(unit_index, mission_type, target_x, target_y) — mission_type:
-        COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST
-        | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS
-        | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL (offensive missions need
-        the spy in the target city first)
-
-    World Congress:
-      queue_wc_votes(votes) — votes: list of {hash, option (1=A|2=B), target,
-        votes}; registers a one-shot handler that casts them at end of turn
-      vote_world_congress(resolution_hash, option, target_index, num_votes)
-        — option 1=A, 2=B; target_index is 0-based
-      submit_congress() — submit votes and resume the turn
+    """Execute a batch of game commands sequentially. This is your main interface for taking actions in the game.
+    See the agent_reference for the full specification of each command.
     """
     gs = _get_game(ctx)
     app = _app(ctx)
