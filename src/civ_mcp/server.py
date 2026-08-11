@@ -1534,6 +1534,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             "send_diplomatic_action", "diplomacy_respond", "propose_peace",
             "form_alliance", "propose_trade", "test_trade",
             "respond_to_deal", "respond_to_trade", "respond_to_diplo_action",
+            "get_diplomacy_sessions",
             # Messaging (managed-player chat)
             "send_message",
             # Governance

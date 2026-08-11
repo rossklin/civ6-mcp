@@ -164,17 +164,18 @@ Research & civics:
 
 Diplomacy & trade (other_player_id = target player ID):
     send_diplomatic_action(other_player_id, action) — action: DIPLOMATIC_DELEGATION
-    | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE
-    | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
-    | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
-    | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR.
-    For the three response-able actions (DIPLOMATIC_DELEGATION,
-    RESIDENT_EMBASSY, DECLARE_FRIENDSHIP) targeting a managed civ, the
-    proposal is filed in the DIPLOMACY MAILBOX instead of the engine —
-    opening a session would let the target's built-in AI auto-respond. The
-    target answers on its own turn; your action takes effect on your next
-    turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go
-    straight to the engine.
+        | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE
+        | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
+        | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
+        | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR.
+        For the three response-able actions (DIPLOMATIC_DELEGATION,
+        RESIDENT_EMBASSY, DECLARE_FRIENDSHIP) targeting a managed civ, the
+        proposal is filed in the DIPLOMACY MAILBOX instead of the engine —
+        opening a session would let the target's built-in AI auto-respond. The
+        target answers on its own turn; your action takes effect on your next
+        turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go
+        straight to the engine.
+    get_diplomacy_sessions(): Check for open diplomacy sessions and return choices
     diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
     | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
     propose_peace(other_player_id) — propose white peace. Targeting a
