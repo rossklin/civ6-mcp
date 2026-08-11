@@ -84,6 +84,9 @@ Each turn in order:
 7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
 
+Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands
+give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
+
 ## Tool execute_commands
 Execute a batch of game commands sequentially. Here is the full reference of each command.
 
@@ -158,7 +161,7 @@ Builders & improvements:
     build_route(unit_index)
     sacrifice_builder_charges(unit_index)
 
-Research & civics:
+Research & civics: you should only set those that are listed as available to research.
     set_research(tech_name) — e.g. TECH_IRON_WORKING
     set_civic(civic_name) — e.g. CIVIC_CRAFTSMANSHIP
 
