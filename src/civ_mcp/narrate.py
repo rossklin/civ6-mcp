@@ -1614,7 +1614,7 @@ def narrate_trade_destinations(dests: list[lq.TradeDestination]) -> str:
 
 def narrate_world_congress(status: lq.WorldCongressStatus) -> str:
     lines = []
-    imminent = not status.is_in_session and status.turns_until_next <= 0
+    imminent = not status.is_in_session and status.turns_until_next <= 0 and status.proposals
 
     if status.is_in_session or imminent:
         if status.is_in_session:
