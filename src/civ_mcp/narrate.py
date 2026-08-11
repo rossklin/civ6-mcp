@@ -756,7 +756,7 @@ def narrate_empire_resources(
     return "\n".join(lines)
 
 
-def narrate_diplomacy(civs: list[lq.CivInfo]) -> str:
+def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> str:
     if not civs:
         return "No known civilizations."
     lines = [f"{len(civs)} civilizations:"]
@@ -771,8 +771,9 @@ def narrate_diplomacy(civs: list[lq.CivInfo]) -> str:
             alliance_str = f" ({c.alliance_type} alliance{level_str})"
         else:
             alliance_str = ""
+        status_str: str = "" if c.player_id in managed_ids else f"— {c.diplomatic_state} ({c.relationship_score:+d})"
         lines.append(
-            f"  {c.civ_name} ({c.leader_name}) — {c.diplomatic_state} ({c.relationship_score:+d}){war_str}{alliance_str} [player {c.player_id}]"
+            f"  {c.civ_name} ({c.leader_name}) {status_str}{war_str}{alliance_str} [player {c.player_id}]"
         )
         # City details
         if c.num_cities > 0:

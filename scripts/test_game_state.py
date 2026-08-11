@@ -52,7 +52,7 @@ async def main():
     # Diplomacy
     civs = await gs.get_diplomacy()
     print("\n=== DIPLOMACY ===")
-    print(narrate_diplomacy(civs))
+    print(narrate_diplomacy(civs, gs.managed_ids))
 
     # Tech/Civics
     tc = await gs.get_tech_civics()

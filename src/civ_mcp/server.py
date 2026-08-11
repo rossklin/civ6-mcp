@@ -1360,6 +1360,7 @@ async def get_full_game_state(ctx: Context) -> str:
 
     async def _run():
         state = await gs.get_full_game_state()
+        app = _app(ctx)
         logger = _get_logger(ctx)
         if state.overview is not None:
             logger.set_turn(state.overview.turn)
@@ -1377,7 +1378,7 @@ async def get_full_game_state(ctx: Context) -> str:
         # The available governors section is to verbose to appear here, there is
         # a separate tool to get the governors available to appoint.
         state.governors.available_to_appoint = []
-        text = narrate_full_state(state)
+        text = narrate_full_state(state, app.handoff_config.managed_ids)
 
         # Append diary plans (long-term + next-turn) from the JSONL file
         try:

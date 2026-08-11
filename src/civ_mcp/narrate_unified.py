@@ -10,7 +10,7 @@ from civ_mcp import narrate as nr
 from civ_mcp.lua.models import FullGameState
 
 
-def narrate_full_state(state: FullGameState) -> str:
+def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> str:
     """Render a FullGameState into a single formatted string.
 
     Sections with no data are omitted.  The output is designed for
@@ -41,7 +41,7 @@ def narrate_full_state(state: FullGameState) -> str:
     # ── Diplomacy ──────────────────────────────────────────────────
     if state.diplomacy:
         parts.append("\n## Diplomacy\n")
-        parts.append(nr.narrate_diplomacy(state.diplomacy))
+        parts.append(nr.narrate_diplomacy(state.diplomacy, managed_ids))
 
     # ── Pending Diplomacy Sessions ─────────────────────────────────
     if state.diplomacy_sessions:
