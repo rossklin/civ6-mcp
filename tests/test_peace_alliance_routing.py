@@ -541,3 +541,21 @@ class TestExecuteCommandsPeaceAllianceRouting:
         assert forwarded[0]["action"] == "fortify_unit"
         assert "propose_peace:" in result
         assert "engine-ok" in result
+
+    def test_propose_trade_does_not_accept_peace_or_alliance_items(self, monkeypatch):
+        """Regression: propose_trade is not allowed to carry peace/alliance
+        items, which are now handled by propose_peace/form_alliance."""
+        ctx, _ = _make_ctx()
+        mailed, executed = _patch(monkeypatch)
+        cmds = [
+            {"action": "propose_trade",
+             "params": {"other_player_id": 0, "offer_peace": True}},
+            {"action": "propose_trade",
+             "params": {"other_player_id": 0, "offer_alliance": "military"}},
+        ]
+
+        result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
+
+        assert mailed == []
+        assert executed == []
+        assert "peace/alliance items are not allowed in propose_trade" in result

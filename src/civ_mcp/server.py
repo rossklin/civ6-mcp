@@ -1574,6 +1574,13 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                 results.append(f"send_message: {result}")
                 continue
             if action == "propose_trade" and app.mailbox is not None:
+                # First verify no peace or alliance items are present (those are handled by propose_peace/form_alliance).
+                if(params.get("offer_peace") or params.get("offer_alliance")):
+                    results.append(
+                        "propose_trade: peace/alliance items are not allowed in propose_trade; use propose_peace/form_alliance instead."
+                    )
+                    continue
+
                 target = params.get("other_player_id", -1)
                 if target in app.handoff_config.managed_ids:
                     # Managed target — route through mailbox.
@@ -1618,19 +1625,26 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                     if not ok:
                         results.append(f"{action}: {reason}")
                         continue
-                    mail_params: dict = {"other_player_id": target}
                     if kind == "MAKE_PEACE":
-                        mail_params["offer_peace"] = True
+                        params["offer_peace"] = True
                     else:
-                        mail_params["offer_alliance"] = alliance_type
+                        params["offer_alliance"] = alliance_type
+                        params.pop("alliance_type", None)
                     result = await _mailbox_propose_trade(
-                        app, seat, target, mail_params
+                        app, seat, target, params
                     )
                     results.append(f"{action}: {result}")
                     continue
+
                 # Unmanaged target — fall through to gs.propose_peace /
-                # gs.form_alliance (the default AI responds).
-                remaining.append(cmd)
+                # gs.form_alliance (the default AI responds). These don't accept
+                # trade items so strip them.
+                cmd_buf: dict = {"action": action, "params": {"other_player_id": target}}
+                if (action == "form_alliance"):
+                    alliance_type = params.get("alliance_type")
+                    if alliance_type:
+                        cmd_buf["params"]["alliance_type"] = alliance_type
+                remaining.append(cmd_buf)
                 continue
             elif action == "send_diplomatic_action" and app.diplo_mailbox is not None:
                 target = params.get("other_player_id", -1)

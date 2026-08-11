@@ -139,14 +139,14 @@ Settling & cities:
     resolve_city_capture(action) — action: keep | reject | raze |
     liberate_founder | liberate_previous
     set_city_production(city_id, item_type, item_name, target_x?, target_y?)
-    item_type: UNIT | BUILDING | DISTRICT; item_name e.g. UNIT_WARRIOR,
-    BUILDING_GRANARY, DISTRICT_CAMPUS. DISTRICTs and wonders require
-    target_x/target_y (use get_district_advisor / get_wonder_advisor).
-    purchase_item(city_id, item_type, item_name, yield_type="YIELD_GOLD")
-    item_type: UNIT | BUILDING; yield_type: YIELD_GOLD | YIELD_FAITH.
+        item_type: UNIT | BUILDING | DISTRICT; item_name e.g. UNIT_WARRIOR,
+        BUILDING_GRANARY, DISTRICT_CAMPUS. DISTRICTs and wonders require
+        target_x/target_y (use get_district_advisor / get_wonder_advisor).
+        purchase_item(city_id, item_type, item_name, yield_type="YIELD_GOLD")
+        item_type: UNIT | BUILDING; yield_type: YIELD_GOLD | YIELD_FAITH.
     list_city_production(city_id) — what the city can build now
     set_city_focus(city_id, focus) — focus: DEFAULT (clear) | FOOD |
-    PRODUCTION | GOLD | SCIENCE | CULTURE | FAITH
+        PRODUCTION | GOLD | SCIENCE | CULTURE | FAITH
     purchase_tile(city_id, x, y)
     city_attack(city_id, target_x, target_y) — ranged attack from a city
 
@@ -177,42 +177,37 @@ Diplomacy & trade (other_player_id = target player ID):
         straight to the engine.
     get_diplomacy_sessions(): Check for open diplomacy sessions and return choices
     diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
-    | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
-    propose_peace(other_player_id) — propose white peace. Targeting a
-    managed civ routes through the deal mailbox (the default AI would
-    otherwise auto-answer); eligibility (at war, past cooldown) is
-    checked first. Targeting an unmanaged civ goes to the engine.
-    form_alliance(other_player_id, alliance_type) — alliance_type:
-    MILITARY | RESEARCH | CULTURAL | ECONOMIC | RELIGIOUS (required).
-    Targeting a managed civ routes through the deal mailbox after an
-    eligibility check (declared friends + Diplomatic Service civic);
-    unmanaged targets go to the engine.
+        | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
     propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
-    offer_gold, offer_gold_per_turn, offer_resources (comma-separated
-    RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
-    plus the request_* equivalents; joint_war_target (player ID) for a joint war.
+        offer_gold, offer_gold_per_turn, offer_resources (comma-separated
+        RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
+        plus the request_* equivalents; joint_war_target (player ID) for a joint war.
+    propose_peace(other_player_id, ...) — propose peace, you can add trade items here
+    form_alliance(other_player_id, alliance_type, ...) — alliance_type:
+        MILITARY | RESEARCH | CULTURAL | ECONOMIC | RELIGIOUS (required).
+        You can also add trade items.
     test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
-    Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
-    name, duration, subtype, city_id}.
+        Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
+        name, duration, subtype, city_id}.
     respond_to_deal(other_player_id, accept: bool) — accept/reject an
-    AI-proposed deal.
+        AI-proposed deal.
     respond_to_trade(other_player_id, accept: bool) — accept/reject an
-    incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
+        incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
     respond_to_diplo_action(other_player_id, accept: bool) — accept/reject
-    an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy)
-    from a managed civ. Accept marks it; the proposer's action takes effect
-    on the proposer's next turn. Reject discards it.
+        an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy)
+        from a managed civ. Accept marks it; the proposer's action takes effect
+        on the proposer's next turn. Reject discards it.
 
 Messaging (managed-player chat; see MESSAGES in state):
     send_message(other_player_id, text) — send a free-text message to a
-    managed civ or the human. To a managed civ it is filed for that agent
-    to read next turn; to the human it is also rendered in their native
-    in-game chat panel. Incoming messages to this seat appear in the
-    === MESSAGES === section of get_full_game_state.
+        managed civ or the human. To a managed civ it is filed for that agent
+        to read next turn; to the human it is also rendered in their native
+        in-game chat panel. Incoming messages to this seat appear in the
+        === MESSAGES === section of get_full_game_state.
 
 Governance:
     set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"};
-    use "NONE" to clear a slot
+        use "NONE" to clear a slot
     change_government(government_type) — e.g. GOVERNMENT_OLIGARCHY
     appoint_governor(governor_type) — e.g. GOVERNOR_THE_CARDINAL
     assign_governor(governor_type, city_id)
@@ -234,16 +229,16 @@ Trade routes & spies:
     teleport_to_city(unit_index, target_x, target_y) — relocate a trader
     spy_travel(unit_index, target_x, target_y)
     spy_mission(unit_index, mission_type, target_x, target_y) — mission_type:
-    COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST
-    | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS
-    | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL (offensive missions need
-    the spy in the target city first)
+        COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST
+        | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS
+        | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL (offensive missions need
+        the spy in the target city first)
 
 World Congress:
     queue_wc_votes(votes) — votes: list of {hash, option (1=A|2=B), target,
-    votes}; registers a one-shot handler that casts them at end of turn
+        votes}; registers a one-shot handler that casts them at end of turn
     vote_world_congress(resolution_hash, option, target_index, num_votes)
-    — option 1=A, 2=B; target_index is 0-based
+        — option 1=A, 2=B; target_index is 0-based
     submit_congress() — submit votes and resume the turn
 
 ## Diary
