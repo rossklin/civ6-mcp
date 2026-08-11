@@ -1439,7 +1439,7 @@ class GameState:
             ov_lines = await self.conn.execute_write(lq.build_overview_query())
             overview = lq.parse_overview_response(ov_lines)
 
-        unit_lines = await self.conn.execute_read(lq.build_units_query())
+        unit_lines = await self.conn.execute_write(lq.build_units_query())
         units = lq.parse_units_response(unit_lines)
 
         city_lines = await self.conn.execute_write(lq.build_cities_query())

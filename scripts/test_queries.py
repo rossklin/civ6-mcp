@@ -23,7 +23,7 @@ async def main():
     print(f"OVERVIEW: {ov}")
 
     # Units
-    lines = await conn.execute_read(lq.build_units_query())
+    lines = await conn.execute_write(lq.build_units_query())
     units = lq.parse_units_response(lines)
     print(f"UNITS ({len(units)}):")
     for u in units:
