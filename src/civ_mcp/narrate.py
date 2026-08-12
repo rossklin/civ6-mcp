@@ -847,7 +847,7 @@ def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> s
                     pact_names.append(f"player {pid}")
             lines.append(f"    !! DEFENSIVE PACTS with: {', '.join(pact_names)}")
         # Agendas
-        if c.agendas:
+        if c.agendas and not c.player_id in managed_ids:
             for a in c.agendas:
                 if a.name == "???":
                     lines.append(f"    Agenda: [Hidden] — {a.description}")
