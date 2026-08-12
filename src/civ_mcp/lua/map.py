@@ -573,11 +573,28 @@ print("{SENTINEL}")
 
 
 def build_verify_city_at(x: int, y: int) -> str:
-    """Check if a city exists at the given coordinates."""
+    """Check if a city exists at the given coordinates; emit its ID if so.
+
+    ``plot:IsCity()`` confirms a city center occupies the tile, then we
+    locate the matching city object among the local player's cities to
+    call ``c:GetID()``. City IDs can be 0 (e.g. the capital), so the
+    parser distinguishes "found" from "not found" by line prefix rather
+    than by the ID value.
+    """
     return f"""
+local me = Game.GetLocalPlayer()
 local plot = Map.GetPlot({x}, {y})
+local cityId = -1
 if plot and plot:IsCity() then
-    print("OK:CITY_EXISTS")
+    for _, c in Players[me]:GetCities():Members() do
+        if c:GetX() == {x} and c:GetY() == {y} then
+            cityId = c:GetID()
+            break
+        end
+    end
+end
+if cityId >= 0 then
+    print("OK:CITY_EXISTS|" .. cityId)
 else
     print("OK:NO_CITY")
 end
@@ -585,12 +602,21 @@ print("{SENTINEL}")
 """
 
 
-def parse_verify_city_at(lines: list[str]) -> bool:
-    """Return True if a city was found at the coordinates."""
+def parse_verify_city_at(lines: list[str]) -> int | None:
+    """Return the city ID at the coordinates, or *None* if no city found.
+
+    City IDs can be 0, so callers must check ``is None`` rather than
+    truthiness.
+    """
     for line in lines:
-        if "CITY_EXISTS" in line:
-            return True
-    return False
+        if line.startswith("OK:CITY_EXISTS|"):
+            try:
+                return int(line.split("|", 1)[1])
+            except (ValueError, IndexError):
+                return None
+        if "NO_CITY" in line:
+            return None
+    return None
 
 
 def build_settle_advisor_query(unit_index: int) -> str:

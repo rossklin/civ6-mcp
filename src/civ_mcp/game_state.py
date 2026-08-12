@@ -448,8 +448,10 @@ class GameState:
             # Verify city was actually created (RequestOperation is async)
             verify_lua = lq.build_verify_city_at(x, y)
             verify_lines = await self.conn.execute_read(verify_lua)
-            verified = lq.parse_verify_city_at(verify_lines)
-            if not verified:
+            # City IDs can be 0 (e.g. the capital), so check `is None`
+            # rather than truthiness.
+            city_id = lq.parse_verify_city_at(verify_lines)
+            if city_id is None:
                 # Retry once — popup may have blocked the async operation
                 try:
                     await self.dismiss_popup()
@@ -457,18 +459,20 @@ class GameState:
                     retry_result = _action_result(lines)
                     if retry_result.startswith("FOUNDED|"):
                         verify_lines = await self.conn.execute_read(verify_lua)
-                        if lq.parse_verify_city_at(verify_lines):
+                        city_id = lq.parse_verify_city_at(verify_lines)
+                        if city_id is not None:
                             result = retry_result
-                            verified = True
                 except Exception:
                     log.debug(
                         "found_city retry after popup dismiss failed", exc_info=True
                     )
-                if not verified:
+                if city_id is None:
                     result = (
                         f"Error: FOUND_FAILED|Founding at {x},{y} was requested but "
                         "city did not appear despite popup dismissal."
                     )
+            if city_id is not None:
+                result += f"|city_id:{city_id}"
 
         # On settle failure, run the settle advisor to suggest alternatives
         if result.startswith("Error: CANNOT_FOUND") or result.startswith(
