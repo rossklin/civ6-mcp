@@ -1475,8 +1475,7 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
             "You are off the clock: read tools still answer for your empire, so "
             "use this window to study the map and plan. Write tools are refused "
             "until your next turn.\n"
-            "Call wait_for_turn() to block until you are back on the clock — it "
-            "returns the full turn report (what changed, threats, warnings). "
+            "Call wait_for_turn() to block until you are back on the clock."
             "get_turn_status() checks without blocking."
         )
 
@@ -1511,7 +1510,7 @@ async def build_post_turn_report(
     turn_after: int | None,
     threats_before: list[lq.ThreatInfo] | None = None,
 ) -> str:
-    """Build the post-turn report: snapshot diff, notifications, warnings.
+    """Build the post-turn report: snapshot diff and warnings.
 
     Split out of :func:`execute_end_turn` so the handoff path can defer it.
     A seated agent ends its turn mid-round, so its report is built later —
@@ -1548,14 +1547,6 @@ async def build_post_turn_report(
     events: list[lq.TurnEvent] = []
     if snap_before and snap_after:
         events = gs._diff_snapshots(snap_before, snap_after)
-
-    # Query active notifications
-    notifications: list[lq.GameNotification] = []
-    try:
-        notif_lines = await gs.conn.execute_write(lq.build_notifications_query())
-        notifications = lq.parse_notifications_response(notif_lines)
-    except Exception:
-        log.debug("Notification query failed", exc_info=True)
 
     # Check for pending trade deals (AI may propose during their turn)
     try:
@@ -1693,7 +1684,6 @@ async def build_post_turn_report(
         turn_before,
         turn_after,
         events,
-        notifications,
         stockpiles=snap_after.stockpiles if snap_after else None,
         score=game_score,
     )

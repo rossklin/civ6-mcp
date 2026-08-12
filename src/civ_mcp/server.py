@@ -1380,6 +1380,48 @@ async def get_full_game_state(ctx: Context) -> str:
         state.governors.available_to_appoint = []
         text = narrate_full_state(state, app.handoff_config.managed_ids)
 
+        # Prepend the deferred post-turn report (snapshot diff, threats,
+        # warnings) stashed when this seat ended its last turn. Built once —
+        # on the first get_full_game_state call after the seat is back on the
+        # clock — then consumed, so subsequent calls this turn don't re-diff
+        # against a stale baseline. Only built when we actually hold the
+        # local-player slot; otherwise the snapshot is mid-round and querying
+        # stalls the AI processing the turn.
+        try:
+            seat = _get_seat(ctx)
+            pending = seat.pending_report
+            if pending is not None:
+                own = await handoff.try_ownership(gs.conn)
+                if own.local_player == seat.player_id:
+                    # Consume before building so a build failure can't loop.
+                    seat.pending_report = None
+                    from civ_mcp.end_turn import build_post_turn_report
+
+                    try:
+                        report = await build_post_turn_report(
+                            gs,
+                            pending.snapshot,
+                            pending.turn_before,
+                            own.turn,
+                            pending.threats_before,
+                        )
+                        text = (
+                            "\n=== TURN ROLLOVER REPORT ===\n" + report + "\n\n" + text
+                        )
+                    except Exception:
+                        log.warning(
+                            "Deferred turn report failed", exc_info=True
+                        )
+                        text = (
+                            "=== TURN REPORT ===\n"
+                            "Turn report failed to build; query state "
+                            "directly.\n\n" + text
+                        )
+        except Exception:
+            log.debug(
+                "Failed to prepend deferred turn report", exc_info=True
+            )
+
         # Append diary plans (long-term + next-turn) from the JSONL file
         try:
             civ_type, seed = await gs.get_game_identity()
@@ -1902,18 +1944,14 @@ async def get_turn_status(ctx: Context) -> str:
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
-    """Block until it is your turn, then report what changed while you waited.
+    """Block until it is your turn.
 
     Args:
         timeout_seconds: How long to wait before returning. Capped at 600.
 
-    Returns the full turn report for the round that just finished — snapshot
-    diff, threats, notifications and empire warnings. Call update_diary() first
-    to record your plans, then call wait_for_turn() to block until your next
+    Returns a short status telling you your turn has started.  Call update_diary() 
+    first to record your plans, then call wait_for_turn() to block until your next 
     turn. Call it again on timeout — no diary interaction happens here.
-
-    If the wait times out it returns the current turn status instead; just call
-    it again. Nothing is lost by timing out.
     """
     app = _app(ctx)
     seat = app.seats.resolve(seats_mod.session_key(ctx))

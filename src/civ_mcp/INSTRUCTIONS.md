@@ -73,7 +73,7 @@ Each turn in order:
 5. `end_turn` — advance the turn and get your post-turn report.
 6. Think about what to do next turn and whether your long-term plans need updating.
 7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
-8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
+8. `wait_for_turn()` — block until your next turn starts. It returns a short status; the full turn report for the round that just finished is delivered as the `=== TURN REPORT ===` section of `get_full_game_state` on your first call next turn. Call again on timeout.
 
 Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands
 give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
@@ -243,7 +243,7 @@ The diary is your persistent memory across sessions and turns. When you start a 
 - **`long_term_plans`**: Your long-term strategy — victory path, expansion goals, tech progression timeline, diplomatic posture. Pass the complete current version each time you call `update_diary`; last write wins.
 - **`notes`**: Durable learnings worth remembering across the whole game — game rules you discovered, mistakes you made and corrected, things the civilopedia taught you. Unlike the plan fields, notes are **appended** to the existing notes each call (with a turn marker) rather than replacing them, so they accumulate over the game. Leave empty to leave the notes unchanged. Use this for facts, not transient plans. Example: you tried to move onto an enemy unit's tile and the action was rejected — read the civilopedia, learned you must declare war first — record that in `notes` so you never repeat the mistake.
 
-Call `update_diary` after `end_turn()` and before `wait_for_turn()` — once per turn cycle. Think while other players are on the clock: based on what you observed this turn and the post-turn report (which `wait_for_turn` will return), what should you do next? Do your long-term plans still hold? Write the answers into the diary so your next invocation starts with context.
+Call `update_diary` after `end_turn()` and before `wait_for_turn()` — once per turn cycle. Think while other players are on the clock: based on what you observed this turn and the post-turn report (which `get_full_game_state` will include as the `=== TURN REPORT ===` section next turn), what should you do next? Do your long-term plans still hold? Write the answers into the diary so your next invocation starts with context.
 
 The diary appears in `get_full_game_state` output — no separate tool needed. When you resume a game after context compaction, `get_full_game_state` alone is enough to reconstruct your strategic context.
 

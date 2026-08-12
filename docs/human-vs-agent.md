@@ -239,8 +239,9 @@ The post-turn report (snapshot diff, threats, notifications, empire warnings)
 cannot be built at that moment either — the round is half-finished, and
 hammering the InGame context while other civs process is a known cause of AI
 stalls. So `end_turn` stashes the baseline on the seat and returns immediately;
-`build_post_turn_report` (split out of `execute_end_turn`) runs later, when the
-seat gets the slot back and the game is idle.
+`build_post_turn_report` (split out of `execute_end_turn`) runs later — when the
+seat gets the slot back and the game is idle — as a section of
+`get_full_game_state`, not as the return value of `wait_for_turn`.
 
 That gives agents a three-call turn loop:
 
@@ -248,12 +249,20 @@ That gives agents a three-call turn loop:
 end_turn(...)          -> "your turn is over, play has passed on"
   ... think about next turn, update long-term plans ...
 update_diary(...)      -> record next-turn plan and long-term plans
-wait_for_turn()        -> blocks, then returns the full turn report
+wait_for_turn()        -> blocks, then returns a short "your turn" status
+get_full_game_state()  -> full state + the === TURN REPORT === section for
+                          the round that just finished
 ```
 
 `update_diary` writes plans to the per-seat JSONL diary before blocking,
 so the plans are persisted even if `wait_for_turn` times out. The diary is
 included in `get_full_game_state` output — no separate read tool needed.
+
+The deferred report is built once, on the first `get_full_game_state` call
+after the seat is back on the clock (then consumed, so later calls that turn
+don't re-diff against a stale baseline), and only when the seat actually holds
+the local-player slot — an off-clock read leaves the baseline stashed rather
+than stalling the AI mid-round.
 
 `wait_for_turn` returns after `timeout_seconds` (default 90, capped at 600)
 with the current status rather than blocking past typical MCP client request
@@ -353,7 +362,9 @@ Then start each agent with its seat:
 ```
 You are playing Civilization VI against a human and another agent.
 Call get_seats(), then claim_seat(player_id=1), then play your turns.
-After end_turn(), call wait_for_turn() to pick up your next turn.
+After end_turn(), call wait_for_turn() to pick up your next turn, then
+get_full_game_state() to orient (it includes the turn report for the round
+that just finished).
 ```
 
 The server's MCP instructions already say this, so an agent that reads them

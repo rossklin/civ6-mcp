@@ -1619,7 +1619,6 @@ class GameState:
         turn_before: int,
         turn_after: int,
         events: list[lq.TurnEvent],
-        notifications: list[lq.GameNotification],
         stockpiles: list[lq.ResourceStockpile] | None = None,
         score: int | None = None,
     ) -> str:
@@ -1647,30 +1646,6 @@ class GameState:
             for e in events:
                 icon = icons.get(e.priority, "--")
                 lines.append(f"  {icon} {e.message}")
-
-        # Use the enriched is_action_required field from the parser
-        action_required = [n for n in notifications if n.is_action_required]
-        # Only show informational notifications from the last 2 turns — older ones
-        # are stale (e.g. "Wonder Completed" from 3 turns ago) and clutter the report.
-        recent_cutoff = (turn_after or 0) - 2
-        info_notifs = [
-            n
-            for n in notifications
-            if not n.is_action_required and n.turn >= recent_cutoff
-        ]
-
-        if action_required:
-            lines.append("")
-            lines.append("== Action Required ==")
-            for n in action_required:
-                hint = f"  -> Use: {n.resolution_hint}" if n.resolution_hint else ""
-                lines.append(f"  * {n.message}{hint}")
-
-        if info_notifs:
-            lines.append("")
-            lines.append("== Notifications ==")
-            for n in info_notifs:
-                lines.append(f"  - {n.message}")
 
         return "\n".join(lines)
 

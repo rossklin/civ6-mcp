@@ -323,17 +323,14 @@ class TestWaitForTurn:
         assert "not installed" in result
         assert "reinstall_handoff" in result
 
-    def test_delivers_the_deferred_turn_report(self, monkeypatch):
-        captured = {}
+    def test_leaves_the_deferred_report_for_get_full_game_state(self, monkeypatch):
+        """wait_for_turn no longer builds the report — it leaves the stashed
+        baseline on the seat for get_full_game_state to consume next turn."""
 
-        async def fake_report(gs, snap, turn_before, turn_after, threats):
-            captured.update(
-                snap=snap,
-                turn_before=turn_before,
-                turn_after=turn_after,
-                threats=threats,
+        async def fake_report(*a, **k):
+            raise AssertionError(
+                "wait_for_turn must not build the post-turn report"
             )
-            return "TURN REPORT"
 
         monkeypatch.setattr(handoff, "get_ownership", self._owner(1, turn=10))
         monkeypatch.setattr("civ_mcp.end_turn.build_post_turn_report", fake_report)
@@ -342,26 +339,11 @@ class TestWaitForTurn:
             1, PendingTurnReport(snapshot="snap", turn_before=9, threats_before=["t"])
         )
         result = self._run(_fake_gs(), seat, timeout_seconds=1)
-        assert result == "TURN REPORT"
-        assert captured == {
-            "snap": "snap",
-            "turn_before": 9,
-            "turn_after": 10,
-            "threats": ["t"],
-        }
-        # Consumed — the next turn must not re-diff against a stale baseline.
-        assert seat.pending_report is None
-
-    def test_survives_a_failing_report(self, monkeypatch):
-        async def boom(*a, **k):
-            raise RuntimeError("no connection")
-
-        monkeypatch.setattr(handoff, "get_ownership", self._owner(1, turn=10))
-        monkeypatch.setattr("civ_mcp.end_turn.build_post_turn_report", boom)
-        seat = _fake_seat(1, PendingTurnReport(snapshot=None, turn_before=9))
-        result = self._run(_fake_gs(), seat, timeout_seconds=1)
+        # Status points the agent at get_full_game_state for the report.
         assert "Your turn" in result
-        assert "Turn report failed" in result
+        assert "get_full_game_state" in result
+        # NOT consumed — get_full_game_state still has a baseline to diff against.
+        assert seat.pending_report is not None
 
     def test_polls_until_the_slot_arrives(self, monkeypatch):
         owners = [0, 2, 2, 1]

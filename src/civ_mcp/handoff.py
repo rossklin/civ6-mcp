@@ -531,18 +531,12 @@ async def wait_for_turn(
     timeout_seconds: float = 90.0,
     poll_interval: float = 3.0,
 ) -> str:
-    """Block until ``seat`` holds the local-player slot, then report the round.
-
-    Returns the deferred post-turn report (snapshot diff, threats, empire
-    warnings) built from the baseline stashed when the seat ended its turn, so
-    the agent starts its turn knowing what changed while it was off the clock.
+    """Block until ``seat`` holds the local-player slot, then return a status.
 
     On timeout it returns the current ownership instead of raising — the agent
     simply calls again.  Blocking for the whole round in one tool call would
     outlive most MCP client request timeouts.
     """
-    from civ_mcp.end_turn import build_post_turn_report
-
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(timeout_seconds, 0.0)
     own = await try_ownership(gs.conn)
@@ -576,27 +570,18 @@ async def wait_for_turn(
         gs._advisor_calls_this_turn = 0
         gs._high_water_turn = own.turn
 
-    pending = seat.pending_report
-    if pending is None:
+    # The deferred post-turn report is delivered by get_full_game_state (see
+    # server.get_full_game_state), not here. Just tell the agent to orient.
+    if seat.pending_report is not None:
         return (
             f"Your turn — P{seat.player_id}, turn {own.turn}. "
-            "No previous turn to diff against; call get_game_overview to orient."
+            "Call get_full_game_state to orient: it includes the turn report "
+            "for the round that just finished (what changed, threats, warnings)."
         )
-    seat.pending_report = None
-    try:
-        return await build_post_turn_report(
-            gs,
-            pending.snapshot,
-            pending.turn_before,
-            own.turn,
-            pending.threats_before,
-        )
-    except Exception:
-        log.warning("Deferred turn report failed", exc_info=True)
-        return (
-            f"Your turn — P{seat.player_id}, turn {own.turn}. "
-            "Turn report failed to build; query state directly."
-        )
+    return (
+        f"Your turn — P{seat.player_id}, turn {own.turn}. "
+        "No previous turn to diff against; call get_full_game_state to orient."
+    )
 
 
 # ---------------------------------------------------------------------------
