@@ -832,7 +832,7 @@ def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> s
         if access:
             lines.append(f"    Access: {', '.join(access)}")
         # Relationship modifiers
-        if c.modifiers:
+        if c.modifiers and not c.player_id in managed_ids:
             for m in c.modifiers:
                 lines.append(f"    {m.score:+d} {m.text}")
         # Defensive pacts
