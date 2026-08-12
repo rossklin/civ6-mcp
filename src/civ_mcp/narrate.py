@@ -854,6 +854,14 @@ def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> s
                 else:
                     prefix = "[Hidden] " if a.category == "HIDDEN" else ""
                     lines.append(f"    Agenda: {prefix}{a.name} — {a.description}")
+        # Unique abilities & uniques (shown for all met civs, incl. managed)
+        if c.traits:
+            for t in c.traits:
+                kind = "Civ" if t.kind == "CIVILIZATION" else "Leader"
+                lines.append(f"    Ability [{kind}]: {t.name} — {t.description}")
+        if c.uniques:
+            parts = [f"{u.name} ({u.category.title()})" for u in c.uniques]
+            lines.append(f"    Uniques: {', '.join(parts)}")
         # Available actions
         if c.available_actions:
             actions_str = ", ".join(

@@ -14,6 +14,8 @@ from civ_mcp.lua.models import (
     TestTradeItem,
     TestTradeResult,
     TradeableCity,
+    TraitInfo,
+    UniqueInfo,
     VisibleCity,
 )
 
@@ -56,6 +58,19 @@ local pDiplo = Players[me]:GetDiplomacy()
 local pVis = PlayersVisibility[me]
 local states = {"ALLIED","DECLARED_FRIEND","FRIENDLY","NEUTRAL","UNFRIENDLY","DENOUNCED","WAR"}
 local checkActions = {"DIPLOACTION_DIPLOMATIC_DELEGATION","DIPLOACTION_DECLARE_FRIENDSHIP","DIPLOACTION_DENOUNCE","DIPLOACTION_RESIDENT_EMBASSY","DIPLOACTION_OPEN_BORDERS","DIPLOACTION_MAKE_ALLIANCE"}
+-- Precompute trait -> uniques map once (static game data). Each unique unit /
+-- building / district / improvement carries a TraitType tying it to the civ or
+-- leader trait that grants it.
+local traitUniques = {}
+local function addUnique(t, kind, name)
+    if t == nil then return end
+    if traitUniques[t] == nil then traitUniques[t] = {} end
+    table.insert(traitUniques[t], kind .. "|" .. name)
+end
+for u in GameInfo.Units() do addUnique(u.TraitType, "UNIT", Locale.Lookup(u.Name)) end
+for b in GameInfo.Buildings() do addUnique(b.TraitType, "BUILDING", Locale.Lookup(b.Name)) end
+for d in GameInfo.Districts() do addUnique(d.TraitType, "DISTRICT", Locale.Lookup(d.Name)) end
+for imp in GameInfo.Improvements() do addUnique(imp.TraitType, "IMPROVEMENT", Locale.Lookup(imp.Name)) end
 for i = 0, 62 do
     if i ~= me and Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() then
         local cfg = PlayerConfigurations[i]
@@ -156,6 +171,43 @@ for i = 0, 62 do
                         else
                             print("AGENDA|" .. i .. "|HIDDEN|???|Requires Secret diplomatic visibility (spy or alliance)")
                         end
+                    end
+                end
+            end
+            -- Unique abilities (civ + leader traits) and unique units/buildings/
+            -- districts/improvements. Only the named ability traits carry a
+            -- Description; marker traits (e.g. infrastructure tags) are filtered
+            -- out by requiring a non-empty description.
+            local civType = cfg:GetCivilizationTypeName()
+            local leaderType = cfg:GetLeaderTypeName()
+            local traitSeen = {}
+            for ct in GameInfo.CivilizationTraits() do
+                if ct.CivilizationType == civType and traitSeen[ct.TraitType] == nil then
+                    traitSeen[ct.TraitType] = true
+                    local tDef = GameInfo.Traits[ct.TraitType]
+                    if tDef and tDef.Description and tDef.Description ~= "" then
+                        local tName = Locale.Lookup(tDef.Name) or ct.TraitType
+                        local tDesc = Locale.Lookup(tDef.Description) or ""
+                        print("TRAIT|" .. i .. "|CIVILIZATION|" .. tName:gsub("|","/") .. "|" .. tDesc:gsub("|","/"))
+                    end
+                end
+            end
+            for lt in GameInfo.LeaderTraits() do
+                if lt.LeaderType == leaderType and traitSeen[lt.TraitType] == nil then
+                    traitSeen[lt.TraitType] = true
+                    local tDef = GameInfo.Traits[lt.TraitType]
+                    if tDef and tDef.Description and tDef.Description ~= "" then
+                        local tName = Locale.Lookup(tDef.Name) or lt.TraitType
+                        local tDesc = Locale.Lookup(tDef.Description) or ""
+                        print("TRAIT|" .. i .. "|LEADER|" .. tName:gsub("|","/") .. "|" .. tDesc:gsub("|","/"))
+                    end
+                end
+            end
+            for t in pairs(traitSeen) do
+                local list = traitUniques[t]
+                if list then
+                    for _, u in ipairs(list) do
+                        print("UNIQUE|" .. i .. "|" .. u)
                     end
                 end
             end
@@ -1232,6 +1284,29 @@ def parse_diplomacy_response(lines: list[str]) -> list[CivInfo]:
                             category=parts[2],
                             name=parts[3],
                             description=parts[4],
+                        )
+                    )
+        elif line.startswith("TRAIT|"):
+            parts = line.split("|")
+            if len(parts) >= 5:
+                pid = int(parts[1])
+                if pid in civs:
+                    civs[pid].traits.append(
+                        TraitInfo(
+                            kind=parts[2],
+                            name=parts[3],
+                            description=parts[4],
+                        )
+                    )
+        elif line.startswith("UNIQUE|"):
+            parts = line.split("|")
+            if len(parts) >= 4:
+                pid = int(parts[1])
+                if pid in civs:
+                    civs[pid].uniques.append(
+                        UniqueInfo(
+                            category=parts[2],
+                            name=parts[3],
                         )
                     )
         elif line.startswith("PACT|"):

@@ -361,6 +361,23 @@ class AgendaInfo:
 
 
 @dataclass
+class TraitInfo:
+    """A civilization or leader unique ability."""
+
+    kind: str  # "CIVILIZATION" or "LEADER"
+    name: str  # localized ability name
+    description: str  # localized ability description
+
+
+@dataclass
+class UniqueInfo:
+    """A unique unit/building/district/improvement granted by a trait."""
+
+    category: str  # "UNIT", "BUILDING", "DISTRICT", "IMPROVEMENT"
+    name: str  # localized name
+
+
+@dataclass
 class CivInfo:
     player_id: int
     civ_name: str
@@ -386,6 +403,8 @@ class CivInfo:
     num_cities: int = 0  # number of cities they own
     visible_cities: list[VisibleCity] = field(default_factory=list)
     agendas: list[AgendaInfo] = field(default_factory=list)
+    traits: list[TraitInfo] = field(default_factory=list)
+    uniques: list[UniqueInfo] = field(default_factory=list)
 
 
 @dataclass
