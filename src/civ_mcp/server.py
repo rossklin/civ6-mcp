@@ -1575,6 +1575,13 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                 results.append(f"send_message: {result}")
                 continue
             if action == "propose_trade" and app.mailbox is not None:
+                target = params.get("other_player_id", -1)
+                if (target == -1):
+                    results.append(
+                        "propose_trade: other_player_id is required in params"
+                    )
+                    continue
+
                 # First verify no peace or alliance items are present (those are handled by propose_peace/form_alliance).
                 if(params.get("offer_peace") or params.get("offer_alliance")):
                     results.append(
@@ -1582,7 +1589,20 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                     )
                     continue
 
-                target = params.get("other_player_id", -1)
+                # Open Borders requires the Early Empire civic on the party
+                # granting it (offer_open_borders → proposer grants;
+                # request_open_borders → target grants). The mailbox
+                # forced-deal path bypasses the engine's own validation, so
+                # guard here to avoid filing/executing a deal that the engine
+                # path would otherwise accept. Covers both the mailbox target
+                # and the engine target within this block.
+                ob_err = await _check_open_borders_civics(
+                    gs, seat.player_id, target, params
+                )
+                if ob_err:
+                    results.append(f"propose_trade: {ob_err}")
+                    continue
+
                 if target in app.handoff_config.managed_ids:
                     # Managed target — route through mailbox.
                     result = await _mailbox_propose_trade(
@@ -2943,6 +2963,78 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
         request_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
 
     return offer_items, request_items
+
+
+async def _check_open_borders_civics(
+    gs: GameState, proposer_pid: int, target_pid: int, params: dict
+) -> str | None:
+    """Guard: parties granting Open Borders must have the Early Empire civic.
+
+    Open Borders is unlocked by the Early Empire civic, and the party
+    *granting* it is the one that must have it: ``offer_open_borders`` → the
+    proposer grants; ``request_open_borders`` → the target grants.  Returns an
+    error message for the first violating party, or *None* when the deal is
+    allowed (or contains no Open Borders items).
+    """
+    offer_ob = bool(params.get("offer_open_borders", False))
+    request_ob = bool(params.get("request_open_borders", False))
+    if not offer_ob and not request_ob:
+        return None
+
+    # HasCivic is GameCore-safe, so execute_read suffices. One round-trip
+    # checks both parties; output: EE|<proposer_pid>=0|<target_pid>=1
+    lua = (
+        'local ee = GameInfo.Civics["CIVIC_EARLY_EMPIRE"] '
+        "local eeIdx = ee and ee.Index or -1 "
+        "local function hasEE(pid) "
+        '  if pid < 0 or not Players[pid] or not Players[pid]:IsAlive() then return false end '
+        "  if eeIdx < 0 then return false end "
+        "  local ok, res = pcall(function() return Players[pid]:GetCulture():HasCivic(eeIdx) end) "
+        "  return ok and res == true "
+        "end "
+        f'print("EE|{proposer_pid}=" .. (hasEE({proposer_pid}) and "1" or "0") '
+        f'  .. "|{target_pid}=" .. (hasEE({target_pid}) and "1" or "0")) '
+        'print("---END---")'
+    )
+    try:
+        lines = await gs.conn.execute_read(lua)
+    except Exception as e:
+        return f"Open Borders civic check failed: {e}"
+
+    proposer_has: bool | None = None
+    target_has: bool | None = None
+    for line in lines:
+        if line.startswith("EE|"):
+            for field in line[3:].split("|"):
+                if "=" in field:
+                    pid_s, val = field.split("=", 1)
+                    try:
+                        pid = int(pid_s)
+                    except ValueError:
+                        continue
+                    has = val == "1"
+                    if pid == proposer_pid:
+                        proposer_has = has
+                    elif pid == target_pid:
+                        target_has = has
+            break
+
+    if proposer_has is None or target_has is None:
+        return (
+            "Open Borders requires the Early Empire civic, but the civic "
+            "status check returned no result."
+        )
+    if offer_ob and not proposer_has:
+        return (
+            "Open Borders requires the Early Empire civic, which you "
+            f"(P{proposer_pid}) do not have."
+        )
+    if request_ob and not target_has:
+        return (
+            "Open Borders requires the Early Empire civic, which "
+            f"P{target_pid} does not have."
+        )
+    return None
 
 
 async def _check_proposal_eligibility(
