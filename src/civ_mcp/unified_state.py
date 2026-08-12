@@ -35,6 +35,7 @@ _SECTIONS: list[tuple[str, str, bool]] = [
     ("cities", "cities", True),
     ("spies", "spies", True),
     ("diplomacy", "diplomacy", True),
+    ("own_abilities", "own_abilities", True),
     ("pending_deals", "pending_deals", True),
     ("diplomacy_sessions", "diplomacy_sessions", True),
     ("tech_civics", "tech_civics", True),

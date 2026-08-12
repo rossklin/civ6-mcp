@@ -375,6 +375,17 @@ class UniqueInfo:
 
     category: str  # "UNIT", "BUILDING", "DISTRICT", "IMPROVEMENT"
     name: str  # localized name
+    description: str = ""  # localized effect/behavior summary
+
+
+@dataclass
+class OwnAbilities:
+    """The local player's own civilization/leader abilities and uniques."""
+
+    civ_name: str = ""
+    leader_name: str = ""
+    traits: list[TraitInfo] = field(default_factory=list)
+    uniques: list[UniqueInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -1336,6 +1347,9 @@ class FullGameState:
     diplomacy: list[CivInfo] = field(default_factory=list)
     pending_deals: list[PendingDeal] = field(default_factory=list)
     diplomacy_sessions: list[DiplomacySession] = field(default_factory=list)
+
+    # Our own civilization's abilities & uniques
+    own_abilities: OwnAbilities | None = None
 
     # Research
     tech_civics: TechCivicStatus | None = None

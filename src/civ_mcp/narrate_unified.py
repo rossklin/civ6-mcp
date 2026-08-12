@@ -23,6 +23,11 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
         parts.append("## Game Overview\n")
         parts.append(nr.narrate_overview(state.overview))
 
+    # ── Our Civilization ──────────────────────────────────────────
+    if state.own_abilities is not None:
+        parts.append("\n## Our Civilization\n")
+        parts.append(nr.narrate_own_abilities(state.own_abilities))
+
     # ── Units ──────────────────────────────────────────────────────
     if state.units:
         parts.append("\n## Units\n")

@@ -10,6 +10,7 @@ from civ_mcp.lua.models import (
     DealOptions,
     DiplomacyModifier,
     DiplomacySession,
+    OwnAbilities,
     PendingDeal,
     TestTradeItem,
     TestTradeResult,
@@ -50,6 +51,51 @@ DIPLO_SESSION_STRING_MAP: dict[str, str] = {
 }
 
 
+# Lua helper injected into queries that emit trait/unique text. Strips the raw
+# ``[ICON_*]``, ``[NEWLINE]`` and ``[COLOR]`` markup tokens that Locale.Lookup
+# leaves in ability/unique descriptions, and collapses whitespace, so the
+# rendered text is readable for the LLM. Each section runs inside its own
+# pcall(function() ... end) scope in the unified query, so the ``local``
+# declaration does not collide across sections.
+_LUA_CLEAN_TEXT = """
+local function _cleanText(s)
+    if s == nil then return "" end
+    s = tostring(s)
+    s = s:gsub("%[ICON_[%w_]+%]", "")
+    s = s:gsub("%[NEWLINE%]", " ")
+    s = s:gsub("%[COLOR[%w_]*%]", "")
+    s = s:gsub("%[/COLOR%]", "")
+    s = s:gsub("|", "/")
+    s = s:gsub("%s+", " ")
+    return s
+end
+-- Nil-safe localized lookup: GameInfo rows may have nil Name/Description
+-- (e.g. marker traits, or rows lacking a Description column), and
+-- Locale.Lookup(nil) raises an error that would kill the whole section.
+local function _loc(rawKey)
+    if rawKey == nil then return "" end
+    return _cleanText(Locale.Lookup(rawKey))
+end
+"""
+
+# Lua snippet that builds a ``traitUniques`` map: traitType -> list of
+# "CATEGORY|name|description" strings for the unique units/buildings/
+# districts/improvements granted by that trait. Used by both the diplomacy
+# query (per-rival uniques) and the own-abilities query.
+_LUA_BUILD_TRAIT_UNIQUES = _LUA_CLEAN_TEXT + """
+local traitUniques = {}
+local function addUnique(t, kind, name, desc)
+    if t == nil then return end
+    if traitUniques[t] == nil then traitUniques[t] = {} end
+    table.insert(traitUniques[t], kind .. "|" .. name .. "|" .. desc)
+end
+for u in GameInfo.Units() do addUnique(u.TraitType, "UNIT", _loc(u.Name), _loc(u.Description)) end
+for b in GameInfo.Buildings() do addUnique(b.TraitType, "BUILDING", _loc(b.Name), _loc(b.Description)) end
+for d in GameInfo.Districts() do addUnique(d.TraitType, "DISTRICT", _loc(d.Name), _loc(d.Description)) end
+for imp in GameInfo.Improvements() do addUnique(imp.TraitType, "IMPROVEMENT", _loc(imp.Name), _loc(imp.Description)) end
+"""
+
+
 def build_diplomacy_query() -> str:
     """Rich diplomacy query — runs in InGame context for GetDiplomaticAI access."""
     return """
@@ -58,19 +104,7 @@ local pDiplo = Players[me]:GetDiplomacy()
 local pVis = PlayersVisibility[me]
 local states = {"ALLIED","DECLARED_FRIEND","FRIENDLY","NEUTRAL","UNFRIENDLY","DENOUNCED","WAR"}
 local checkActions = {"DIPLOACTION_DIPLOMATIC_DELEGATION","DIPLOACTION_DECLARE_FRIENDSHIP","DIPLOACTION_DENOUNCE","DIPLOACTION_RESIDENT_EMBASSY","DIPLOACTION_OPEN_BORDERS","DIPLOACTION_MAKE_ALLIANCE"}
--- Precompute trait -> uniques map once (static game data). Each unique unit /
--- building / district / improvement carries a TraitType tying it to the civ or
--- leader trait that grants it.
-local traitUniques = {}
-local function addUnique(t, kind, name)
-    if t == nil then return end
-    if traitUniques[t] == nil then traitUniques[t] = {} end
-    table.insert(traitUniques[t], kind .. "|" .. name)
-end
-for u in GameInfo.Units() do addUnique(u.TraitType, "UNIT", Locale.Lookup(u.Name)) end
-for b in GameInfo.Buildings() do addUnique(b.TraitType, "BUILDING", Locale.Lookup(b.Name)) end
-for d in GameInfo.Districts() do addUnique(d.TraitType, "DISTRICT", Locale.Lookup(d.Name)) end
-for imp in GameInfo.Improvements() do addUnique(imp.TraitType, "IMPROVEMENT", Locale.Lookup(imp.Name)) end
+{TRAIT_UNIQUES}
 for i = 0, 62 do
     if i ~= me and Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() then
         local cfg = PlayerConfigurations[i]
@@ -186,9 +220,10 @@ for i = 0, 62 do
                     traitSeen[ct.TraitType] = true
                     local tDef = GameInfo.Traits[ct.TraitType]
                     if tDef and tDef.Description and tDef.Description ~= "" then
-                        local tName = Locale.Lookup(tDef.Name) or ct.TraitType
-                        local tDesc = Locale.Lookup(tDef.Description) or ""
-                        print("TRAIT|" .. i .. "|CIVILIZATION|" .. tName:gsub("|","/") .. "|" .. tDesc:gsub("|","/"))
+                        local tName = _loc(tDef.Name)
+                        if tName == "" then tName = ct.TraitType end
+                        local tDesc = _loc(tDef.Description)
+                        print("TRAIT|" .. i .. "|CIVILIZATION|" .. tName .. "|" .. tDesc)
                     end
                 end
             end
@@ -197,9 +232,10 @@ for i = 0, 62 do
                     traitSeen[lt.TraitType] = true
                     local tDef = GameInfo.Traits[lt.TraitType]
                     if tDef and tDef.Description and tDef.Description ~= "" then
-                        local tName = Locale.Lookup(tDef.Name) or lt.TraitType
-                        local tDesc = Locale.Lookup(tDef.Description) or ""
-                        print("TRAIT|" .. i .. "|LEADER|" .. tName:gsub("|","/") .. "|" .. tDesc:gsub("|","/"))
+                        local tName = _loc(tDef.Name)
+                        if tName == "" then tName = lt.TraitType end
+                        local tDesc = _loc(tDef.Description)
+                        print("TRAIT|" .. i .. "|LEADER|" .. tName .. "|" .. tDesc)
                     end
                 end
             end
@@ -230,7 +266,60 @@ for i = 0, 62 do
     end
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{TRAIT_UNIQUES}", _LUA_BUILD_TRAIT_UNIQUES)
+
+
+def build_own_abilities_query() -> str:
+    """Resolve the local player's own civ/leader abilities and uniques.
+
+    Emits ``CIV|civName|leaderName``, then ``TRAIT|kind|name|desc`` and
+    ``UNIQUE|category|name|desc`` lines. Runs in InGame context (works in
+    GameCore too — only uses GameInfo + PlayerConfigurations).
+    """
+    return """
+local me = Game.GetLocalPlayer()
+local cfg = PlayerConfigurations[me]
+local civName = Locale.Lookup(cfg:GetCivilizationShortDescription())
+local leaderName = Locale.Lookup(cfg:GetLeaderName())
+print("CIV|" .. civName:gsub("|","/") .. "|" .. leaderName:gsub("|","/"))
+{TRAIT_UNIQUES}
+local civType = cfg:GetCivilizationTypeName()
+local leaderType = cfg:GetLeaderTypeName()
+local traitSeen = {}
+for ct in GameInfo.CivilizationTraits() do
+    if ct.CivilizationType == civType and traitSeen[ct.TraitType] == nil then
+        traitSeen[ct.TraitType] = true
+        local tDef = GameInfo.Traits[ct.TraitType]
+        if tDef and tDef.Description and tDef.Description ~= "" then
+            local tName = _loc(tDef.Name)
+            if tName == "" then tName = ct.TraitType end
+            local tDesc = _loc(tDef.Description)
+            print("TRAIT|CIVILIZATION|" .. tName .. "|" .. tDesc)
+        end
+    end
+end
+for lt in GameInfo.LeaderTraits() do
+    if lt.LeaderType == leaderType and traitSeen[lt.TraitType] == nil then
+        traitSeen[lt.TraitType] = true
+        local tDef = GameInfo.Traits[lt.TraitType]
+        if tDef and tDef.Description and tDef.Description ~= "" then
+            local tName = _loc(tDef.Name)
+            if tName == "" then tName = lt.TraitType end
+            local tDesc = _loc(tDef.Description)
+            print("TRAIT|LEADER|" .. tName .. "|" .. tDesc)
+        end
+    end
+end
+for t in pairs(traitSeen) do
+    local list = traitUniques[t]
+    if list then
+        for _, u in ipairs(list) do
+            print("UNIQUE|" .. u)
+        end
+    end
+end
+print("{SENTINEL}")
+""".replace("{SENTINEL}", SENTINEL).replace("{TRAIT_UNIQUES}", _LUA_BUILD_TRAIT_UNIQUES)
 
 
 def build_diplomacy_session_query() -> str:
@@ -1307,6 +1396,7 @@ def parse_diplomacy_response(lines: list[str]) -> list[CivInfo]:
                         UniqueInfo(
                             category=parts[2],
                             name=parts[3],
+                            description=parts[4] if len(parts) > 4 else "",
                         )
                     )
         elif line.startswith("PACT|"):
@@ -1325,6 +1415,38 @@ def parse_diplomacy_response(lines: list[str]) -> list[CivInfo]:
                 if pid2 in civs:
                     civs[pid2].defensive_pacts.append(pid1)
     return list(civs.values())
+
+
+def parse_own_abilities_response(lines: list[str]) -> OwnAbilities:
+    """Parse the local player's abilities from build_own_abilities_query."""
+    own = OwnAbilities()
+    for line in lines:
+        if line.startswith("CIV|"):
+            parts = line.split("|")
+            if len(parts) >= 3:
+                own.civ_name = parts[1]
+                own.leader_name = parts[2]
+        elif line.startswith("TRAIT|"):
+            parts = line.split("|")
+            if len(parts) >= 4:
+                own.traits.append(
+                    TraitInfo(
+                        kind=parts[1],
+                        name=parts[2],
+                        description=parts[3],
+                    )
+                )
+        elif line.startswith("UNIQUE|"):
+            parts = line.split("|")
+            if len(parts) >= 3:
+                own.uniques.append(
+                    UniqueInfo(
+                        category=parts[1],
+                        name=parts[2],
+                        description=parts[3] if len(parts) > 3 else "",
+                    )
+                )
+    return own
 
 
 def parse_diplomacy_sessions(lines: list[str]) -> list[DiplomacySession]:

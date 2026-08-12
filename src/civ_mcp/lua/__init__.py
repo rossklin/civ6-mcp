@@ -48,6 +48,7 @@ from civ_mcp.lua.diplomacy import (  # noqa: F401
     build_diplomacy_respond,
     build_diplomacy_session_query,
     build_form_alliance,
+    build_own_abilities_query,
     build_pending_deals_query,
     build_propose_peace,
     build_propose_trade,
@@ -60,6 +61,7 @@ from civ_mcp.lua.diplomacy import (  # noqa: F401
     parse_test_trade_response,
     parse_diplomacy_response,
     parse_diplomacy_sessions,
+    parse_own_abilities_response,
     parse_pending_deals_response,
 )
 from civ_mcp.lua.congress import (  # noqa: F401
@@ -187,6 +189,7 @@ from civ_mcp.lua.models import (  # noqa: F401
     NearbyResource,
     OwnershipDelta,
     OwnedResource,
+    OwnAbilities,
     PantheonStatus,
     PathingEstimate,
     PendingDeal,

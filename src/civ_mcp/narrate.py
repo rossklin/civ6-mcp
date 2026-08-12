@@ -756,6 +756,21 @@ def narrate_empire_resources(
     return "\n".join(lines)
 
 
+def narrate_own_abilities(own: lq.OwnAbilities) -> str:
+    lines: list[str] = []
+    if own.civ_name or own.leader_name:
+        lines.append(f"{own.civ_name} ({own.leader_name})")
+    for t in own.traits:
+        kind = "Civ" if t.kind == "CIVILIZATION" else "Leader"
+        lines.append(f"  Ability [{kind}]: {t.name} — {t.description}")
+    for u in own.uniques:
+        desc = f" — {u.description}" if u.description else ""
+        lines.append(f"  Unique [{u.category.title()}]: {u.name}{desc}")
+    if not lines:
+        return "No civilization abilities found."
+    return "\n".join(lines)
+
+
 def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> str:
     if not civs:
         return "No known civilizations."
@@ -860,8 +875,9 @@ def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> s
                 kind = "Civ" if t.kind == "CIVILIZATION" else "Leader"
                 lines.append(f"    Ability [{kind}]: {t.name} — {t.description}")
         if c.uniques:
-            parts = [f"{u.name} ({u.category.title()})" for u in c.uniques]
-            lines.append(f"    Uniques: {', '.join(parts)}")
+            for u in c.uniques:
+                desc = f" — {u.description}" if u.description else ""
+                lines.append(f"    Unique [{u.category.title()}]: {u.name}{desc}")
         # Available actions
         if c.available_actions:
             actions_str = ", ".join(
