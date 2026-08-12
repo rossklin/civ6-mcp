@@ -282,6 +282,11 @@ Before building an improvement, consider whether it actually improves the yields
 a grassland hill with forest (2 food, 2 production), building a farm on a plains would create a 2 food 1 production tile which would not
 be worthwhile for the city to work. 
 
+You can also gain a lot of value by harvesting features or resources. Weight the value gained against the effect on the city's yields. For 
+instance, if the city already has several free good tiles to work, it will take a long time before harvesting one tile has any negative 
+effect on city yields. But harvesting the best currently worked tile may be a bad idea. And later in the game you will be able to re-plant 
+forests. It's always worth harvesting before placing a district since that would remove the feature and resource anyways.
+
 ### Spending Gold & Faith
 Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it.
 
@@ -329,6 +334,9 @@ General overview of what you need for each victory type:
 - **Religious**: Requires a founded religion (Great Prophet pool fills early). Missionaries spread; Apostles fight theological combat (killing = 250 pressure in 10-tile radius). Buy religious units only from cities where your religion is majority.
 - **Diplomatic**: 20 DVP. World Congress resolutions, scored competitions, wonders. Favor from government tier, alliances, suzerainties. If a DVP-stripping resolution targets you, vote Option B on yourself (net 0 vs -2).
 
+But it is generally not a good idea to focus to strongly on the victory condition in the early game. Building up your empire and economy is
+what will support getting to the victory condition in the late game. 
+
 ## Game Rules Reference
 
 The in-game Civilopedia is available at: https://www.civilopedia.net/en-US/gathering-storm/concepts/intro/
@@ -342,13 +350,19 @@ Key URL patterns for looking up rules:
 - Units: `units/` (full enum index)
 - Improvements: `improvements/` (full enum index)
 
-When unsure about game mechanics (movement costs, combat formulas, tech prerequisites, improvement requirements), use `WebFetch` to look up the relevant page. The concept pages provide overviews; individual item pages have specific stats. You should also use this if you get error messages when trying to execute commands, unless you are sure you understand what went wrong and how to fix it.
+When unsure about game mechanics (movement costs, combat formulas, tech prerequisites, improvement requirements), use `WebFetch` to look up the relevant page. The concept pages provide overviews; individual item pages have specific stats. You should also use this if you get error messages when trying to execute commands, unless you are sure you understand what went wrong and how to fix it. Write down what you learn in
+the notes section of the diary.
+
+Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cause a blocking permission check which the human would likely 
+not see since they are immersed in the game. 
 
 ## Combat Quick Reference
 
 - Ranged attacks don't take damage; melee attacks do
 - Forests/mountains block ranged LOS — targets with blocked LOS are filtered from `get_units` attack lists
-- Fortified units: +4 defense, heal each turn
+- Fortified units: +4 defense
+- Healing: any unit that passes its turn will heal unless in enemy territory, higher healing in owned or allied territory. Exception: naval
+    units will not heal outside owned or allied territory.
 - Combat estimates include promotion CS bonuses, flanking (+2 per adjacent friendly to defender), support (+2 per defender's adjacent friendly), and forest/jungle defense (+3)
 
 ## Unit Actions Reference
@@ -431,7 +445,27 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 
 ## District Placement
 
-Use `set_city_production` with target_x/y to place districts. Plan your empire so that districts will get high adjacency bonuses later on. There are later game policies which multiply the adjacency bonuses so having well planned district placement can yield a lot of value.
+Use `set_city_production` with target_x/y to place districts. Plan your empire so that districts will get high adjacency bonuses later on. There are later game policies which multiply the adjacency bonuses so having well planned district placement can yield a lot of value. 
+Districts can not be moved once placed so you need to find a balance between what your empire needs now to expand and what will be needed
+later in the game. Also the number of districts allowed in a city is limited by population, so choose which districts to build carefully 
+to support your overall strategy. Limits are:
+
+• 1  Population for 1 District
+• 4  Population for 2 Districts
+• 7  Population for 3 Districts
+• Each additional District requires +3  Population
+
+Concrete example of district adjacency value:
+In the late game, an industrial zone without adjacency but with all buildings completed yields +12 production. If instead it is part of a well
+planned industrial region around a floodplains and has two aqueducts, a dam, a government plaza and a strategic resource adjacent 
+for +10 adjacency, and the policy for +100% adjacency is slotted in the government resulting in +20 adjacency, and it has the coal power 
+plant giving production equal to the adjacency... then the total yield is 20 + 20 + 9 = 49 production which is 300% more 
+compared to the zero adjacency example. If you don't plan your district placement well you will never be comptetitive in the lategame.
+Take note in your long term plans of tiles that should be reserved for districts in the future so you don't place something else there.
+
+You can't place districts on strategic or luxury resources. Also remember to chop or harvest features and resources from the tile with 
+a builder before placing a district if possible, otherwise it will go to waste. It is possible to harvest while the city does not have a 
+production target, the production will be stored until you select what to build.
 
 | District | Adjacency bonuses |
 |----------|------------------|
@@ -442,7 +476,7 @@ Use `set_city_production` with target_x/y to place districts. Plan your empire s
 | Theater Square | +2 per wonder, +2 per Entertainment Complex/water park |
 | Harbor | +1 per sea resource, +2 per city center |
 
-In addition, there is a general +1 per 2 adjacent districts.
+In addition, there is a general +1 per 2 adjacent districts, and the government plaza gives an extra +1 to each adjacent district.
 
 ## Trade Routes
 
