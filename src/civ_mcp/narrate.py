@@ -1666,7 +1666,7 @@ def narrate_world_congress(status: lq.WorldCongressStatus) -> str:
             costs_str = "1 vote=free, 2=10, 3=30, 4=60, 5=100, 6=150, 7=210, 8=280, 9=360, 10=450, 11=550"
         lines.append(f"Favor: {status.favor} | Vote costs (cumulative): {costs_str}")
     else:
-        if status.turns_until_next >= 0:
+        if status.turns_until_next > 0:
             lines.append(
                 f"World Congress: Next session in {status.turns_until_next} turns"
             )
