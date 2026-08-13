@@ -970,23 +970,30 @@ class GameState:
         lua = lq.build_set_policies(assignments)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
-        if not result.startswith("Error"):
-            # Post-verify: RequestPolicyChanges can silently no-op (e.g. during era transitions)
-            status = await self.get_policies()
-            slot_map = {s.slot_index: s.current_policy for s in status.slots}
-            mismatches = []
-            for idx, pol in assignments.items():
-                expected = None if pol.upper() == "NONE" else pol
-                actual = slot_map.get(idx)
-                if actual != expected:
-                    wanted = "EMPTY" if expected is None else pol
-                    got = actual or "EMPTY"
-                    mismatches.append(f"slot {idx} (wanted {wanted}, got {got})")
-            if mismatches:
-                result += (
-                    f"\nWARN:SILENT_FAILURE — engine rejected: {', '.join(mismatches)}. "
-                    "Try a different policy or retry next turn."
-                )
+
+        # The verification does not work, for some reason get_policies always returns
+        # empty in this context. Sleeping for several seconds does not help. 
+        # Have verified that the policies go through. If they fail the
+        # agent will see it in the game state next turn. Leaving this here so
+        # we can try to fix it later.
+
+        # if not result.startswith("Error"):
+        #     # Post-verify: RequestPolicyChanges can silently no-op (e.g. during era transitions)
+        #     status = await self.get_policies()
+        #     slot_map = {s.slot_index: s.current_policy for s in status.slots}
+        #     mismatches = []
+        #     for idx, pol in assignments.items():
+        #         expected = None if pol.upper() == "NONE" else pol
+        #         actual = slot_map.get(idx)
+        #         if actual != expected:
+        #             wanted = "EMPTY" if expected is None else pol
+        #             got = actual or "EMPTY"
+        #             mismatches.append(f"slot {idx} (wanted {wanted}, got {got})")
+        #     if mismatches:
+        #         result += (
+        #             f"\nWARN:SILENT_FAILURE — engine rejected: {', '.join(mismatches)}. "
+        #             "Try a different policy or retry next turn."
+        #         )
         return result
 
     # ------------------------------------------------------------------
