@@ -25,7 +25,7 @@ from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
 from civ_mcp.diary import (
-    diary_path as _diary_path,
+    game_keyed_diary_path as _diary_path,
     get_current_plans as _get_current_plans,
 )
 from civ_mcp.game_state import GameState
@@ -1425,14 +1425,13 @@ async def get_full_game_state(ctx: Context) -> str:
         # Append diary plans (long-term + next-turn) from the JSONL file
         try:
             civ_type, seed = await gs.get_game_identity()
-            run_id = _get_logger(ctx).session_id
-            path = _diary_path(civ_type, seed, run_id)
+            path = _diary_path(civ_type, seed)
             plans = _get_current_plans(path)
             ntp = plans.get("next_turn_plan", "").strip()
             ltp = plans.get("long_term_plans", "").strip()
             notes = plans.get("notes", "").strip()
             if ltp or ntp or notes:
-                text += "\n\n=== DIARY ==="
+                text += "\n\n## DIARY"
                 if ltp:
                     text += f"\nLong-term Plans:\n{ltp}"
                 else:

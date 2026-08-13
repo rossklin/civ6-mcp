@@ -17,8 +17,12 @@ _PLAN_FIELDS = ("next_turn_plan", "long_term_plans")
 
 
 def diary_path(civ: str, seed: int, run_id: str) -> Path:
-    """Per-game diary file: diary_{civ}_{seed}_{run_id}.jsonl"""
+    """Per-game and session diary file: diary_{civ}_{seed}_{run_id}.jsonl"""
     return DIARY_DIR / f"diary_{civ}_{seed}_{run_id}.jsonl"
+
+def game_keyed_diary_path(civ: str, seed: int) -> Path:
+    """Per-game diary file: diary_{civ}_{seed}}.jsonl"""
+    return DIARY_DIR / f"diary_{civ}_{seed}.jsonl"
 
 
 def get_current_plans(path: Path) -> dict[str, str]:
