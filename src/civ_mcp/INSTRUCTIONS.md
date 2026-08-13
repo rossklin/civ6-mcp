@@ -1,25 +1,14 @@
 # Civ 6 MCP — Agent Reference
 
-An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules. This game is shared: a human is playing one civ in the game's own UI and you (plus possibly other agents) play
-rival civs, taking turns in order. One agent will be the manager and assign sub agents to play individual game turns.
+An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules. This game is shared: a human is playing one civ in the game's own UI and you (plus possibly other agents) play rival civs, taking turns in order. One agent will be the manager and assign sub agents to play individual game turns.
 
-This MCP server is under development and still has bugs and issues. If you have issues interacting with the game, don't spend time
-trying to solve them, just note it and continue your turn, then include it in your issue report at end of turn.
+This MCP server is under development and still has bugs and issues. If you have issues interacting with the game, don't spend time trying to solve them, just note it and continue your turn, then include it in your issue report at end of turn.
 
 ## Before you start
-If you are the manager agent, you need to claim a seat in the game before you 
-pass control to a sub agent to play a turn. The first thing to do is to call 
-`get_seats` to see which seats have which civs. Then `claim_seat(player_id=N)`, 
-the human should tell you what seat to claim. Every other tool is refused until 
-you do this.
+If you are the manager agent, you need to claim a seat in the game before you pass control to a sub agent to play a turn. The first thing to do is to call `get_seats` to see which seats have which civs. Then `claim_seat(player_id=N)`, the human should tell you what seat to claim. Every other tool is refused until you do this.
 
 ## Turn Loop
-The game will be set up in such a way that a manager agent is responsible for launching sub agents
-to play each turn of the game. As the sub agent, your task is to play through a full turn loop as
-explained below. Unless this is turn 1 of the game, you should have a diary section in the game state
-which will contain a plan for the turn developed by the agent that preceeded you. Stick to that plan
-when performing game actions unless new information has surfaced that invalidates it. That way each
-agent will be responsible for planning one turn and acting on one turn.
+The game will be set up in such a way that a manager agent is responsible for launching sub agents to play each turn of the game. As the sub agent, your task is to play through a full turn loop as explained below. Unless this is turn 1 of the game, you should have a diary section in the game state which will contain a plan for the turn developed by the agent that preceeded you. Stick to that plan when performing game actions unless new information has surfaced that invalidates it. That way each agent will be responsible for planning one turn and acting on one turn.
 
 Each turn in order:
 1. `get_full_game_state`
@@ -30,11 +19,9 @@ Each turn in order:
 6. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn.
 7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
-9. Write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. IMPORTANT stop after this, you are 
-done with your task. Do NOT start playing the next turn.
+9. Write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. IMPORTANT stop after this, you are done with your task. Do NOT start playing the next turn.
 
-Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands
-give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
+Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
 
 ## Two-Tool Architecture
 
@@ -91,10 +78,7 @@ Example:
         {"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_SETTLER"}},
         {"action": "set_research", "params": {"tech_name": "TECH_IRON_WORKING"}}]
 
-Commands execute in order. Movement/attack commands return visibility
-intel (newly revealed tiles, enemy units) and combat results inline, so
-you can call this tool multiple times per turn to scout first, then act
-on what you learn. Prefer fewer, larger batches where possible.
+Commands execute in order. Movement/attack commands return visibility intel (newly revealed tiles, enemy units) and combat results inline, so you can call this tool multiple times per turn to scout first, then act on what you learn. Prefer fewer, larger batches where possible.
 
 Conventions:
     - Coordinates: ``target_x``/``target_y`` are map tiles.
@@ -246,33 +230,23 @@ The diary is your persistent memory across sessions and turns, it is what allows
 ## Strategic Patterns
 
 ### Moving units
-Moving into a tile costs movement points depending on the terrain and features. Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit which hasn't moved yet can always move into an adjacent tile regardless of cost, but once it has moved it can't 
-enter an adjacent tile unless it has sufficient points left. Map tiles show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route 
-units along roads when possible.
+Moving into a tile costs movement points depending on the terrain and features. Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit which hasn't moved yet can always move into an adjacent tile regardless of cost, but once it has moved it can't enter an adjacent tile unless it has sufficient points left. Map tiles show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route units along roads when possible.
 
 Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort.
 
-`get_pathing_estimate(unit_id, target_x, target_y)` estimates how many turns a unit needs to reach a destination, using the game's actual pathfinding. Use it before committing units to long marches, but beware that it may take a weird path to avoid temporary blockage such as 
-units or unexplored tiles.
+`get_pathing_estimate(unit_id, target_x, target_y)` estimates how many turns a unit needs to reach a destination, using the game's actual pathfinding. Use it before committing units to long marches, but beware that it may take a weird path to avoid temporary blockage such as units or unexplored tiles.
 
 Common reasons unit movement does not go as expected:
 - failure to account for map features like crossing a river
 - miscalculated adjacency, eg (x+1, y+1) is adjacent to (x,y) but (x+2, y+2) is not adjacent to (x+1, y+1)
-- zone of control (ZOC): when your unit moves adjacent to an object which exerts ZOC, it can't move further that turn
-except to attack the ZOC object. Melee units (land and naval), cities, encampments and units with a ZOC promotion exert ZOC.
-However cavalry units ignore ZOC.
+- zone of control (ZOC): when your unit moves adjacent to an object which exerts ZOC, it can't move further that turn except to attack the ZOC object. Melee units (land and naval), cities, encampments and units with a ZOC promotion exert ZOC. However cavalry units ignore ZOC.
 
 ### Builder Management
 Idle builders are wasted production. The builder tasks section shows all tiles needing improvements across your empire, prioritized (URGENT > HIGH > NORMAL), with the nearest idle builder for each task. These tasks are naive recommendations and you need to make your own judgement. For instance they may recommend you to build a mine when it is better to keep the forest on the hill, or to place an improvement that you do not have the required tech to place.
 
-Before building an improvement, consider whether it actually improves the yields of the city. For instance if your city is currently working
-a grassland hill with forest (2 food, 2 production), building a farm on a plains would create a 2 food 1 production tile which would not
-be worthwhile for the city to work. 
+Before building an improvement, consider whether it actually improves the yields of the city. For instance if your city is currently working a grassland hill with forest (2 food, 2 production), building a farm on a plains would create a 2 food 1 production tile which would not be worthwhile for the city to work.
 
-You can also gain a lot of value by harvesting features or resources. Weight the value gained against the effect on the city's yields. For 
-instance, if the city already has several free good tiles to work, it will take a long time before harvesting one tile has any negative 
-effect on city yields. But harvesting the best currently worked tile may be a bad idea. And later in the game you will be able to re-plant 
-forests. It's always worth harvesting before placing a district since that would remove the feature and resource anyways.
+You can also gain a lot of value by harvesting features or resources. Weight the value gained against the effect on the city's yields. For instance, if the city already has several free good tiles to work, it will take a long time before harvesting one tile has any negative effect on city yields. But harvesting the best currently worked tile may be a bad idea. And later in the game you will be able to re-plant forests. It's always worth harvesting before placing a district since that would remove the feature and resource anyways.
 
 ### Spending Gold & Faith
 Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it.
@@ -322,7 +296,7 @@ General overview of what you need for each victory type:
 - **Diplomatic**: 20 DVP. World Congress resolutions, scored competitions, wonders. Favor from government tier, alliances, suzerainties. If a DVP-stripping resolution targets you, vote Option B on yourself (net 0 vs -2).
 
 But it is generally not a good idea to focus to strongly on the victory condition in the early game. Building up your empire and economy is
-what will support getting to the victory condition in the late game. 
+what will support getting to the victory condition in the late game.
 
 ## Civ unique abilities
 Each leader and civilization has unique abilities. Consider yours and your opponents, they will effect how you should play the game.
@@ -342,16 +316,14 @@ Key URL patterns for looking up rules:
 
 When unsure about game mechanics, use `WebFetch` to look up the relevant page. The concept pages provide overviews; individual item pages have specific stats. You should also use this if you get error messages when trying to execute commands, unless you are sure you understand what went wrong and how to fix it. Write down what you learn in the notes section of the diary.
 
-Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cause a blocking permission check which the human would likely 
-not see since they are immersed in the game. 
+Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cause a blocking permission check which the human would likely not see since they are immersed in the game.
 
 ## Combat Quick Reference
 
 - Ranged attacks don't take damage; melee attacks do
 - Forests/mountains block ranged LOS — targets with blocked LOS are filtered from `get_units` attack lists
 - Fortified units: +4 defense
-- Healing: any unit that passes its turn will heal unless in enemy territory, higher healing in owned or allied territory. Exception: naval
-    units will not heal outside owned or allied territory.
+- Healing: any unit that passes its turn will heal unless in enemy territory, higher healing in owned or allied territory. Exception: naval     units will not heal outside owned or allied territory.
 - Combat estimates include promotion CS bonuses, flanking (+2 per adjacent friendly to defender), support (+2 per defender's adjacent friendly), and forest/jungle defense (+3)
 
 ## Unit Actions Reference
@@ -434,10 +406,7 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 
 ## District Placement
 
-Use `set_city_production` with target_x/y to place districts. Plan your empire so that districts will get high adjacency bonuses later on. There are later game policies which multiply the adjacency bonuses so having well planned district placement can yield a lot of value. 
-Districts can not be moved once placed so you need to find a balance between what your empire needs now to expand and what will be needed
-later in the game. Also the number of districts allowed in a city is limited by population, so choose which districts to build carefully 
-to support your overall strategy. Limits are:
+Use `set_city_production` with target_x/y to place districts. Plan your empire so that districts will get high adjacency bonuses later on. There are later game policies which multiply the adjacency bonuses so having well planned district placement can yield a lot of value. Districts can not be moved once placed so you need to find a balance between what your empire needs now to expand and what will be needed later in the game. Also the number of districts allowed in a city is limited by population, so choose which districts to build carefully to support your overall strategy. Limits are:
 
 • 1  Population for 1 District
 • 4  Population for 2 Districts
@@ -445,16 +414,9 @@ to support your overall strategy. Limits are:
 • Each additional District requires +3  Population
 
 Concrete example of district adjacency value:
-In the late game, an industrial zone without adjacency but with all buildings completed yields +12 production. If instead it is part of a well
-planned industrial region around a floodplains and has two aqueducts, a dam, a government plaza and a strategic resource adjacent 
-for +10 adjacency, and the policy for +100% adjacency is slotted in the government resulting in +20 adjacency, and it has the coal power 
-plant giving production equal to the adjacency... then the total yield is 20 + 20 + 9 = 49 production which is 300% more 
-compared to the zero adjacency example. If you don't plan your district placement well you will never be comptetitive in the lategame.
-Take note in your long term plans of tiles that should be reserved for districts in the future so you don't place something else there.
+In the late game, an industrial zone without adjacency but with all buildings completed yields +12 production. If instead it is part of a well planned industrial region around a floodplains and has two aqueducts, a dam, a government plaza and a strategic resource adjacent for +10 adjacency, and the policy for +100% adjacency is slotted in the government resulting in +20 adjacency, and it has the coal power plant giving production equal to the adjacency... then the total yield is 20 + 20 + 9 = 49 production which is 300% more compared to the zero adjacency example. If you don't plan your district placement well you will never be comptetitive in the lategame. Take note in your long term plans of tiles that should be reserved for districts in the future so you don't place something else there.
 
-You can't place districts on strategic or luxury resources. Also remember to chop or harvest features and resources from the tile with 
-a builder before placing a district if possible, otherwise it will go to waste. It is possible to harvest while the city does not have a 
-production target, the production will be stored until you select what to build.
+You can't place districts on strategic or luxury resources. Also remember to chop or harvest features and resources from the tile with a builder before placing a district if possible, otherwise it will go to waste. It is possible to harvest while the city does not have a production target, the production will be stored until you select what to build.
 
 | District | Adjacency bonuses |
 |----------|------------------|
