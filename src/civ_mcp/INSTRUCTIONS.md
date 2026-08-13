@@ -1,6 +1,40 @@
 # Civ 6 MCP — Agent Reference
 
-An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules.
+An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules. This game is shared: a human is playing one civ in the game's own UI and you (plus possibly other agents) play
+rival civs, taking turns in order. One agent will be the manager and assign sub agents to play individual game turns.
+
+This MCP server is under development and still has bugs and issues. If you have issues interacting with the game, don't spend time
+trying to solve them, just note it and continue your turn, then include it in your issue report at end of turn.
+
+## Before you start
+If you are the manager agent, you need to claim a seat in the game before you 
+pass control to a sub agent to play a turn. The first thing to do is to call 
+`get_seats` to see which seats have which civs. Then `claim_seat(player_id=N)`, 
+the human should tell you what seat to claim. Every other tool is refused until 
+you do this.
+
+## Turn Loop
+The game will be set up in such a way that a manager agent is responsible for launching sub agents
+to play each turn of the game. As the sub agent, your task is to play through a full turn loop as
+explained below. Unless this is turn 1 of the game, you should have a diary section in the game state
+which will contain a plan for the turn developed by the agent that preceeded you. Stick to that plan
+when performing game actions unless new information has surfaced that invalidates it. That way each
+agent will be responsible for planning one turn and acting on one turn.
+
+Each turn in order:
+1. `get_full_game_state`
+2. Consider whether any changes are needed to the turn action plan
+3. `execute_commands` with your planned actions. You can iterate this step if required, for instance to set production in
+    a city after founding it. But minimize the number of calls.
+5. `end_turn` — advance the turn and get your post-turn report.
+6. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn.
+7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
+8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
+9. Write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. IMPORTANT stop after this, you are 
+done with your task. Do NOT start playing the next turn.
+
+Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands
+give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
 
 ## Two-Tool Architecture
 
@@ -43,40 +77,6 @@ The game uses offset hex coordinates. Moving ±1 in ONLY X or ONLY Y is **always
 | NW | (x, y+1) |
 
 When calculating movement: check the `[mv:N]` notation in the map output. A tile costing `[mv:3]` (hills + forest/jungle) cannot be entered or attacked by a unit with only 2 moves remaining, except if it is an adjacent tile and 2 moves is the full movement points for that unit. Check map movement costs BEFORE issuing move or attack commands.
-
-## Shared Games (human vs agent)
-
-If `get_seats` and `claim_seat` are available, this game is shared: a human is
-playing one civ in the game's own UI and you (plus possibly other agents) play
-rival civs, taking turns in order.
-
-The first thing to do is to call `get_seats` to see which seats have which civs. 
-Then `claim_seat(player_id=N)`, the human should tell you what seat to claim. 
-Every other tool is refused until you do this.
-
-Off the clock, read tools still answer for **your** civ, so the gap between your
-turns is time to scout, run strategic checkpoints, and plan — not time to sit
-idle. Write tools are refused until your turn, and `get_turn_status()` tells you
-where you stand without blocking.
-
-Save/load and game-restart tools are disabled: reloading would destroy the
-human's session and the other agents' progress. If the game hangs, say so and
-let the human recover it.
-
-### Turn Loop (human vs agent)
-
-Each turn in order:
-1. `get_full_game_state` — all game state including your diary (long-term plans + the next-turn plan you wrote last turn). If resuming after context compaction, this is all you need to reconstruct your strategic context.
-2. Plan your moves based on the full state and your existing plans. Consider whether notifications or enemy movements since last turn require adjusting your next-turn plan.
-3. `execute_commands` with your planned actions (move units, set production, set research, etc.).
-4. If unit movements reveal new intel (visible in the command results), you may call `execute_commands` again to act on it. Prefer fewer calls where possible.
-5. `end_turn` — advance the turn and get your post-turn report.
-6. Think about what to do next turn and whether your long-term plans need updating.
-7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
-8. `wait_for_turn()` — block until your next turn starts. It returns a short status; the full turn report for the round that just finished is delivered as the `=== TURN ROLLOVER REPORT ===` section of `get_full_game_state` on your first call next turn. Call again on timeout.
-
-Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands
-give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
 
 ## Tool execute_commands
 Execute a batch of game commands sequentially. Here is the full reference of each command.
@@ -237,15 +237,11 @@ World Congress:
 
 ## Diary
 
-The diary is your persistent memory across sessions and turns. When you start a turn, `get_full_game_state` includes your diary, so you pick up exactly where you left off. The diary has three parts:
+The diary is your persistent memory across sessions and turns, it is what allows the next turn's agent to continue where you left off. When they start their turn, `get_full_game_state` includes the full diary. The diary has three parts:
 
-- **`next_turn_plan`**: Your concrete plan for the NEXT turn. Be specific — unit movements, production choices, research targets. This is overwritten each turn, so only the most recent entry matters. Write this from the perspective of what you intend to do when you get the turn back.
+- **`next_turn_plan`**: Your concrete plan for the NEXT turn. Be specific — unit movements, production choices, research targets. This is overwritten each turn, so only the most recent entry matters.
 - **`long_term_plans`**: Your long-term strategy — victory path, expansion goals, tech progression timeline, diplomatic posture. Pass the complete current version each time you call `update_diary`; last write wins.
 - **`notes`**: Durable learnings worth remembering across the whole game — game rules you discovered, mistakes you made and corrected, things the civilopedia taught you. Unlike the plan fields, notes are **appended** to the existing notes each call (with a turn marker) rather than replacing them, so they accumulate over the game. Leave empty to leave the notes unchanged. Use this for facts, not transient plans. Example: you tried to move onto an enemy unit's tile and the action was rejected — read the civilopedia, learned you must declare war first — record that in `notes` so you never repeat the mistake.
-
-Call `update_diary` after `end_turn()` and before `wait_for_turn()` — once per turn cycle. Think while other players are on the clock: based on what you observed this turn and the post-turn report (which `get_full_game_state` will include as the `=== TURN ROLLOVER REPORT ===` section next turn), what should you do next? Do your long-term plans still hold? Write the answers into the diary so your next invocation starts with context.
-
-The diary appears in `get_full_game_state` output — no separate tool needed. When you resume a game after context compaction, `get_full_game_state` alone is enough to reconstruct your strategic context.
 
 ## Strategic Patterns
 
@@ -344,8 +340,7 @@ Key URL patterns for looking up rules:
 - Units: `units/` (full enum index)
 - Improvements: `improvements/` (full enum index)
 
-When unsure about game mechanics (movement costs, combat formulas, tech prerequisites, improvement requirements), use `WebFetch` to look up the relevant page. The concept pages provide overviews; individual item pages have specific stats. You should also use this if you get error messages when trying to execute commands, unless you are sure you understand what went wrong and how to fix it. Write down what you learn in
-the notes section of the diary.
+When unsure about game mechanics, use `WebFetch` to look up the relevant page. The concept pages provide overviews; individual item pages have specific stats. You should also use this if you get error messages when trying to execute commands, unless you are sure you understand what went wrong and how to fix it. Write down what you learn in the notes section of the diary.
 
 Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cause a blocking permission check which the human would likely 
 not see since they are immersed in the game. 
