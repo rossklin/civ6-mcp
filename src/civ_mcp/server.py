@@ -1342,7 +1342,10 @@ async def get_agent_reference(ctx: Context) -> str:
 # lua/ modules — they're just not exposed as individual MCP tools.
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(
+    annotations={"readOnlyHint": True},
+    meta={"anthropic/maxResultSizeChars": 500000},
+)
 async def get_full_game_state(ctx: Context) -> str:
     """Get the complete game state in a single call.
 
