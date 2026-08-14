@@ -227,6 +227,66 @@ async def install_diplomacy_ui_fix(conn: GameConnection) -> str:
     return ", ".join(results) if results else "no diplomacy contexts"
 
 
+#: UI contexts whose cached local-player state needs repairing after a handoff.
+#: GovernmentScreen caches ``m_ePlayer`` / ``m_isLocalPlayerTurn`` in
+#: ``OnLocalPlayerTurnBegin`` — the event the handoff suppresses — so without
+#: this repair the screen shows the previous civ's government with
+#: non-interactable policy slots.  The Expansion1/2 ``ReplaceUIScript`` files
+#: run inside the same context, so one state name covers them.
+GOVERNMENT_UI_STATES = ("GovernmentScreen",)
+
+# Template Lua for the government screen repair, kept in a separate file for
+# readability / IDE support.  One tag is substituted per-call by
+# build_government_screen_fix_lua():
+#   __MCP_SENTINEL_TAG__  -> the response sentinel (_helpers.SENTINEL)
+_GOV_FIX_PATH = (
+    Path(__file__).resolve().parent.parent / "lua" / "government_screen_fix.lua"
+)
+_GOV_FIX_TEMPLATE: str | None = None
+
+
+def _load_government_screen_fix_template() -> str:
+    """Read and cache the government screen repair Lua template from disk."""
+    global _GOV_FIX_TEMPLATE
+    if _GOV_FIX_TEMPLATE is None:
+        _GOV_FIX_TEMPLATE = _GOV_FIX_PATH.read_text(encoding="utf-8")
+    return _GOV_FIX_TEMPLATE
+
+
+def build_government_screen_fix_lua() -> str:
+    """Lua that repairs GovernmentScreen's cached local-player state after a handoff.
+
+    Same suppressed-``LocalPlayerTurnBegin`` root cause as the diplomacy screen
+    fix (:func:`build_diplomacy_ui_fix_lua`), but the screen's turn flag is a
+    file-local upvalue rather than a global, so the repair tracks the last
+    player it fixed and re-fires whenever that changes.  See the template for
+    the full rationale.
+    """
+    lua = _load_government_screen_fix_template()
+    return lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
+
+
+async def install_government_screen_fix(conn: GameConnection) -> str:
+    """Install the cached-state repair in each government UI context.
+
+    Re-applied by :class:`HandoffKeeper` alongside the diplomacy fix, since UI
+    contexts are rebuilt on every save load.  A context whose
+    ``OnLocalPlayerTurnBegin`` is absent (e.g. the screen has never been opened
+    and so is not registered yet) is simply skipped and retried next cycle.
+    """
+    results = []
+    for state in GOVERNMENT_UI_STATES:
+        lines = await conn.execute_in_named_state(
+            state, build_government_screen_fix_lua()
+        )
+        status = next((l[7:] for l in lines if l.startswith("GOVFIX|")), None)
+        if status is not None:
+            results.append(f"{state}={status}")
+    if results:
+        log.info("Government UI fix: %s", ", ".join(results))
+    return ", ".join(results) if results else "no government contexts"
+
+
 def build_status_lua() -> str:
     """GameCore Lua reporting turn, local player, and handler presence."""
     return (
@@ -353,6 +413,7 @@ async def install(conn: GameConnection, cfg: HandoffConfig, force: bool = False)
     # The hook and the UI contexts die together on a save load, so the screen
     # repair is armed on the same path rather than on a schedule of its own.
     await install_diplomacy_ui_fix(conn)
+    await install_government_screen_fix(conn)
     return state
 
 
@@ -498,6 +559,7 @@ class HandoffKeeper:
                     # rebuilt between polls would have lost it. A handoff just
                     # happened, so this is the cheap moment to re-arm.
                     await install_diplomacy_ui_fix(self._conn)
+                    await install_government_screen_fix(self._conn)
                     for hook in self._post_install_hooks:
                         try:
                             await hook()

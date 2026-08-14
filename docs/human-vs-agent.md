@@ -703,6 +703,26 @@ load, which loses the listeners).
 any of them may hold stale turn state after a handoff. Diplomacy was simply the
 one where it was visible enough to notice.
 
+> **GovernmentScreen: same cause, same fix (2026-08-14).** After a handoff the
+> government screen showed the *previous* civ's government with all policy slots
+> greyed out and non-interactable (one full turn behind, every cycle), even
+> though `set_policies` over MCP still worked. The engine side was correct:
+> `Game.GetLocalPlayer()` followed the handoff and the right player's turn was
+> active. The cause is the same swallowed `LocalPlayerTurnBegin`:
+> `GovernmentScreen.lua` caches `m_ePlayer` (whose government/policies to draw)
+> and `m_isLocalPlayerTurn` (whether the slots are editable, via
+> `IsAbleToChangeGovernment` / `IsAbleToChangePolicies`) and updates both only
+> from `OnLocalPlayerTurnBegin`. The repair is identical in shape — call the
+> screen's own `OnLocalPlayerTurnBegin` once the local player's turn is really
+> active — with one wrinkle: those two values are file-LOCAL upvalues (not a
+> `g_`-prefixed global like diplomacy's `g_bIsLocalPlayerTurn`), so they cannot
+> be read from injected tuner code to guard the repair. The fix instead tracks
+> the last player it repaired in its own global and re-fires whenever that
+> changes, resetting on deactivation. Implemented as
+> `handoff.build_government_screen_fix_lua` / `install_government_screen_fix`
+> (template `src/lua/government_screen_fix.lua`), armed on the same path as the
+> diplomacy fix. The remaining ~22 contexts are still untriaged.
+
 ### The Network layer: real, but not the cause
 
 Probed 2026-08-03 with agent Rome (P2) on the clock:
@@ -969,8 +989,8 @@ play.
    The dead screen is fixed. Deals with a managed civ are still auto-resolved
    by the built-in AI until the mailbox is built. Still open:
    - **Other contexts with stale turn state.** The `LocalPlayerTurnBegin`
-     suppression is generic; ~24 contexts subscribe to it and only diplomacy
-     has been checked.
+     suppression is generic; ~24 contexts subscribe to it. Diplomacy and the
+     government screen are fixed (see above); the rest are untriaged.
    - **Diplomacy aimed at a civ while an agent holds the slot.** Observed once:
      the AI running the human's own civ opened a delegation offer to the
      managed civ. With a real agent there is nobody to answer it, the session
@@ -1029,7 +1049,7 @@ save to clear it.
 
 | File | Role |
 |---|---|
-| `src/civ_mcp/handoff.py` | Config, the GameCore install/status/roster/hand-back Lua, the diplomacy screen fix, `HandoffKeeper`, `wait_for_turn` |
+| `src/civ_mcp/handoff.py` | Config, the GameCore install/status/roster/hand-back Lua, the diplomacy + government screen fixes, `HandoffKeeper`, `wait_for_turn` |
 | `src/civ_mcp/seats.py` | `SeatRegistry`, `Seat`, the read-perspective `ContextVar` |
 | `src/civ_mcp/connection.py` | `apply_perspective` — the `Game.GetLocalPlayer()` rewrite; `state_index_for` / `execute_in_named_state` for reaching a UI context's own Lua state |
 | `scripts/diplo_probe.py`, `scripts/lua/` | Standalone tuner driver used for the diplomacy investigation — talks to the game directly so the MCP server need not hold the single-client port |
