@@ -605,7 +605,7 @@ def narrate_map_tiles(tiles: list[lq.TileInfo]) -> str:
             row_parity_info[t.y] = t.row_parity
 
     lines = [f"{len(tiles)} revealed tiles:"]
-    for y in sorted(by_row.keys()):
+    for y in sorted(by_row.keys(), reverse=True):
         row_tiles = sorted(by_row[y], key=lambda t: t.x)
         parity_tag = ""
         if y in row_parity_info:
