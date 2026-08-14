@@ -1174,6 +1174,24 @@ def narrate_test_trade(result: lq.TestTradeResult) -> str:
 def narrate_policies(gov: lq.GovernmentStatus) -> str:
     lines = [f"Government: {gov.government_name} ({gov.government_type})"]
 
+    # Policy unlock status: whether rearranging policies this turn is free or
+    # costs gold/faith. set_policies calls UNLOCK_POLICIES before applying
+    # changes, so a nonzero cost here is what that call will charge.
+    if gov.policy_unlock_cost <= 0:
+        lines.append("Policies: free to change this turn.")
+    else:
+        cur = gov.policy_unlock_currency.lower()
+        if gov.can_unlock_policies:
+            lines.append(
+                f"Policies LOCKED — set_policies will cost "
+                f"{gov.policy_unlock_cost} {cur} to unlock."
+            )
+        else:
+            lines.append(
+                f"Policies LOCKED — set_policies costs "
+                f"{gov.policy_unlock_cost} {cur} (cannot afford yet)."
+            )
+
     if gov.slots:
         lines.append(f"\n{len(gov.slots)} policy slots:")
         for s in gov.slots:

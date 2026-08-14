@@ -874,6 +874,13 @@ class GovernmentStatus:
     government_type: str
     slots: list[PolicySlot] = field(default_factory=list)
     available_policies: list[PolicyInfo] = field(default_factory=list)
+    # Cost to unlock policy changes this turn.  0 means already unlocked (free
+    # to rearrange — e.g. a civic just completed); >0 means locked and
+    # ``set_policies`` will charge this much of ``policy_unlock_currency``
+    # (gold or faith) via UNLOCK_POLICIES before applying the change.
+    policy_unlock_cost: int = 0
+    policy_unlock_currency: str = "GOLD"  # "GOLD" or "FAITH"
+    can_unlock_policies: bool = True  # free, or the player can afford the cost
 
 
 @dataclass

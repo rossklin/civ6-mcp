@@ -46,6 +46,20 @@ if govIdx and govIdx >= 0 then
 end
 local numSlots = pCulture:GetNumPolicySlots()
 print("GOV|" .. govType .. "|" .. govName:gsub("|","/") .. "|" .. numSlots)
+-- Policy unlock cost: 0 = free to change this turn (civic just completed or
+-- already unlocked); >0 = locked, set_policies will charge this much gold/faith.
+local unlockCost = 0
+pcall(function() unlockCost = pCulture:GetCostToUnlockPolicies() or 0 end)
+local unlockByFaith = (GlobalParameters.GOVERNMENT_UNLOCK_WITH_FAITH ~= 0)
+local currency = unlockByFaith and "FAITH" or "GOLD"
+local balance = 0
+if unlockByFaith then
+    pcall(function() balance = Players[me]:GetReligion():GetFaithBalance() or 0 end)
+else
+    pcall(function() balance = Players[me]:GetTreasury():GetGoldBalance() or 0 end)
+end
+local canUnlock = (unlockCost <= 0) and 1 or (balance >= unlockCost and 1 or 0)
+print("UNLOCK|" .. unlockCost .. "|" .. currency .. "|" .. canUnlock)
 local slotNames = {[0]="SLOT_ECONOMIC", [1]="SLOT_MILITARY", [2]="SLOT_DIPLOMATIC", [3]="SLOT_WILDCARD", [4]="SLOT_WILDCARD"}
 for s = 0, numSlots - 1 do
     local slotType = slotNames[pCulture:GetSlotType(s)] or ("SLOT_" .. pCulture:GetSlotType(s))
@@ -657,6 +671,9 @@ def parse_policies_response(lines: list[str]) -> GovernmentStatus:
     gov_type = "NONE"
     slots: list[PolicySlot] = []
     available: list[PolicyInfo] = []
+    unlock_cost = 0
+    unlock_currency = "GOLD"
+    can_unlock = True
 
     for line in lines:
         if line.startswith("GOV|"):
@@ -664,6 +681,12 @@ def parse_policies_response(lines: list[str]) -> GovernmentStatus:
             if len(parts) >= 4:
                 gov_type = parts[1]
                 gov_name = parts[2]
+        elif line.startswith("UNLOCK|"):
+            parts = line.split("|")
+            if len(parts) >= 4:
+                unlock_cost = _int(parts[1]) or 0
+                unlock_currency = parts[2] or "GOLD"
+                can_unlock = parts[3] == "1"
         elif line.startswith("SLOT|"):
             parts = line.split("|")
             if len(parts) >= 5:
@@ -694,6 +717,9 @@ def parse_policies_response(lines: list[str]) -> GovernmentStatus:
         government_type=gov_type,
         slots=slots,
         available_policies=available,
+        policy_unlock_cost=unlock_cost,
+        policy_unlock_currency=unlock_currency,
+        can_unlock_policies=can_unlock,
     )
 
 
