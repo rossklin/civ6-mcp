@@ -2022,6 +2022,24 @@ async def get_pathing_estimate(
     )
 
 @mcp.tool(annotations={"readOnlyHint": True})
+async def get_unit_promotions(ctx: Context, unit_id: int) -> str:
+    """Get the available promotions for a unit.
+
+    Args:
+        unit_id: The unit's id from full game state
+    """
+    gs = _get_game(ctx)
+    unit_index = unit_id % 65536
+
+    async def _run():
+        status = await gs.get_unit_promotions(unit_index)
+        return nr.narrate_unit_promotions(status)
+
+    return await _logged(
+        ctx, "get_unit_promotions", {"unit_id": unit_id}, _run
+    )
+
+@mcp.tool(annotations={"readOnlyHint": True})
 async def get_available_governors(ctx: Context) -> str:
     """Get available governors and their bonuses.
 
