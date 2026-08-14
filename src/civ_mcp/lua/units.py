@@ -417,11 +417,6 @@ else
     if unit:GetMovesRemaining() <= 0 then
         {_bail("ERR:NO_MOVES|Unit has no movement points for melee attack. Melee requires movement to close distance. Wait until next turn.")}
     end
-    -- ZOC check: if unit entered enemy ZOC this turn, it cannot attack until next turn.
-    -- CanStartOperation returns true but RequestOperation silently queues for next turn.
-    if unit:HasMovedIntoZOC() then
-        {_bail_lua('"ERR:ZOC|Unit entered Zone of Control this turn — cannot attack until next turn. End turn and attack from current position next turn."')}
-    end
     params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
     if not UnitManager.CanStartOperation(unit, UnitOperationTypes.MOVE_TO, nil, params) then
         {_bail_lua('"ERR:ATTACK_BLOCKED|Cannot attack " .. enemyName .. " at ({target_x},{target_y}) (map dist=" .. dist .. "). Unit not adjacent or blocked by popup/diplomacy."')}
