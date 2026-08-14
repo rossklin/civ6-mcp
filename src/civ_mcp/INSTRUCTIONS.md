@@ -450,7 +450,6 @@ In addition, there is a general +1 per 2 adjacent districts, and the government 
 ## World Congress
 
 WC fires synchronously inside `end_turn()` — register votes **before** calling end_turn.
-There is currently a bug where the mcp always indicates wc voting is active.
 
 **Voting flow:**
 1. Review resolutions (options A/B, target list, favor costs)
