@@ -188,7 +188,7 @@ _ACTION_KEYWORDS = (
 
 BLOCKING_TOOL_MAP: dict[str, str] = {
     "ENDTURN_BLOCKING_GOVERNOR_APPOINTMENT": "Use get_governors() then appoint_governor()",
-    "ENDTURN_BLOCKING_UNIT_PROMOTION": "Use get_unit_promotions(unit_id=...) then promote_unit()",
+    "ENDTURN_BLOCKING_UNIT_PROMOTION": "Available promotions are shown in the Units section — use promote_unit(unit_id, promotion_type)",
     "ENDTURN_BLOCKING_FILL_CIVIC_SLOT": "Use get_policies() then set_policies()",
     "ENDTURN_BLOCKING_PRODUCTION": "Use set_city_production()",
     "ENDTURN_BLOCKING_RESEARCH": "Use set_research()",

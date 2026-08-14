@@ -1030,82 +1030,11 @@ class GameState:
     # Promotion methods
     # ------------------------------------------------------------------
 
-    async def get_unit_promotions(self, unit_id: int) -> lq.UnitPromotionStatus:
-        unit_index = unit_id % 65536
-        lua = lq.build_unit_promotions_query(unit_index)
-        lines = await self.conn.execute_read(lua)
-        return lq.parse_unit_promotions_response(lines)
-
     async def promote_unit(self, unit_id: int, promotion_type: str) -> str:
         unit_index = unit_id % 65536
         lua = lq.build_promote_unit(unit_index, promotion_type)
-        lines = await self.conn.execute_read(lua)  # GameCore context
-        result = _action_result(lines)
-        # GameCore SetPromotion doesn't clear the InGame NEEDS_PROMOTION
-        # notification, which blocks end_turn until dismissed.
-        # Use XP-threshold formula (matching end_turn handler) to decide
-        # whether any unit still genuinely needs a promotion before dismissing.
-        if not result.startswith("Error"):
-            try:
-                await self.conn.execute_write(
-                    f"local me = Game.GetLocalPlayer(); "
-                    f"local anyNeed = false; "
-                    f"for i, u in Players[me]:GetUnits():Members() do "
-                    f"  if u:GetX() ~= -9999 then "
-                    f"    local ok, exp = pcall(function() return u:GetExperience() end); "
-                    f"    if ok and exp then "
-                    f"      local ui = GameInfo.Units[u:GetType()]; "
-                    f'      local promClass = ui and ui.PromotionClass or ""; '
-                    f'      if promClass ~= "" then '
-                    f"        local promoCount = 0; "
-                    f"        for p in GameInfo.UnitPromotions() do "
-                    f"          if p.PromotionClass == promClass and exp:HasPromotion(p.Index) then "
-                    f"            promoCount = promoCount + 1 "
-                    f"          end "
-                    f"        end; "
-                    f"        local t1 = exp:GetExperienceForNextLevel(); "
-                    f"        local xp = exp:GetExperiencePoints(); "
-                    f"        local needed = t1 * (promoCount + 1) * (promoCount + 2) / 2; "
-                    f"        if xp >= needed then "
-                    f"          anyNeed = true "
-                    f"        else "
-                    f"          local stored = 0; "
-                    f"          pcall(function() stored = exp:GetStoredPromotions() end); "
-                    f"          if stored > 0 then "
-                    f"            pcall(function() exp:ChangeStoredPromotions(-stored) end) "
-                    f"          end "
-                    f"        end "
-                    f"      end "
-                    f"    end "
-                    f"  end "
-                    f"  if anyNeed then break end "
-                    f"end; "
-                    f"if not anyNeed then "
-                    f"  local list = NotificationManager.GetList(me); "
-                    f"  if list then "
-                    f"    for _, nid in ipairs(list) do "
-                    f"      local e = NotificationManager.Find(me, nid); "
-                    f"      if e and not e:IsDismissed() then "
-                    f"        local bt = e:GetEndTurnBlocking(); "
-                    f"        if bt and bt == EndTurnBlockingTypes.ENDTURN_BLOCKING_UNIT_PROMOTION then "
-                    f"          pcall(function() NotificationManager.SendActivated(me, nid) end); "
-                    f"          pcall(function() NotificationManager.Dismiss(me, nid) end) "
-                    f"        else "
-                    f"          local tn = ''; "
-                    f"          pcall(function() tn = e:GetTypeName() end); "
-                    f"          if tn == 'NOTIFICATION_UNIT_PROMOTION_AVAILABLE' then "
-                    f"            pcall(function() NotificationManager.Dismiss(me, nid) end) "
-                    f"          end "
-                    f"        end "
-                    f"      end "
-                    f"    end "
-                    f"  end "
-                    f"end; "
-                    f'print("OK"); print("{lq.SENTINEL}")'
-                )
-            except Exception:
-                pass  # non-fatal — end_turn blocker handler will catch it
-        return result
+        lines = await self.conn.execute_write(lua)  # InGame context
+        return _action_result(lines)
 
     # ------------------------------------------------------------------
     # City-state / Envoy methods (InGame context)

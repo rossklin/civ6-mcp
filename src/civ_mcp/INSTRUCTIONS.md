@@ -108,7 +108,7 @@ Units:
     delete_unit(unit_index)
     enter_formation(unit_index, target_unit_index) — join escort formation
     exit_formation(unit_index)
-    promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT
+    promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT. Available promotions (name, type, description) are shown per-unit in the Units section of get_full_game_state; add promote_unit to your command batch.
     upgrade_unit(unit_id)
     check_unit_upgrade(unit_id) — returns upgrade cost/availability
 
@@ -368,7 +368,6 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 - **Production**: city queue empty — set new production
 - **Research/Civic**: completed — choose next
 - **Governor**: point available — `appoint_governor` / `assign_governor(governor_type, city_id)` / `promote_governor(governor_type, promotion_type)`
-- **Promotion**: unit has XP — `promote_unit`
 - **Policy Slot**: empty — `set_policies`
 - **Pantheon/Religion**: faith threshold reached — `get_pantheon_beliefs` → `choose_pantheon`; for founding: `get_religion_beliefs` → `found_religion`
 - **Envoys**: tokens available — `send_envoy`

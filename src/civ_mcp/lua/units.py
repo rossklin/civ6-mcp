@@ -18,6 +18,7 @@ from civ_mcp.lua.models import (
     BuilderTask,
     CombatEstimate,
     PathingEstimate,
+    PromotionOption,
     ThreatInfo,
     UnitInfo,
 )
@@ -112,14 +113,41 @@ for i, u in Players[id]:GetUnits():Members() do
             end
             if #tgtList > 0 then targets = table.concat(tgtList, ";") end
         end
-        -- NOTE: promotion detection is intentionally omitted here.
-        -- GetExperiencePoints() >= GetExperienceForNextLevel() stays true after
-        -- SetPromotion() (level and XP are not consumed), so any mid-turn check
-        -- fires one turn early AND causes double-promotions when end_turn's
-        -- authoritative GameCore CanPromote check also fires.
-        -- All promotion handling is routed through the end_turn blocker (which
-        -- uses CanPromote in GameCore — the only correct check).
-        local promo = "0"
+        -- Available promotions (InGame). Cheap gate first (xp >= next-level
+        -- threshold), then ask the engine for the authoritative list via the
+        -- same CanStartCommand(PROMOTE) call the UI uses. Returns promotion
+        -- indices; we map to "TYPE~Name~Description" joined by ";".
+        local promo = ""
+        do
+            local ok_exp, exp = pcall(function() return u:GetExperience() end)
+            if ok_exp and exp then
+                local ok_pc, pc = pcall(function() return entry and entry.PromotionClass or "" end)
+                if ok_pc and pc and pc ~= "" then
+                    local ok_xp, xp = pcall(function() return exp:GetExperiencePoints() end)
+                    local ok_ne, need = pcall(function() return exp:GetExperienceForNextLevel() end)
+                    if ok_xp and ok_ne and xp >= need then
+                        pcall(function()
+                            local bCan, tRes = UnitManager.CanStartCommand(u, UnitCommandTypes.PROMOTE, true, true)
+                            if bCan and tRes then
+                                local idxs = tRes[UnitCommandResults.PROMOTIONS]
+                                if idxs then
+                                    local parts = {}
+                                    for _, pidx in pairs(idxs) do
+                                        local pinfo = GameInfo.UnitPromotions[pidx]
+                                        if pinfo then
+                                            local pn = Locale.Lookup(pinfo.Name):gsub("[|;~]", " "):gsub("\\n", " ")
+                                            local pd = Locale.Lookup(pinfo.Description):gsub("[|;~]", " "):gsub("\\n", " ")
+                                            table.insert(parts, pinfo.UnitPromotionType .. "~" .. pn .. "~" .. pd)
+                                        end
+                                    end
+                                    if #parts > 0 then promo = table.concat(parts, ";") end
+                                end
+                            end
+                        end)
+                    end
+                end
+            end
+        end
         -- Upgrade info (InGame only: CanStartCommand)
         local canUp, upName, upCost = "0", "", "0"
         local ok1, _ = pcall(function()
@@ -1483,7 +1511,21 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
             if targets_raw
             else []
         )
-        needs_promo = parts[11] == "1" if len(parts) > 11 else False
+        promos_raw = parts[11] if len(parts) > 11 else ""
+        available_promotions: list[PromotionOption] = []
+        if promos_raw and promos_raw != "0":
+            for pt in promos_raw.split(";"):
+                if not pt:
+                    continue
+                f = pt.split("~")
+                if len(f) >= 3:
+                    available_promotions.append(
+                        PromotionOption(
+                            promotion_type=f[0],
+                            name=f[1],
+                            description=f[2],
+                        )
+                    )
         can_upgrade = parts[12] == "1" if len(parts) > 12 else False
         upgrade_target = parts[13] if len(parts) > 13 else ""
         upgrade_cost = int(parts[14]) if len(parts) > 14 and parts[14].isdigit() else 0
@@ -1510,7 +1552,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 ranged_strength=rs,
                 build_charges=charges,
                 targets=targets,
-                needs_promotion=needs_promo,
+                available_promotions=available_promotions,
                 can_upgrade=can_upgrade,
                 upgrade_target=upgrade_target,
                 upgrade_cost=upgrade_cost,

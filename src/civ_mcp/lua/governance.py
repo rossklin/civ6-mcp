@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
     SENTINEL,
-    _LUA_XP_THRESHOLD,
     _bail,
     _bail_lua,
     _int,
     _lua_get_city,
     _lua_get_unit,
-    _lua_get_unit_gamecore,
 )
 from civ_mcp.lua.models import (
     AppointedGovernor,
@@ -24,8 +22,6 @@ from civ_mcp.lua.models import (
     GovernorStatus,
     PolicyInfo,
     PolicySlot,
-    PromotionOption,
-    UnitPromotionStatus,
 )
 
 
@@ -321,102 +317,52 @@ print("{SENTINEL}")
 """
 
 
-def build_unit_promotions_query(unit_index: int) -> str:
-    """List available promotions for a unit (GameCore context)."""
-    return f"""
-{_lua_get_unit_gamecore(unit_index)}
-local x, y = unit:GetX(), unit:GetY()
-if x == -9999 then {_bail("ERR:UNIT_CONSUMED")} end
-local typeIdx = unit:GetType()
-if typeIdx == nil then {_bail("ERR:UNIT_NO_TYPE")} end
-local info = GameInfo.Units[typeIdx]
-local ut = info and info.UnitType or "UNKNOWN"
-local promClass = info and info.PromotionClass or ""
-print("UNIT|" .. {unit_index} .. "|" .. (unit:GetID() % 65536) .. "|" .. ut)
-local exp = unit:GetExperience()
-{_LUA_XP_THRESHOLD}
-print("XP|" .. xp .. "|" .. xpNeeded .. "|" .. xpPromoCount)
-if xp < xpNeeded then
-    print("{SENTINEL}")
-    return
-end
-local prereqMap = {{}}
-for row in GameInfo.UnitPromotionPrereqs() do
-    local pt = row.UnitPromotion
-    if not prereqMap[pt] then prereqMap[pt] = {{}} end
-    table.insert(prereqMap[pt], row.PrereqUnitPromotion)
-end
-for promo in GameInfo.UnitPromotions() do
-    if promo.PromotionClass == promClass then
-        if not exp:HasPromotion(promo.Index) then
-            local prereqs = prereqMap[promo.UnitPromotionType]
-            local prereqMet = true
-            if prereqs and #prereqs > 0 then
-                prereqMet = false
-                for _, reqType in ipairs(prereqs) do
-                    local reqInfo = GameInfo.UnitPromotions[reqType]
-                    if reqInfo and exp:HasPromotion(reqInfo.Index) then
-                        prereqMet = true
-                        break
-                    end
-                end
-            end
-            if prereqMet then
-                local canPromote = false
-                pcall(function() canPromote = exp:CanPromote(promo.Index) end)
-                if canPromote then
-                    local name = Locale.Lookup(promo.Name)
-                    local desc = Locale.Lookup(promo.Description):gsub("|","/"):gsub("\\n"," ")
-                    print("PROMO|" .. promo.UnitPromotionType .. "|" .. name:gsub("|","/") .. "|" .. desc)
-                end
-            end
-        end
-    end
-end
-print("{SENTINEL}")
-"""
-
-
 def build_promote_unit(unit_index: int, promotion_type: str) -> str:
-    """Apply a promotion to a unit (GameCore context).
+    """Apply a promotion to a unit (InGame context).
 
-    Uses GameCore SetPromotion because InGame RequestCommand(PROMOTE)
-    silently fails (persistent bug across Games 1, 4, and 5).
+    Uses ``UnitManager.RequestCommand(PROMOTE)`` — the same path the game's
+    own UI takes (see UnitPromotionPopup.lua). Unlike the old GameCore
+    ``SetPromotion`` approach, this advances the unit's level counter (so
+    ``GetExperienceForNextLevel`` increases and the unit cannot be
+    re-promoted until it earns more XP) and consumes no XP (correct — Civ 6
+    XP is cumulative, gated by the level counter).
+
+    ``RequestCommand`` is asynchronous: it queues the command and returns
+    immediately, so the promotion is reflected on the next state read, not
+    within this call.
     """
     return f"""
-{_lua_get_unit_gamecore(unit_index)}
+{_lua_get_unit(unit_index)}
 local x, y = unit:GetX(), unit:GetY()
 if x == -9999 then {_bail("ERR:UNIT_CONSUMED")} end
 local promo = GameInfo.UnitPromotions["{promotion_type}"]
 if promo == nil then {_bail(f"ERR:PROMOTION_NOT_FOUND|{promotion_type}")} end
 local exp = unit:GetExperience()
 if exp == nil then {_bail("ERR:NO_EXPERIENCE|Unit has no experience object")} end
--- XP-threshold gate: prevent infinite promotions from SetPromotion desync.
-local ui = GameInfo.Units[unit:GetType()]
-local promClass = ui and ui.PromotionClass or ""
-{_LUA_XP_THRESHOLD}
-if xp < xpNeeded then {_bail_lua('"ERR:INSUFFICIENT_XP|Have " .. xp .. " XP, need " .. xpNeeded .. " for promotion " .. (xpPromoCount + 1) .. " (have " .. xpPromoCount .. " already)"')} end
-local canPromote = false
-pcall(function() canPromote = exp:CanPromote(promo.Index) end)
-if not canPromote then {_bail("ERR:CANNOT_PROMOTE|Unit cannot receive this promotion (wrong class, missing prereq, or insufficient XP)")} end
 if exp:HasPromotion(promo.Index) then {_bail(f"ERR:ALREADY_HAS_PROMOTION|{promotion_type}")} end
-exp:SetPromotion(promo.Index)
-if not exp:HasPromotion(promo.Index) then {_bail("ERR:PROMOTION_FAILED|SetPromotion did not apply")} end
--- Sync engine state: zero out stored promotions so the engine stops
--- generating ENDTURN_BLOCKING_UNIT_PROMOTION notifications.
--- ChangeStoredPromotions(-1) is insufficient when stored > 1 (e.g. unit
--- earned enough XP for two promotions). Read the current count and zero it.
-local stored = 0
-pcall(function() stored = exp:GetStoredPromotions() end)
-if stored > 0 then
-    pcall(function() exp:ChangeStoredPromotions(-stored) end)
+-- Authoritative availability gate: the engine knows the unit's true level
+-- and prereqs. CanStartCommand returns the promotions the unit may take now.
+local canStart = false
+local availIdxs = nil
+pcall(function()
+    local bCan, tRes = UnitManager.CanStartCommand(unit, UnitCommandTypes.PROMOTE, true, true)
+    canStart = bCan == true
+    if tRes then availIdxs = tRes[UnitCommandResults.PROMOTIONS] end
+end)
+local allowed = false
+if availIdxs then
+    for _, pidx in pairs(availIdxs) do
+        if pidx == promo.Index then allowed = true; break end
+    end
 end
--- Verify: if stored is still > 0 after zeroing, log it for diagnostics
-local storedAfter = 0
-pcall(function() storedAfter = exp:GetStoredPromotions() end)
-pcall(function() unit:SetDamage(0) end)
+if not (canStart and allowed) then
+    {_bail_lua('"ERR:CANNOT_PROMOTE|Unit cannot receive " .. promo.UnitPromotionType .. " (insufficient XP, wrong class, missing prereq, or already at max level)"')}
+end
+local tParameters = {{}}
+tParameters[UnitCommandTypes.PARAM_PROMOTION_TYPE] = promo.Index
+UnitManager.RequestCommand(unit, UnitCommandTypes.PROMOTE, tParameters)
 local promoName = Locale.Lookup(promo.Name)
-print("OK:PROMOTED|" .. promoName .. "|stored:" .. stored .. "->" .. storedAfter)
+print("OK:PROMOTED|" .. promoName .. "|async:verify next state read")
 print("{SENTINEL}")
 """
 
@@ -799,53 +745,6 @@ def parse_governors_response(lines: list[str]) -> GovernorStatus:
         can_appoint=can_appoint,
         appointed=appointed,
         available_to_appoint=available,
-    )
-
-
-def parse_unit_promotions_response(lines: list[str]) -> UnitPromotionStatus:
-    """Parse UNIT|, XP|, and PROMO| lines from build_unit_promotions_query."""
-    unit_id = 0
-    unit_index = 0
-    unit_type = "UNKNOWN"
-    promotions: list[PromotionOption] = []
-    xp = 0
-    xp_needed = 0
-    promotion_count = 0
-
-    for line in lines:
-        if line.startswith("ERR:"):
-            raise ValueError(line[4:])
-        if line.startswith("UNIT|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                unit_id = int(parts[1])
-                unit_index = int(parts[2])
-                unit_type = parts[3]
-        elif line.startswith("XP|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                xp = _int(parts[1])
-                xp_needed = _int(parts[2])
-                promotion_count = int(parts[3])
-        elif line.startswith("PROMO|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                promotions.append(
-                    PromotionOption(
-                        promotion_type=parts[1],
-                        name=parts[2],
-                        description=parts[3],
-                    )
-                )
-
-    return UnitPromotionStatus(
-        unit_id=unit_id,
-        unit_index=unit_index,
-        unit_type=unit_type,
-        promotions=promotions,
-        xp=xp,
-        xp_needed=xp_needed,
-        promotion_count=promotion_count,
     )
 
 

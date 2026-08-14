@@ -954,96 +954,44 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                     hard_blockers.append((blocking_type, enhanced_msg))
                     continue
 
-                # --- Stale promotion notifications ---
-                # GameCore SetPromotion doesn't consume XP or advance level,
-                # so CanPromote() perpetually returns TRUE. Use XP-threshold
-                # formula (matching promote_unit's post-promote dismiss) to
-                # determine if any unit genuinely has enough XP for another
-                # promotion: needed = T1 * (promoCount+1) * (promoCount+2) / 2
+                # --- Unit promotion notifications (non-blocking) ---
+                # Available promotions are surfaced per-unit in the ## Units
+                # section of get_full_game_state (build_units_query), and the
+                # agent applies them via promote_unit (InGame RequestCommand,
+                # which advances the level counter correctly). The engine does
+                # not hard-block end_turn on an available promotion, but if it
+                # does generate this notification, dismiss it so the turn
+                # proceeds — promotions are the agent's choice, not a blocker.
                 if blocking_type == "ENDTURN_BLOCKING_UNIT_PROMOTION":
                     try:
-                        # Step 1 (GameCore): Check XP formula AND zero out stored
-                        # promotions on units that don't genuinely need one.
-                        # ChangeStoredPromotions zeroes the engine counter that
-                        # causes the blocker to regenerate after Dismiss().
-                        check_lines = await gs.conn.execute_read(
+                        await gs.conn.execute_write(
                             f"local me = Game.GetLocalPlayer(); "
-                            f"local anyNeed = false; "
-                            f"local cleared = 0; "
-                            f"for i, u in Players[me]:GetUnits():Members() do "
-                            f"  if u:GetX() ~= -9999 then "
-                            f"    local ok, exp = pcall(function() return u:GetExperience() end); "
-                            f"    if ok and exp then "
-                            f"      local ui = GameInfo.Units[u:GetType()]; "
-                            f'      local promClass = ui and ui.PromotionClass or ""; '
-                            f'      if promClass ~= "" then '
-                            f"        local promoCount = 0; "
-                            f"        for p in GameInfo.UnitPromotions() do "
-                            f"          if p.PromotionClass == promClass and exp:HasPromotion(p.Index) then "
-                            f"            promoCount = promoCount + 1 "
-                            f"          end "
-                            f"        end; "
-                            f"        local t1 = exp:GetExperienceForNextLevel(); "
-                            f"        local xp = exp:GetExperiencePoints(); "
-                            f"        local needed = t1 * (promoCount + 1) * (promoCount + 2) / 2; "
-                            f"        if xp >= needed then "
-                            f"          anyNeed = true "
-                            f"        else "
-                            f"          local stored = 0; "
-                            f"          pcall(function() stored = exp:GetStoredPromotions() end); "
-                            f"          if stored > 0 then "
-                            f"            pcall(function() exp:ChangeStoredPromotions(-stored) end); "
-                            f"            cleared = cleared + 1 "
-                            f"          end "
+                            f"local list = NotificationManager.GetList(me); "
+                            f"if list then "
+                            f"  for _, nid in ipairs(list) do "
+                            f"    local e = NotificationManager.Find(me, nid); "
+                            f"    if e and not e:IsDismissed() then "
+                            f"      local bt = e:GetEndTurnBlocking(); "
+                            f"      if bt and bt == EndTurnBlockingTypes.ENDTURN_BLOCKING_UNIT_PROMOTION then "
+                            f"        pcall(function() NotificationManager.SendActivated(me, nid) end); "
+                            f"        pcall(function() NotificationManager.Dismiss(me, nid) end) "
+                            f"      else "
+                            f"        local tn = ''; "
+                            f"        pcall(function() tn = e:GetTypeName() end); "
+                            f"        if tn == 'NOTIFICATION_UNIT_PROMOTION_AVAILABLE' then "
+                            f"          pcall(function() NotificationManager.Dismiss(me, nid) end) "
                             f"        end "
                             f"      end "
                             f"    end "
                             f"  end "
                             f"end; "
-                            f'print(anyNeed and "NEEDS_PROMO" or ("NO_PROMO_NEEDED|cleared=" .. cleared)); '
                             f'print("{lq.SENTINEL}")'
                         )
-                        needs_promo = any(
-                            "NEEDS_PROMO" == l.strip() for l in check_lines
-                        )
-                        log.debug(
-                            "Promotion blocker: needs_promo=%s (check=%s)",
-                            needs_promo,
-                            [l for l in check_lines if "PROMO" in l or "cleared" in l],
-                        )
-                        if not needs_promo:
-                            # Step 2: InGame dismiss — NotificationManager is InGame-only.
-                            # Dismiss BOTH the end-turn blocker AND the regular notification
-                            # (NOTIFICATION_UNIT_PROMOTION_AVAILABLE) which is a separate
-                            # object that regenerates every turn due to stale CanPromote().
-                            await gs.conn.execute_write(
-                                f"local me = Game.GetLocalPlayer(); "
-                                f"local list = NotificationManager.GetList(me); "
-                                f"if list then "
-                                f"  for _, nid in ipairs(list) do "
-                                f"    local e = NotificationManager.Find(me, nid); "
-                                f"    if e and not e:IsDismissed() then "
-                                f"      local bt = e:GetEndTurnBlocking(); "
-                                f"      if bt and bt == EndTurnBlockingTypes.ENDTURN_BLOCKING_UNIT_PROMOTION then "
-                                f"        pcall(function() NotificationManager.SendActivated(me, nid) end); "
-                                f"        pcall(function() NotificationManager.Dismiss(me, nid) end) "
-                                f"      else "
-                                f"        local tn = ''; "
-                                f"        pcall(function() tn = e:GetTypeName() end); "
-                                f"        if tn == 'NOTIFICATION_UNIT_PROMOTION_AVAILABLE' then "
-                                f"          pcall(function() NotificationManager.Dismiss(me, nid) end) "
-                                f"        end "
-                                f"      end "
-                                f"    end "
-                                f"  end "
-                                f"end; "
-                                f'print("{lq.SENTINEL}")'
-                            )
-                            resolved_any = True
-                            continue
+                        resolved_any = True
+                        continue
                     except Exception:
                         log.debug(
-                            "Promotion notification auto-clear failed", exc_info=True
+                            "Promotion notification dismiss failed", exc_info=True
                         )
                     hard_blockers.append((blocking_type, blocking_msg))
                     continue

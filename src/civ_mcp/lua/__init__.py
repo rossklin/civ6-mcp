@@ -104,14 +104,12 @@ from civ_mcp.lua.governance import (  # noqa: F401
     build_promote_unit,
     build_send_envoy,
     build_set_policies,
-    build_unit_promotions_query,
     build_unit_upgrade_query,
     build_upgrade_unit,
     parse_city_states_response,
     parse_dedications_response,
     parse_governors_response,
     parse_policies_response,
-    parse_unit_promotions_response,
 )
 from civ_mcp.lua.map import (  # noqa: F401
     build_district_advisor_query,
@@ -229,7 +227,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     TurnSnapshot,
     UnclaimedResource,
     UnitInfo,
-    UnitPromotionStatus,
     UnitUpgradeInfo,
     UniqueInfo,
     SpaceProject,

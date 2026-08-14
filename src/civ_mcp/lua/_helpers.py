@@ -169,23 +169,6 @@ local function fmtFlat(arr)
     return s
 end"""
 
-# XP threshold calculation for unit promotions.
-# Expects ``exp`` (unit:GetExperience()), ``promClass`` (PromotionClass string) in scope.
-# Produces: xpPromoCount, xp, xpNeeded.
-# Uses GetExperienceForNextLevel() directly — the game engine already
-# accounts for current level when returning the threshold.
-_LUA_XP_THRESHOLD = """\
-local xpPromoCount = 0
-if promClass ~= "" then
-    for p in GameInfo.UnitPromotions() do
-        if p.PromotionClass == promClass and exp:HasPromotion(p.Index) then
-            xpPromoCount = xpPromoCount + 1
-        end
-    end
-end
-local xp = exp:GetExperiencePoints()
-local xpNeeded = exp:GetExperienceForNextLevel()"""
-
 _LUA_VICTORY_ENABLED = """\
 local _vtypes = {"VICTORY_TECHNOLOGY","VICTORY_CULTURE","VICTORY_RELIGIOUS","VICTORY_DIPLOMATIC","VICTORY_CONQUEST"}
 for _, vt in ipairs(_vtypes) do

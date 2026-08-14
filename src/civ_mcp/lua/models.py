@@ -247,7 +247,7 @@ class UnitInfo:
     combat_strength: int = 0
     ranged_strength: int = 0
     build_charges: int = 0
-    needs_promotion: bool = False
+    available_promotions: list[PromotionOption] = field(default_factory=list)
     can_upgrade: bool = False
     upgrade_target: str = ""
     upgrade_cost: int = 0
@@ -971,19 +971,6 @@ class PromotionOption:
     promotion_type: str
     name: str
     description: str
-
-
-@dataclass
-class UnitPromotionStatus:
-    """Promotions available for a specific unit."""
-
-    unit_id: int
-    unit_index: int
-    unit_type: str
-    promotions: list[PromotionOption] = field(default_factory=list)
-    xp: int = 0
-    xp_needed: int = 0
-    promotion_count: int = 0
 
 
 @dataclass

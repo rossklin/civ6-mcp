@@ -211,7 +211,7 @@ def narrate_units(
         if u.religion:
             short = u.religion.replace("RELIGION_", "")
             religion_flag = f" [{short}]"
-        promo_flag = " **NEEDS PROMOTION**" if u.needs_promotion else ""
+        promo_flag = " **CAN PROMOTE**" if u.available_promotions else ""
         upgrade_flag = ""
         if u.can_upgrade:
             upgrade_flag = f" **CAN UPGRADE to {u.upgrade_target} ({u.upgrade_cost}g)**"
@@ -233,6 +233,14 @@ def narrate_units(
         if u.targets:
             for t in u.targets:
                 lines.append(_format_attack_target(t))
+        if u.available_promotions:
+            for p in u.available_promotions:
+                lines.append(
+                    f"    >> CAN PROMOTE: {p.name} ({p.promotion_type}) — {p.description}"
+                )
+            lines.append(
+                f"    >> Use promote_unit(unit_id={u.unit_id}, promotion_type=<PROMOTION_TYPE>)"
+            )
         if u.valid_improvements:
             lines.append(f"    >> Can build: {', '.join(u.valid_improvements)}")
     if threats:
@@ -1298,16 +1306,6 @@ def narrate_governors(gov: lq.GovernorStatus) -> str:
     lines.append(
         "\nUse appoint_governor/assign_governor/promote_governor(governor_type, promotion_type)."
     )
-    return "\n".join(lines)
-
-
-def narrate_unit_promotions(status: lq.UnitPromotionStatus) -> str:
-    if not status.promotions:
-        return f"No promotions available for {status.unit_type} (id:{status.unit_id})."
-    lines = [f"Promotions for {status.unit_type} (id:{status.unit_id}):"]
-    for p in status.promotions:
-        lines.append(f"  {p.name} ({p.promotion_type}): {p.description}")
-    lines.append("\nUse promote_unit(unit_id, promotion_type) to apply.")
     return "\n".join(lines)
 
 
