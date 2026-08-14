@@ -8,6 +8,7 @@ import pytest
 
 from civ_mcp.lua.overview import parse_gameover_response, parse_overview_response
 from civ_mcp.lua.units import (
+    parse_attack_outcome,
     parse_combat_estimate,
     parse_threat_scan_response,
     parse_units_response,
@@ -162,10 +163,43 @@ class TestParseUnits:
         units = parse_units_response(["too|few|fields"])
         assert len(units) == 0
 
-    def test_targets(self):
+    def test_targets_legacy_bare(self):
+        # Legacy bare "x,y" target form (no estimate) still parses.
         line = "2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|14,6;15,7|0|0|||"
         units = parse_units_response([line])
-        assert units[0].targets == ["14,6", "15,7"]
+        t = units[0].targets
+        assert len(t) == 2
+        assert t[0].x == 14 and t[0].y == 6
+        assert t[1].x == 15 and t[1].y == 7
+        assert t[0].est_damage_to_defender == 0
+
+    def test_targets_with_estimate(self):
+        # New format: eName@x,y~hp:N~att:N~def:N~r:0/1~m:mod,mod
+        tgt = "UNIT_WARRIOR@14,6~hp:100~att:27~def:20~r:0~m:att Battlecry +7,hills +3"
+        line = f"2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
+        units = parse_units_response([line])
+        t = units[0].targets
+        assert len(t) == 1
+        assert t[0].unit_type == "UNIT_WARRIOR"
+        assert t[0].x == 14 and t[0].y == 6
+        assert t[0].hp == 100
+        assert t[0].is_ranged is False
+        # att 27 vs def 20 -> dmg_to_def > 24; melee -> counter-damage > 0
+        assert t[0].est_damage_to_defender > 24
+        assert t[0].est_damage_to_attacker > 0
+        assert "att Battlecry +7" in t[0].modifiers
+        assert "hills +3" in t[0].modifiers
+
+    def test_target_ranged_kill(self):
+        # Ranged attacker, enough damage to kill: is_kill True, no counter-damage.
+        tgt = "UNIT_WARRIOR@14,6~hp:20~att:30~def:15~r:1~m:"
+        line = f"2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
+        units = parse_units_response([line])
+        t = units[0].targets[0]
+        assert t.is_ranged is True
+        assert t.est_damage_to_attacker == 0
+        assert t.est_damage_to_defender >= 20
+        assert t.is_kill is True
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +234,47 @@ class TestParseCombat:
 
     def test_no_estimate_line(self):
         assert parse_combat_estimate(["some other line"], att_cs=20, def_cs=20) is None
+
+
+# ---------------------------------------------------------------------------
+# parse_attack_outcome
+# ---------------------------------------------------------------------------
+
+
+class TestParseAttackOutcome:
+    def test_enemy_killed(self):
+        lines = ["OUTCOME|att_hp:88|att_max:100|enemy:KILLED", "---END---"]
+        outcome = parse_attack_outcome(lines)
+        assert outcome is not None
+        assert outcome.attacker_hp == 88
+        assert outcome.attacker_max == 100
+        assert outcome.enemy_present is False
+
+    def test_enemy_survives(self):
+        lines = ["OUTCOME|att_hp:80|att_max:100|enemy:UNIT_WARRIOR|enemy_hp:31|enemy_max:100"]
+        outcome = parse_attack_outcome(lines)
+        assert outcome is not None
+        assert outcome.enemy_present is True
+        assert outcome.enemy_type == "UNIT_WARRIOR"
+        assert outcome.enemy_hp == 31
+        assert outcome.enemy_max == 100
+        assert outcome.attacker_hp == 80
+
+    def test_city_flag(self):
+        # CITY| line may arrive before or after OUTCOME|; either order sets is_city.
+        lines = ["OUTCOME|att_hp:88|att_max:100|enemy:KILLED", "CITY|1"]
+        outcome = parse_attack_outcome(lines)
+        assert outcome is not None
+        assert outcome.is_city is True
+
+    def test_city_flag_before_outcome(self):
+        lines = ["CITY|1", "OUTCOME|att_hp:88|att_max:100|enemy:KILLED"]
+        outcome = parse_attack_outcome(lines)
+        assert outcome is not None
+        assert outcome.is_city is True
+
+    def test_no_outcome_line(self):
+        assert parse_attack_outcome(["some other line"]) is None
 
 
 # ---------------------------------------------------------------------------

@@ -200,6 +200,39 @@ class GameOverview:
 
 
 @dataclass
+class AttackTarget:
+    """One attackable enemy unit, with a pre-computed combat estimate.
+
+    Populated in the units query so estimates are visible in the game state
+    *before* attacking. The legacy bare ``"x,y"`` string form (no estimate)
+    is still parsed: only ``x``/``y`` are set and the estimate fields stay 0.
+    """
+
+    unit_type: str
+    x: int
+    y: int
+    hp: int = 0
+    est_damage_to_defender: int = 0
+    est_damage_to_attacker: int = 0  # 0 for ranged (no counter-damage)
+    is_ranged: bool = False
+    is_kill: bool = False
+    modifiers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AttackOutcome:
+    """True post-combat state, read from GameCore after an attack resolves."""
+
+    attacker_hp: int
+    attacker_max: int
+    enemy_present: bool  # False when the target was killed
+    enemy_type: str = ""
+    enemy_hp: int = 0
+    enemy_max: int = 0
+    is_city: bool = False  # target tile is a city center (fetch wall HP from InGame)
+
+
+@dataclass
 class UnitInfo:
     unit_id: int
     unit_index: int
@@ -214,7 +247,6 @@ class UnitInfo:
     combat_strength: int = 0
     ranged_strength: int = 0
     build_charges: int = 0
-    targets: list[str] = field(default_factory=list)
     needs_promotion: bool = False
     can_upgrade: bool = False
     upgrade_target: str = ""
@@ -225,6 +257,7 @@ class UnitInfo:
         None  # unit_index of the other unit in the formation, if any
     )
     formation_linked_type: str = ""  # unit type name of linked unit
+    targets: list[AttackTarget] = field(default_factory=list)
 
 
 @dataclass

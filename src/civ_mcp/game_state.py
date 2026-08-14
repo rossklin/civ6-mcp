@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 from civ_mcp import lua as lq
 from civ_mcp.connection import GameConnection
 from civ_mcp.narrate import (
-    narrate_combat_estimate,
     narrate_move_discoveries,
     narrate_settle_candidates,
     narrate_test_trade,
@@ -317,83 +316,68 @@ class GameState:
             await self.dismiss_popup()
         except Exception:
             pass
-        # Pre-attack: run combat estimator
-        estimate_str = ""
-        est: lq.CombatEstimate | None = None
-        try:
-            est_lua = lq.build_combat_estimate_query(unit_index, target_x, target_y)
-            est_lines = await self.conn.execute_write(est_lua)
-            est = lq.parse_combat_estimate(est_lines, 0, 0)
-            if est:
-                estimate_str = narrate_combat_estimate(est) + "\n"
-        except Exception as e:
-            log.debug("Combat estimate failed: %s", e)
         lua = lq.build_attack_unit(unit_index, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
-        # Combat followup: the game engine processes combat asynchronously
-        # after RequestOperation.  Lua state within the same turn frame
-        # does NOT reflect post-combat HP regardless of how long we wait.
-        # Strategy: use the combat estimate as authoritative damage source
-        # and only query the tile to detect if the target was eliminated.
+        # Combat estimates now live in the game state (units section), not here.
+        # Post-combat HP is unreadable from InGame within the same turn (async
+        # combat resolution), but GameCore (execute_read) reflects the true
+        # state once resolved. Poll GameCore for the actual outcome.
         is_melee = result.startswith("MELEE_ATTACK")
+        is_ranged = result.startswith("RANGE_ATTACK")
         is_air = result.startswith("AIR_ATTACK")
-        if result.startswith("RANGE_ATTACK") or is_melee or is_air:
-            pre_hp = _extract_pre_hp(result)
-            est_dmg = est.est_damage_to_defender if est else None
-            local_id = self._local_player_id
-
-            # Brief delay then check if target still exists on the tile
-            await asyncio.sleep(0.3 if not is_melee else 0.5)
-            followup: list[str] = []
+        if not (is_melee or is_ranged or is_air):
+            return result
+        pre_enemy_hp = _extract_pre_hp(result)
+        pre_att_hp = _extract_attacker_pre_hp(result)
+        outcome: lq.AttackOutcome | None = None
+        resolved = False
+        for _ in range(4):
+            await asyncio.sleep(0.4)
             try:
+                out_lines = await self.conn.execute_read(
+                    lq.build_attack_outcome_query(unit_index, target_x, target_y)
+                )
+            except Exception as e:
+                log.debug("Attack outcome read failed: %s", e)
+                continue
+            outcome = lq.parse_attack_outcome(out_lines)
+            if outcome is None:
+                continue
+            if not outcome.enemy_present:
+                resolved = True
+                break  # enemy gone -> killed
+            if pre_enemy_hp is not None and outcome.enemy_hp != pre_enemy_hp:
+                resolved = True
+                break  # enemy took damage
+            if (
+                pre_att_hp is not None
+                and outcome.attacker_hp >= 0
+                and outcome.attacker_hp != pre_att_hp
+            ):
+                resolved = True
+                break  # attacker took damage
+        outcome_str = _format_attack_outcome(
+            outcome, pre_enemy_hp, pre_att_hp, resolved
+        )
+        # City targets: wall/garrison HP comes from InGame (district defense
+        # APIs are InGame-only). Fetch once when the target tile is a city.
+        if outcome and outcome.is_city:
+            try:
+                await asyncio.sleep(0.2)
                 followup = await self.conn.execute_write(
                     lq.build_attack_followup_query(target_x, target_y)
                 )
-            except Exception as e:
-                log.debug("Attack followup read failed: %s", e)
-
-            try:
-                followup_str = _format_attack_followup(followup, local_id)
                 city_def = _extract_city_defense(followup)
-
-                # Check if target was eliminated (no enemy units on tile)
-                enemy_units = [
-                    l
-                    for l in followup
-                    if l.startswith("UNIT|") and f"owner:{local_id}" not in l
-                ]
-                eliminated = not enemy_units
-
-                # Build damage report from estimate (authoritative) or followup
-                post_hp = _extract_post_hp(followup, local_id)
-                damage_info = ""
-                if eliminated and pre_hp is not None:
-                    damage_info = f"|damage dealt:{pre_hp} (killed)"
-                    followup_str = "Target eliminated"
-                elif pre_hp is not None and post_hp is not None and post_hp < pre_hp:
-                    # Followup reflects real change (can happen for city attacks)
-                    damage_info = f"|damage dealt:{pre_hp - post_hp}"
-                elif est_dmg and est_dmg > 0 and pre_hp is not None:
-                    # Followup stale — use estimate as best available
-                    capped_dmg = min(est_dmg, pre_hp)
-                    est_post = pre_hp - capped_dmg
-                    damage_info = f"|est damage dealt:~{capped_dmg}"
-                    followup_str = (
-                        f"~{est_post}/{pre_hp} (estimate — verify with get_units)"
-                    )
-
                 if city_def:
                     w_hp, w_max, g_hp, g_max = city_def
                     if w_max > 0:
-                        damage_info += (
-                            f"|city walls: {w_hp}/{w_max}, garrison: {g_hp}/{g_max}"
-                        )
-
-                result += damage_info + "\n  Post-combat: " + followup_str
+                        outcome_str += f" | walls {w_hp}/{w_max}"
+                    if g_max > 0:
+                        outcome_str += f" | garrison {g_hp}/{g_max}"
             except Exception as e:
-                log.debug("Attack followup formatting failed: %s", e)
-        return estimate_str + result
+                log.debug("City defense followup failed: %s", e)
+        return result + "\n  Post-combat: " + outcome_str
 
     async def city_attack(self, city_id: int, target_x: int, target_y: int) -> str:
         lua = lq.build_city_attack(city_id, target_x, target_y)
@@ -1788,18 +1772,55 @@ def _format_attack_followup(lines: list[str], attacker_owner: int = 0) -> str:
 
 
 def _extract_pre_hp(result: str) -> int | None:
-    """Extract pre-attack enemy HP from attack result line."""
+    """Extract pre-attack enemy HP from the attack result line (``pre_hp:N/``)."""
     import re
 
-    # Ranged/city: pre_hp:80/100
     m = re.search(r"pre_hp:(\d+)/", result)
     if m:
         return int(m.group(1))
-    # Melee: enemy HP:100 -> 80/100
-    m = re.search(r"enemy HP:(\d+) ->", result)
+    return None
+
+
+def _extract_attacker_pre_hp(result: str) -> int | None:
+    """Extract pre-attack attacker HP from the ``your HP:N`` field."""
+    import re
+
+    m = re.search(r"your HP:(\d+)", result)
     if m:
         return int(m.group(1))
     return None
+
+
+def _format_attack_outcome(
+    outcome: lq.AttackOutcome | None,
+    pre_enemy_hp: int | None,
+    pre_att_hp: int | None,
+    resolved: bool,
+) -> str:
+    """Build the human-readable post-combat line from a GameCore outcome read."""
+    if outcome is None:
+        return "outcome unavailable (GameCore read failed) — verify with get_units"
+    parts: list[str] = []
+    if not outcome.enemy_present:
+        if pre_enemy_hp is not None:
+            parts.append(f"enemy HP: {pre_enemy_hp} -> KILLED")
+        else:
+            parts.append("enemy KILLED")
+    else:
+        if pre_enemy_hp is not None:
+            parts.append(
+                f"enemy HP: {pre_enemy_hp} -> {outcome.enemy_hp}/{outcome.enemy_max}"
+            )
+        else:
+            parts.append(f"enemy HP: {outcome.enemy_hp}/{outcome.enemy_max}")
+    if outcome.attacker_hp >= 0:
+        if pre_att_hp is not None:
+            parts.append(f"your HP: {pre_att_hp} -> {outcome.attacker_hp}")
+        else:
+            parts.append(f"your HP: {outcome.attacker_hp}/{outcome.attacker_max}")
+    if not resolved:
+        parts.append("(HP unchanged — combat may not have resolved; verify with get_units)")
+    return " | ".join(parts)
 
 
 def _extract_post_hp(followup_lines: list[str], attacker_owner: int = 0) -> int | None:

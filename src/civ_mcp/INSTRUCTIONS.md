@@ -331,7 +331,7 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 | Action | Effect | Notes |
 |--------|--------|-------|
 | `move_unit` | Move to tile | unit_index, target_x, target_y required |
-| `attack_unit` | Attack enemy | unit_index, target_x, target_y; shows damage estimate; melee/ranged auto-detected |
+| `attack_unit` | Attack enemy | unit_index, target_x, target_y; shows actual post-combat outcome (estimates are shown in the game state units section); melee/ranged auto-detected |
 | `fortify_unit` | +4 defense, heals | Military only |
 | `heal_unit` | Fortify until full HP | Auto-wakes at full HP |
 | `alert_unit` | Sleep, wake on enemy | Sentry use |

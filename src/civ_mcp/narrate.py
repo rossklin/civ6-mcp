@@ -111,6 +111,31 @@ def narrate_overview(ov: lq.GameOverview) -> str:
 _RANK_NAMES = {1: "Recruit", 2: "Agent", 3: "Special Agent", 4: "Senior Agent"}
 
 
+def _format_attack_target(t: lq.AttackTarget) -> str:
+    """Format one attackable target with its combat estimate.
+
+    Full detail: damage to defender, kill flag, counter-damage (melee only),
+    and key modifiers. Legacy bare ``x,y`` targets (no estimate) render plain.
+    """
+    # Legacy bare target (only x,y populated, no unit_type/estimate)
+    if not t.unit_type and t.est_damage_to_defender == 0 and t.hp == 0:
+        return f"    >> CAN ATTACK: {t.x},{t.y}"
+    parts = [f"    >> CAN ATTACK: {t.unit_type} at ({t.x},{t.y})"]
+    if t.hp > 0:
+        parts.append(f" HP:{t.hp}")
+    if t.est_damage_to_defender > 0:
+        parts.append(f" — est ~{t.est_damage_to_defender} dmg")
+        if t.is_kill:
+            parts.append(" [KILL]")
+        if t.is_ranged:
+            parts.append(" (ranged)")
+        elif t.est_damage_to_attacker > 0:
+            parts.append(f", take ~{t.est_damage_to_attacker}")
+    if t.modifiers:
+        parts.append(f" ({', '.join(t.modifiers)})")
+    return "".join(parts)
+
+
 def narrate_spies(spies: list[lq.SpyInfo]) -> str:
     if not spies:
         return "No spies available yet."
@@ -207,7 +232,7 @@ def narrate_units(
             )
         if u.targets:
             for t in u.targets:
-                lines.append(f"    >> CAN ATTACK: {t}")
+                lines.append(_format_attack_target(t))
         if u.valid_improvements:
             lines.append(f"    >> Can build: {', '.join(u.valid_improvements)}")
     if threats:

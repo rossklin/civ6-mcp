@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
+    _LUA_COMBAT_ESTIMATE,
     _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
@@ -11,6 +12,8 @@ from civ_mcp.lua._helpers import (
     _lua_get_unit_gamecore,
 )
 from civ_mcp.lua.models import (
+    AttackOutcome,
+    AttackTarget,
     BuilderInfo,
     BuilderTask,
     CombatEstimate,
@@ -24,6 +27,8 @@ def build_units_query() -> str:
     """InGame context: lists all units with upgrade and builder improvement info."""
     return """
 local id = Game.GetLocalPlayer()
+{COMBAT_ESTIMATE}
+local promoBonuses = buildPromoBonuses()
 local tileUnits = {}
 for i, u in Players[id]:GetUnits():Members() do
     local x, y = u:GetX(), u:GetY()
@@ -93,7 +98,11 @@ for i, u in Players[id]:GetUnits():Members() do
                                         local eInfo = GameInfo.Units[other:GetType()]
                                         local eName = eInfo and eInfo.UnitType or "UNKNOWN"
                                         local eHP = other:GetMaxDamage() - other:GetDamage()
-                                        table.insert(tgtList, eName .. "@" .. tx .. "," .. ty .. "(" .. eHP .. "hp)")
+                                        local eCombat = eInfo and eInfo.Combat or 0
+                                        local eAtt, eDef, eR, eMods = computeEstimate(u, other, tx, ty, x, y, cs, rs, eCombat, promoBonuses, id)
+                                        local modStr = ""
+                                        if eMods and #eMods > 0 then modStr = "~m:" .. table.concat(eMods, ",") end
+                                        table.insert(tgtList, eName .. "@" .. tx .. "," .. ty .. "~hp:" .. eHP .. "~att:" .. eAtt .. "~def:" .. eDef .. "~r:" .. (eR and "1" or "0") .. modStr)
                                     end
                                 end
                             end
@@ -208,7 +217,7 @@ for key, group in pairs(tileUnits) do
     end
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{COMBAT_ESTIMATE}", _LUA_COMBAT_ESTIMATE)
 
 
 def build_move_unit(unit_index: int, target_x: int, target_y: int) -> str:
@@ -429,23 +438,10 @@ else
         print("ERR:STOPPED_SHORT|Unit moved to (" .. newX .. "," .. newY .. ") but could not reach target at ({target_x},{target_y}) — " .. newDist .. " tiles away. Movement exhausted by terrain. Try again next turn from closer position.")
         print("{SENTINEL}"); return
     end
-    -- Try to read post-combat state (may fail if units moved/died)
-    local myAfterHP = myHP
-    local ok1, _ = pcall(function() myAfterHP = unit:GetMaxDamage() - unit:GetDamage() end)
-    local enemyAfterHP = 0
-    local enemyAlive = false
-    local ok2, _ = pcall(function()
-        local d = enemy:GetDamage()
-        if d ~= nil then enemyAfterHP = enemy:GetMaxDamage() - d; enemyAlive = true end
-    end)
-    local report = "OK:MELEE_ATTACK|target:" .. enemyName .. " at ({target_x},{target_y})"
-    if enemyAlive then
-        report = report .. "|enemy HP:" .. enemyHP .. " -> " .. enemyAfterHP .. "/" .. enemyMaxHP
-    else
-        report = report .. "|enemy HP:" .. enemyHP .. " -> KILLED"
-    end
-    report = report .. "|your HP:" .. myHP .. " -> " .. myAfterHP .. " CS:" .. myCS
-    print(report)
+    -- Post-combat HP is NOT readable in InGame state within the same turn
+    -- (combat resolves asynchronously). Only pre-attack HP is reported here;
+    -- the caller reads the true post-combat state from GameCore.
+    print("OK:MELEE_ATTACK|target:" .. enemyName .. " at ({target_x},{target_y})|pre_hp:" .. enemyHP .. "/" .. enemyMaxHP .. "|your HP:" .. myHP .. "|CS:" .. myCS)
 end
 print("{SENTINEL}")
 """
@@ -500,6 +496,101 @@ end
 if not found then print("EMPTY") end
 print("{SENTINEL}")
 """
+
+
+def build_attack_outcome_query(
+    attacker_unit_index: int, target_x: int, target_y: int
+) -> str:
+    """GameCore context: read true post-combat HP after an attack resolves.
+
+    InGame state does not reflect post-combat HP within the same turn, but
+    GameCore (authoritative sim state) does. Reads the attacker's real HP and
+    any enemy unit remaining on the target tile (our own units on the tile are
+    skipped — after a melee kill the attacker advances onto the target tile).
+
+    Emits ``OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N`` or
+    ``OUTCOME|att_hp:N|att_max:N|enemy:KILLED`` when no enemy remains, plus
+    ``CITY|1`` when the target tile is a city center (caller fetches wall HP
+    from InGame via build_attack_followup_query).
+    """
+    return f"""
+local me = Game.GetLocalPlayer()
+local attacker = Players[me]:GetUnits():FindID({attacker_unit_index})
+local attHP, attMax = -1, -1
+if attacker then
+    attMax = attacker:GetMaxDamage()
+    attHP = attMax - attacker:GetDamage()
+end
+local enemyFound = false
+local enemyName = "KILLED"
+local enemyHP, enemyMax = 0, 0
+for i = 0, 63 do
+    if Players[i] and Players[i]:IsAlive() and i ~= me then
+        for _, u in Players[i]:GetUnits():Members() do
+            if u:GetX() == {target_x} and u:GetY() == {target_y} then
+                local entry = GameInfo.Units[u:GetType()]
+                enemyName = entry and entry.UnitType or "UNKNOWN"
+                enemyMax = u:GetMaxDamage()
+                enemyHP = enemyMax - u:GetDamage()
+                enemyFound = true
+                break
+            end
+        end
+    end
+    if enemyFound then break end
+end
+local out = "OUTCOME|att_hp:" .. attHP .. "|att_max:" .. attMax .. "|enemy:"
+if enemyFound then
+    out = out .. enemyName .. "|enemy_hp:" .. enemyHP .. "|enemy_max:" .. enemyMax
+else
+    out = out .. "KILLED"
+end
+print(out)
+local plot = Map.GetPlot({target_x}, {target_y})
+if plot and plot:IsCity() then print("CITY|1") end
+print("{SENTINEL}")
+"""
+
+
+def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
+    """Parse OUTCOME| line (and optional CITY|) from build_attack_outcome_query."""
+    outcome: AttackOutcome | None = None
+    is_city = False
+    for line in lines:
+        if line.startswith("OUTCOME|"):
+            # OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N
+            # OUTCOME|att_hp:N|att_max:N|enemy:KILLED
+            parts = line.split("|")
+            fields: dict[str, str] = {}
+            for p in parts[1:]:
+                if ":" in p:
+                    k, _, v = p.partition(":")
+                    fields[k] = v
+            att_hp = int(fields.get("att_hp", "-1") or "-1")
+            att_max = int(fields.get("att_max", "-1") or "-1")
+            enemy = fields.get("enemy", "KILLED")
+            if enemy == "KILLED" or "enemy_hp" not in fields:
+                outcome = AttackOutcome(
+                    attacker_hp=att_hp,
+                    attacker_max=att_max,
+                    enemy_present=False,
+                    is_city=is_city,
+                )
+            else:
+                outcome = AttackOutcome(
+                    attacker_hp=att_hp,
+                    attacker_max=att_max,
+                    enemy_present=True,
+                    enemy_type=enemy,
+                    enemy_hp=int(fields["enemy_hp"] or "0"),
+                    enemy_max=int(fields.get("enemy_max", "0") or "0"),
+                    is_city=is_city,
+                )
+        elif line.startswith("CITY|"):
+            is_city = True
+            if outcome is not None:
+                outcome.is_city = True
+    return outcome
 
 
 def parse_blocked_diagnostic(lines: list[str]) -> str:
@@ -559,154 +650,32 @@ local defType = eInfo and eInfo.UnitType or "UNKNOWN"
 local defCS = eInfo and eInfo.Combat or 0
 local enemyHP = enemy:GetMaxDamage() - enemy:GetDamage()
 local myHP = unit:GetMaxDamage() - unit:GetDamage()
--- Build promotion -> CS bonus lookup table
-local promoBonuses = {{}}
-pcall(function()
-    for pm in GameInfo.UnitPromotionModifiers() do
-        local mod = GameInfo.Modifiers[pm.ModifierId]
-        if mod and mod.ModifierType == "MODIFIER_UNIT_ADJUST_COMBAT_STRENGTH" then
-            for arg in GameInfo.ModifierArguments() do
-                if arg.ModifierId == pm.ModifierId and arg.Name == "Amount" then
-                    local val = tonumber(arg.Value) or 0
-                    if val ~= 0 then
-                        if not promoBonuses[pm.UnitPromotionType] then
-                            promoBonuses[pm.UnitPromotionType] = {{}}
-                        end
-                        table.insert(promoBonuses[pm.UnitPromotionType], {{
-                            amount = val,
-                            name = pm.ModifierId
-                        }})
-                    end
-                end
-            end
-        end
-    end
-end)
--- Sum promotion bonuses for a unit
-local function getPromoBonuses(u)
-    local total = 0
-    local parts = {{}}
-    local exp = u:GetExperience()
-    for promoType, infos in pairs(promoBonuses) do
-        local promoRow = GameInfo.UnitPromotions[promoType]
-        if promoRow then
-            local ok, has = pcall(function() return exp:HasPromotion(promoRow.Index) end)
-            if ok and has then
-                for _, info in ipairs(infos) do
-                    total = total + info.amount
-                    local short = info.name:gsub("MODIFIER_", "")
-                    table.insert(parts, short .. " " .. (info.amount > 0 and "+" or "") .. info.amount)
-                end
-            end
-        end
-    end
-    return total, parts
-end
--- Gather modifiers
-local mods = {{}}
-local defModTotal = 0
-local attModTotal = 0
--- Attacker promotion bonuses
-local attPromoBonus, attPromoMods = getPromoBonuses(unit)
-if attPromoBonus ~= 0 then
-    attModTotal = attModTotal + attPromoBonus
-    for _, m in ipairs(attPromoMods) do table.insert(mods, "att " .. m) end
-end
--- Defender promotion bonuses
-local defPromoBonus, defPromoMods = getPromoBonuses(enemy)
-if defPromoBonus ~= 0 then
-    defModTotal = defModTotal + defPromoBonus
-    for _, m in ipairs(defPromoMods) do table.insert(mods, "def " .. m) end
-end
--- Defender fortified?
-local ok1, ft = pcall(function() return enemy:GetFortifyTurns() end)
-if ok1 and ft and ft > 0 then
-    local bonus = math.min(ft * 3, 6)
-    table.insert(mods, "fortified +" .. bonus)
-    defModTotal = defModTotal + bonus
-end
--- Defender on hills?
-local tgtPlot = Map.GetPlot({target_x}, {target_y})
-if tgtPlot and tgtPlot:IsHills() then
-    table.insert(mods, "hills +3")
-    defModTotal = defModTotal + 3
-end
--- Forest/jungle defense bonus
-if tgtPlot then
-    local feat = tgtPlot:GetFeatureType()
-    if feat >= 0 then
-        local fInfo = GameInfo.Features[feat]
-        if fInfo and (fInfo.FeatureType == "FEATURE_FOREST" or fInfo.FeatureType == "FEATURE_JUNGLE") then
-            table.insert(mods, fInfo.FeatureType:gsub("FEATURE_",""):lower() .. " +3")
-            defModTotal = defModTotal + 3
-        end
-    end
-end
--- River crossing penalty (attacker crosses river for melee)
-if not isRanged and tgtPlot then
-    local attPlot = Map.GetPlot(ux, uy)
-    if attPlot and tgtPlot:IsRiverCrossingToPlot(attPlot) then
-        table.insert(mods, "river -2")
-        attModTotal = attModTotal - 2
-    end
-end
--- Flanking: count our units adjacent to defender (excluding attacker)
-local flankBonus = 0
-if not isRanged then
-    local enemyOwner = enemy:GetOwner()
-    for dy = -1, 1 do for dx = -1, 1 do
-        if dx ~= 0 or dy ~= 0 then
-            local fx, fy = {target_x} + dx, {target_y} + dy
-            if not (fx == ux and fy == uy) then
-                local adjUnits = Map.GetUnitsAt(fx, fy)
-                if adjUnits then
-                    for adjU in adjUnits:Units() do
-                        if adjU:GetOwner() == me then
-                            local adjInfo = GameInfo.Units[adjU:GetType()]
-                            if adjInfo and (adjInfo.Combat or 0) > 0 then
-                                flankBonus = flankBonus + 2
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end end
-    if flankBonus > 0 then
-        table.insert(mods, "flank +" .. flankBonus)
-        attModTotal = attModTotal + flankBonus
-    end
-end
--- Support: count defender's adjacent friendlies
-local supportBonus = 0
-if not isRanged then
-    local enemyOwner = enemy:GetOwner()
-    for dy = -1, 1 do for dx = -1, 1 do
-        if dx ~= 0 or dy ~= 0 then
-            local sx, sy = {target_x} + dx, {target_y} + dy
-            local adjUnits = Map.GetUnitsAt(sx, sy)
-            if adjUnits then
-                for adjU in adjUnits:Units() do
-                    if adjU:GetOwner() == enemyOwner and adjU ~= enemy then
-                        local adjInfo = GameInfo.Units[adjU:GetType()]
-                        if adjInfo and (adjInfo.Combat or 0) > 0 then
-                            supportBonus = supportBonus + 2
-                        end
-                    end
-                end
-            end
-        end
-    end end
-    if supportBonus > 0 then
-        table.insert(mods, "support +" .. supportBonus)
-        defModTotal = defModTotal + supportBonus
-    end
-end
-local effDefCS = defCS + defModTotal
-effAttCS = effAttCS + attModTotal
+{_LUA_COMBAT_ESTIMATE}
+local promoBonuses = buildPromoBonuses()
+local effAttCS, effDefCS, isRanged, mods = computeEstimate(unit, enemy, {target_x}, {target_y}, ux, uy, attCS, attRS, defCS, promoBonuses, me)
 print("ESTIMATE|" .. attType .. "|" .. defType .. "|" .. effAttCS .. "|" .. effDefCS .. "|" .. (isRanged and "1" or "0") .. "|" .. table.concat(mods, ";") .. "|" .. myHP .. "|" .. enemyHP)
 print("{SENTINEL}")
 """
+
+
+def compute_damages(eff_att: int, eff_def: int, is_ranged: bool) -> tuple[int, int]:
+    """Civ 6 damage formula: BASE * 10^((att-def)/30), BASE=24.
+
+    Returns ``(damage_to_defender, damage_to_attacker)``. Ranged attacks deal
+    no counter-damage (attacker damage is 0).
+    """
+    base_damage = 24
+    if eff_att > 0 and eff_def > 0:
+        dmg_to_def = base_damage * (10 ** ((eff_att - eff_def) / 30))
+        dmg_to_att = (
+            base_damage * (10 ** ((eff_def - eff_att) / 30))
+            if not is_ranged
+            else 0
+        )
+    else:
+        dmg_to_def = 0
+        dmg_to_att = 0
+    return int(round(dmg_to_def)), int(round(dmg_to_att))
 
 
 def parse_combat_estimate(
@@ -724,19 +693,7 @@ def parse_combat_estimate(
             mods = [m for m in p[6].split(";") if m]
             my_hp = int(p[7])
             enemy_hp = int(p[8])
-            # Civ 6 damage formula: BASE * 10^((att-def)/30)
-
-            base_damage = 24
-            if eff_att > 0 and eff_def > 0:
-                dmg_to_def = base_damage * (10 ** ((eff_att - eff_def) / 30))
-                dmg_to_att = (
-                    base_damage * (10 ** ((eff_def - eff_att) / 30))
-                    if not is_ranged
-                    else 0
-                )
-            else:
-                dmg_to_def = 0
-                dmg_to_att = 0
+            dmg_to_def, dmg_to_att = compute_damages(eff_att, eff_def, is_ranged)
             return CombatEstimate(
                 attacker_type=p[1],
                 defender_type=p[2],
@@ -744,8 +701,8 @@ def parse_combat_estimate(
                 defender_cs=eff_def,
                 is_ranged=is_ranged,
                 modifiers=mods,
-                est_damage_to_defender=int(round(dmg_to_def)),
-                est_damage_to_attacker=int(round(dmg_to_att)),
+                est_damage_to_defender=dmg_to_def,
+                est_damage_to_attacker=dmg_to_att,
                 defender_hp=enemy_hp,
                 attacker_hp=my_hp,
             )
@@ -1427,6 +1384,74 @@ print("{SENTINEL}")
 """
 
 
+def _parse_attack_target(token: str) -> AttackTarget:
+    """Parse one target token from the units query into an AttackTarget.
+
+    Formats (most-derived first):
+      new:   ``eName@tx,ty~hp:EHP~att:N~def:N~r:0~m:mod1,mod2``
+      old:   ``eName@tx,ty(EHP hp)``
+      legacy:``tx,ty``  (bare — tests only; no estimate)
+    """
+    # New format: carries estimate primitives after '~'
+    if "~" in token:
+        head, *rest = token.split("~")
+        # head = "eName@tx,ty"
+        e_name, _, coord = head.partition("@")
+        coords = coord.split(",")
+        if len(coords) != 2:
+            return AttackTarget(unit_type="", x=0, y=0)
+        tx, ty = int(coords[0]), int(coords[1])
+        fields: dict[str, str] = {}
+        mods: list[str] = []
+        for part in rest:
+            if ":" not in part:
+                continue
+            k, _, v = part.partition(":")
+            if k == "m":
+                mods = [m for m in v.split(",") if m]
+            else:
+                fields[k] = v
+        hp = int(fields.get("hp", "0") or "0")
+        att = int(fields.get("att", "0") or "0")
+        df = int(fields.get("def", "0") or "0")
+        is_ranged = fields.get("r", "0") == "1"
+        dmg_def, dmg_att = compute_damages(att, df, is_ranged)
+        return AttackTarget(
+            unit_type=e_name,
+            x=tx,
+            y=ty,
+            hp=hp,
+            est_damage_to_defender=dmg_def,
+            est_damage_to_attacker=dmg_att,
+            is_ranged=is_ranged,
+            is_kill=dmg_def >= hp if hp > 0 else False,
+            modifiers=mods,
+        )
+    # Old format: eName@tx,ty(EHP hp)
+    if "@" in token:
+        e_name, _, coord = token.partition("@")
+        # coord like "23,11(53hp)"
+        coord = coord.replace("(hp)", "")
+        hp = 0
+        if "(" in coord:
+            coord, _, hp_part = coord.partition("(")
+            digits = "".join(c for c in hp_part if c.isdigit())
+            if digits:
+                hp = int(digits)
+        coords = coord.split(",")
+        if len(coords) != 2:
+            return AttackTarget(unit_type=e_name, x=0, y=0)
+        return AttackTarget(unit_type=e_name, x=int(coords[0]), y=int(coords[1]), hp=hp)
+    # Legacy bare: tx,ty
+    coords = token.split(",")
+    if len(coords) == 2:
+        try:
+            return AttackTarget(unit_type="", x=int(coords[0]), y=int(coords[1]))
+        except ValueError:
+            pass
+    return AttackTarget(unit_type=token, x=0, y=0)
+
+
 def parse_units_response(lines: list[str]) -> list[UnitInfo]:
     units = []
     # Pass 1: collect FORMATION| lines first (they appear after unit lines in output)
@@ -1453,7 +1478,11 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
         rs = int(parts[8]) if len(parts) > 8 else 0
         charges = int(parts[9]) if len(parts) > 9 else 0
         targets_raw = parts[10] if len(parts) > 10 else ""
-        targets = [t for t in targets_raw.split(";") if t] if targets_raw else []
+        targets = (
+            [_parse_attack_target(t) for t in targets_raw.split(";") if t]
+            if targets_raw
+            else []
+        )
         needs_promo = parts[11] == "1" if len(parts) > 11 else False
         can_upgrade = parts[12] == "1" if len(parts) > 12 else False
         upgrade_target = parts[13] if len(parts) > 13 else ""
