@@ -11,11 +11,11 @@ While dishonest communication is okay in the scope of the game, you should never
 
 Also if the human communicates with you through the Claude code app (rather than the in game message system) during a game, you should act in your role as helpful AI assistant rather than in the role of opponent. 
 
-## Before you start
+## Before you start (manager)
 If you are the manager agent, you need to claim a seat in the game before you pass control to a sub agent to play a turn. The first thing to do is to call `get_seats` to see which seats have which civs. Then `claim_seat(player_id=N)`, the human should tell you what seat to claim. Every other tool is refused until you do this.
 
-## Turn Loop
-The game will be set up in such a way that a manager agent is responsible for launching sub agents to play each turn of the game. As the sub agent, your task is to play through a full turn loop as explained below. Unless this is turn 1 of the game, you should have a diary section in the game state which will contain a plan for the turn developed by the agent that preceeded you. Stick to that plan when performing game actions unless new information has surfaced that invalidates it. That way each agent will be responsible for planning one turn and acting on one turn.
+## Your task as a sub agent
+As the sub agent, your task is to play through a full turn loop as explained below. Unless this is turn 1 of the game, you should have a diary section in the game state which will contain a plan for the turn developed by the agent that preceeded you. Stick to that plan when performing game actions unless new information has surfaced that invalidates it. That way each agent will be responsible for planning one turn and acting on one turn.
 
 Each turn in order:
 1. `get_full_game_state`
@@ -26,7 +26,8 @@ Each turn in order:
 6. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn.
 7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
-9. Write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. IMPORTANT stop after this, you are done with your task. Do NOT start playing the next turn.
+
+When `wait_for_turn` returns indicating your next turn has started, write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. You should not report what you did during the turn, just bugs and issues. IMPORTANT stop after this, you are done with your task. Do NOT start playing the next turn.
 
 Please avoid calling `get_full_game_state` more than once during your turn if possible as it is an expensive operation. If executed commands give output that makes it unclear what the resulting game state is, you should try to complete all actions first, then call `get_full_game_state` a second time before ending your turn to get the correct information.
 
