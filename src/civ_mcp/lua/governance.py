@@ -356,7 +356,7 @@ if availIdxs then
     end
 end
 if not (canStart and allowed) then
-    {_bail_lua('"ERR:CANNOT_PROMOTE|Unit cannot receive " .. promo.UnitPromotionType .. " (insufficient XP, wrong class, missing prereq, or already at max level)"')}
+    {_bail_lua('"ERR:CANNOT_PROMOTE|Unit cannot receive " .. promo.UnitPromotionType .. " ( no movement points, insufficient XP, wrong class, missing prereq, or already at max level)"')}
 end
 local tParameters = {{}}
 tParameters[UnitCommandTypes.PARAM_PROMOTION_TYPE] = promo.Index

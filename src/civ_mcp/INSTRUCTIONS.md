@@ -238,7 +238,7 @@ The diary is your persistent memory across sessions and turns, it is what allows
 ## Strategic Patterns
 
 ### Moving units
-Moving into a tile costs movement points depending on the terrain and features. Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit which hasn't moved yet can always move into an adjacent tile regardless of cost, but once it has moved it can't enter an adjacent tile unless it has sufficient points left. Map tiles show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route units along roads when possible.
+Moving into a tile costs movement points depending on the terrain and features. Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit which hasn't moved yet can always move into an adjacent tile regardless of cost, but once it has moved it can't enter an adjacent tile unless it has sufficient points left. Map tiles show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route units along roads when possible. Attacking causes a unit to loose all movement points.
 
 Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort.
 

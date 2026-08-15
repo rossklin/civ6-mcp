@@ -1090,7 +1090,7 @@ if UnitManager.CanStartOperation(unit, healHash, nil, nil) then
     UnitManager.RequestOperation(unit, healHash, {{}})
     print("OK:HEALING|HP:" .. hp .. "/" .. maxHP)
 else
-    {_bail("ERR:CANNOT_HEAL|Unit cannot fortify-until-healed")}
+    {_bail("ERR:CANNOT_HEAL|Unit cannot fortify-until-healed (maybe already fortified?)")}
 end
 print("{SENTINEL}")
 """
