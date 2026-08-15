@@ -116,7 +116,7 @@ Units:
     delete_unit(unit_index)
     enter_formation(unit_index, target_unit_index) — join escort formation
     exit_formation(unit_index)
-    promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT. Available promotions (name, type, description) are shown per-unit in the Units section of get_full_game_state; add promote_unit to your command batch.
+    promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT. Available promotions (name, type, description) are shown per-unit in the Units section of get_full_game_state; add promote_unit to your command batch. Will heal the unit.
     upgrade_unit(unit_id)
     check_unit_upgrade(unit_id) — returns upgrade cost/availability
 
