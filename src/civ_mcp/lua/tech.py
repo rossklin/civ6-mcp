@@ -18,7 +18,7 @@ def _load_build_techs_civics_query_template() -> str:
     """Read and cache the build_tech_civics_query Lua template from disk."""
     global _BUILD_TECHS_CIVICS_QUERY_TEMPLATE
     if _BUILD_TECHS_CIVICS_QUERY_TEMPLATE is None:
-        _BUILD_TECHS_CIVICS_QUERY_TEMPLATE = Path(__file__).resolve().parent / "build_tech_civics_query.lua".read_text(encoding="utf-8")
+        _BUILD_TECHS_CIVICS_QUERY_TEMPLATE = (Path(__file__).resolve().parent / "build_tech_civics_query.lua").read_text(encoding="utf-8")
     return _BUILD_TECHS_CIVICS_QUERY_TEMPLATE
 
 def build_tech_civics_query() -> str:
