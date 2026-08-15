@@ -1,6 +1,6 @@
 # Civ 6 MCP — Agent Reference
 
-An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules. This game is shared: a human is playing one civ in the game's own UI and you (plus possibly other agents) play rival civs, taking turns in order. One agent will be the manager and assign sub agents to play individual game turns.
+An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules. This game is shared: a human is playing one civ in the game's own UI and you (plus possibly other agents) play rival civs, taking turns in order. One agent will be the manager and assign sub agents to play individual game turns. We will refer to the human and agent controlled players as "managed" players, as opposed to players controlled by the built in AI.
 
 This MCP server is under development and still has bugs and issues. If you have issues interacting with the game, don't spend time trying to solve them, just note it and continue your turn, then include it in your issue report at end of turn.
 
@@ -492,3 +492,6 @@ get_pantheon_beliefs
 get_religion_beliefs
 get_dedications
 get_trade_destinations
+
+## Note on a development issue
+There is currently an issue where if the built in AI sends a deal proposal to a managed player when that player is off the clock, the built in AI will also respond to the deal in place of the managed player. If you notice for example that your notes indicate you are in the middle of launching an attack against a built in AI player, but the game state says you are at peace, that means the built in AI brokered a peace deal with your civ behind your back when it was not your turn. Currently there is no solution for this issue so you will just have to accept it as part of the game.
