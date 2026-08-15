@@ -822,7 +822,8 @@ for i = 0, 62 do
                     elseif iType == DealItemTypes.AGREEMENTS then
                         typeName = "AGREEMENT"
                         if subType == DealAgreementTypes.OPEN_BORDERS then itemName = "Open Borders"
-                        elseif subType == DealAgreementTypes.JOINT_WAR then itemName = "Joint War"
+                        elseif subType == DealAgreementTypes.JOINT_WAR then 
+                            itemName = "Joint War: " .. valueType
                         elseif subType == DealAgreementTypes.ALLIANCE then
                             local aNames = {"Research","Cultural","Economic","Military","Religious"}
                             itemName = (valueType >= 0 and valueType < 5 and aNames[valueType+1] or "Unknown") .. " Alliance"
