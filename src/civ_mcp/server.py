@@ -2466,8 +2466,7 @@ async def update_diary(
     except Exception:
         log.warning("update_diary: failed to capture overview", exc_info=True)
 
-    run_id = _get_logger(ctx).session_id
-    path = _diary_path(civ_type, seed, run_id)
+    path = _diary_path(civ_type, seed)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     ntp = next_turn_plan.strip()
