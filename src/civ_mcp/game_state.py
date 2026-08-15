@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from civ_mcp import lua as lq
 from civ_mcp.connection import GameConnection
 from civ_mcp.narrate import (
+    narrate_goody_rewards,
     narrate_move_discoveries,
     narrate_settle_candidates,
     narrate_test_trade,
@@ -230,6 +231,24 @@ class GameState:
             await self.dismiss_popup()
         except Exception:
             pass
+        # Pre-move: install the tribal-village (goody hut) reward listener and
+        # snapshot the reward sequence. Best-effort — never blocks the move.
+        # The listener is idempotent and re-installs after a save load, so this
+        # also recovers from a recycled Lua state.
+        goody_before_seq: int = -1
+        goody_expect: bool = False
+        try:
+            snap_lines = await self.conn.execute_read(
+                lq.build_goody_snapshot_query(target_x, target_y)
+            )
+            for sline in snap_lines:
+                if sline.startswith("GOODY_SEQ|"):
+                    sp = sline.split("|")
+                    goody_before_seq = int(sp[1])
+                    goody_expect = len(sp) > 2 and sp[2] == "1"
+                    break
+        except Exception:
+            log.debug("Goody snapshot failed", exc_info=True)
         lua = lq.build_move_unit(unit_index, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
@@ -274,6 +293,40 @@ class GameState:
                         break
             except Exception:
                 pass
+        # Post-move: capture any tribal-village (goody hut) reward the unit
+        # received. The listener (installed above) logs each reward with a
+        # monotonic seq; we diff against the pre-move snapshot. The reward
+        # event fires during sim resolution and can lag the position read by a
+        # frame, so when the unit moved onto a known goody hut we poll briefly.
+        if goody_before_seq >= 0 and "|BLOCKED" not in result and (
+            result.startswith("MOVING_TO") or result.startswith("CAPTURE_MOVE")
+        ):
+            try:
+                rewards: list[lq.GoodyReward] = []
+                attempts = 4 if goody_expect else 1
+                for _ in range(attempts):
+                    glog_lines = await self.conn.execute_read(
+                        lq.build_read_goody_log(goody_before_seq)
+                    )
+                    rewards = lq.parse_goody_log(glog_lines)
+                    if rewards or not goody_expect:
+                        break
+                    await asyncio.sleep(0.15)
+                # Attribute to this unit by index (event passes either the full
+                # unit ID or the bare index; % 65536 normalizes both). Fall back
+                # to all new rewards if none match — during our turn only the
+                # commanded unit is moving, so any new reward is ours.
+                mine = [
+                    r
+                    for r in rewards
+                    if (r.unit_id % 65536) == (unit_index % 65536)
+                    or r.unit_id == unit_index
+                ]
+                reward_text = narrate_goody_rewards(mine if mine else rewards)
+                if reward_text:
+                    result += "\n" + reward_text
+            except Exception:
+                log.debug("Goody reward capture failed", exc_info=True)
         # Post-move: visibility diff for discovery feedback
         blocked = "|BLOCKED" in result
         if not blocked and self.spatial is not None and self.spatial._revealed_seeded:

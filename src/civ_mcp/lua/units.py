@@ -10,6 +10,7 @@ from civ_mcp.lua._helpers import (
     _bail_lua,
     _lua_get_unit,
     _lua_get_unit_gamecore,
+    load_lua_template,
 )
 from civ_mcp.lua.models import (
     AttackOutcome,
@@ -17,6 +18,7 @@ from civ_mcp.lua.models import (
     BuilderInfo,
     BuilderTask,
     CombatEstimate,
+    GoodyReward,
     PathingEstimate,
     PromotionOption,
     ThreatInfo,
@@ -292,6 +294,116 @@ local tag = hasHostile and "OK:CAPTURE_MOVE|" or "OK:MOVING_TO|"
 print(tag .. {target_x} .. "," .. {target_y} .. "|from:" .. fromX .. "," .. fromY)
 print("{SENTINEL}")
 """
+
+
+# ── Tribal village (goody hut) reward capture ─────────────────────────────
+#
+# Civ 6 grants a reward when a unit enters a tribal village
+# (IMPROVEMENT_GOODY_HUT, RemoveOnEntry). The reward subtype is chosen in C++
+# and exposed to Lua only through the transient ``GameEvents.UnitTriggerGoodyHut``
+# event — there is no player API to query the last reward. So we install a
+# persistent listener (GameCore context, same pattern as the turn-handoff
+# handler) that logs each reward with a monotonic sequence number. ``move_unit``
+# snapshots the sequence before issuing the move and diffs afterward.
+#
+# Reward amounts below are the base values from GoodyHuts.xml / Expansion2; the
+# engine scales them by game speed (and era, for gold/faith), so they are
+# approximate. Unknown / mod-added subtypes fall back to the SubTypeGoodyHut
+# name or the LOC float-text the listener captured.
+GOODY_DESCRIPTIONS: dict[str, str] = {
+    # Culture
+    "GOODYHUT_ONE_RELIC": "a Relic",
+    "GOODYHUT_ONE_CIVIC_BOOST": "1 free civic boost",
+    "GOODYHUT_TWO_CIVIC_BOOSTS": "2 free civic boosts",
+    # Gold (base amounts, scaled by game speed/era)
+    "GOODYHUT_SMALL_GOLD": "Gold (~40, scaled)",
+    "GOODYHUT_MEDIUM_GOLD": "Gold (~75, scaled)",
+    "GOODYHUT_LARGE_GOLD": "Gold (~120, scaled)",
+    # Faith (base amounts, scaled by game speed/era)
+    "GOODYHUT_SMALL_FAITH": "Faith (~20, scaled)",
+    "GOODYHUT_MEDIUM_FAITH": "Faith (~60, scaled)",
+    "GOODYHUT_LARGE_FAITH": "Faith (~100, scaled)",
+    # Military
+    "GOODYHUT_GRANT_SCOUT": "a Scout unit",
+    "GOODYHUT_GRANT_UPGRADE": "a free unit upgrade",
+    "GOODYHUT_GRANT_EXPERIENCE": "20 XP for the unit",
+    "GOODYHUT_HEAL": "a full heal for the unit",
+    "GOODYHUT_RESOURCES": "+20 of your most advanced strategic resource (scaled)",
+    # Science
+    "GOODYHUT_ONE_TECH": "1 free technology",
+    "GOODYHUT_ONE_TECH_BOOST": "1 free tech boost",
+    "GOODYHUT_TWO_TECH_BOOSTS": "2 free tech boosts",
+    # Survivors
+    "GOODYHUT_ADD_POP": "+1 population to the nearest city",
+    "GOODYHUT_GRANT_BUILDER": "a Builder unit",
+    "GOODYHUT_GRANT_TRADER": "a Trader unit",
+    "GOODYHUT_GRANT_SETTLER": "a Settler unit",
+    # Diplomacy (Expansion 2)
+    "GOODYHUT_GOVERNOR_TITLE": "a Governor title",
+    "GOODYHUT_ENVOY": "an Envoy",
+    "GOODYHUT_FAVOR": "Diplomatic Favor (~20, scaled)",
+}
+
+
+def build_goody_snapshot_query(target_x: int, target_y: int) -> str:
+    """GameCore: ensure the goody-hut listener is installed, then snapshot state.
+
+    Idempotently registers a ``GameEvents.UnitTriggerGoodyHut`` handler that
+    appends each reward to the ``__civmcp_goody`` log with a monotonic sequence
+    number. Re-running after a save load (Lua state recycled, global nil)
+    re-installs automatically.
+
+    Emits ``GOODY_SEQ|<seq>|<expect>`` where ``seq`` is the last sequence
+    assigned (0 if none yet) and ``expect`` is 1 when the destination tile
+    currently holds a goody hut (so the caller knows to poll if no reward is
+    captured immediately).
+    """
+    return (
+        load_lua_template("build_goody_snapshot_query.lua")
+        .replace("__TARGET_X__", str(target_x))
+        .replace("__TARGET_Y__", str(target_y))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
+
+
+def build_read_goody_log(since_seq: int) -> str:
+    """GameCore: emit log entries with sequence > *since_seq*.
+
+    Each line: ``GOODY|seq|turn|player|unit|subtype|category|desc``.
+    Emits ``GOODY_NONE`` when there are no new entries.
+    """
+    return (
+        load_lua_template("build_read_goody_log.lua")
+        .replace("__SINCE_SEQ__", str(since_seq))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
+
+
+def parse_goody_log(lines: list[str]) -> list[GoodyReward]:
+    """Parse ``GOODY|...`` lines (and ignore GOODY_NONE) into GoodyReward list."""
+    rewards: list[GoodyReward] = []
+    for line in lines:
+        if not line.startswith("GOODY|"):
+            continue
+        parts = line.split("|")
+        # GOODY|seq|turn|player|unit|subtype|category|desc
+        if len(parts) < 7:
+            continue
+        try:
+            rewards.append(
+                GoodyReward(
+                    seq=int(parts[1]),
+                    turn=int(float(parts[2])),
+                    player_id=int(float(parts[3])),
+                    unit_id=int(float(parts[4])),
+                    subtype=parts[5],
+                    category=parts[6],
+                    description=parts[7] if len(parts) > 7 else "",
+                )
+            )
+        except (ValueError, IndexError):
+            continue
+    return rewards
 
 
 def build_unit_position_query(

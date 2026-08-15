@@ -233,6 +233,24 @@ class AttackOutcome:
 
 
 @dataclass
+class GoodyReward:
+    """One tribal-village (goody hut) reward, captured from GameCore events.
+
+    Recorded by the persistent ``GameEvents.UnitTriggerGoodyHut`` handler and
+    diffed against the pre-move sequence number so ``move_unit`` can report
+    exactly what reward a unit received when it stepped on a tribal village.
+    """
+
+    seq: int  # monotonic sequence assigned by the listener
+    turn: int
+    player_id: int
+    unit_id: int
+    subtype: str  # SubTypeGoodyHut, e.g. GOODYHUT_SMALL_GOLD
+    category: str  # parent GoodyHutType, e.g. GOODYHUT_GOLD
+    description: str = ""  # best-effort LOC float-text (tokens stripped)
+
+
+@dataclass
 class UnitInfo:
     unit_id: int
     unit_index: int

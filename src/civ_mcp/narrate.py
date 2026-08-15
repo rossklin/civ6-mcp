@@ -2047,3 +2047,24 @@ def narrate_move_discoveries(
     else:
         lines.append(f"Revealed {total_new} new tiles (no notable features)")
     return "\n".join(lines)
+
+
+def narrate_goody_rewards(rewards: list[lq.GoodyReward]) -> str:
+    """Narrate tribal-village rewards captured during a unit move.
+
+    ``GOODY_DESCRIPTIONS`` (built from GoodyHuts.xml / Expansion2) gives clean
+    text for known subtypes; unknown / mod-added subtypes fall back to the
+    listener-captured LOC float-text or the raw SubTypeGoodyHut name.
+    """
+    if not rewards:
+        return ""
+    lines = ["Tribal village reward(s):"]
+    for r in rewards:
+        desc = lq.GOODY_DESCRIPTIONS.get(r.subtype)
+        if not desc:
+            if r.description:
+                desc = r.description
+            else:
+                desc = r.subtype.replace("GOODYHUT_", "").replace("_", " ").title()
+        lines.append(f"  + Received {desc} [{r.subtype}]")
+    return "\n".join(lines)

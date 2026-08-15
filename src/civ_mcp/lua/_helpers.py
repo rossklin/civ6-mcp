@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 SENTINEL = "---END---"
+
+_LUA_TEMPLATE_DIR = Path(__file__).resolve().parent
+_LUA_TEMPLATE_CACHE: dict[str, str] = {}
+
+
+def load_lua_template(filename: str) -> str:
+    """Read and cache a Lua template file from the lua package directory.
+
+    Templates live as ``.lua`` files next to this module and use distinctive
+    ``__TOKEN__`` placeholders (e.g. ``__MCP_SENTINEL_TAG__``) that the caller
+    substitutes via ``str.replace`` before sending the Lua to the game. Using
+    ``__TOKEN__`` markers — rather than ``{name}`` — avoids collisions with
+    Lua's own braces (table literals, ``gsub`` patterns).
+    """
+    cached = _LUA_TEMPLATE_CACHE.get(filename)
+    if cached is None:
+        cached = (_LUA_TEMPLATE_DIR / filename).read_text(encoding="utf-8")
+        _LUA_TEMPLATE_CACHE[filename] = cached
+    return cached
 
 
 def lua_quote(s: str) -> str:
