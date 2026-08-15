@@ -3,7 +3,7 @@
 from __future__ import annotations
 from pathlib import Path
 
-from civ_mcp.lua._helpers import SENTINEL, _bail
+from civ_mcp.lua._helpers import SENTINEL, _bail, load_lua_template
 from civ_mcp.lua.models import (
     CivicOption,
     LockedCivic,
@@ -12,17 +12,8 @@ from civ_mcp.lua.models import (
     TechOption,
 )
 
-_BUILD_TECHS_CIVICS_QUERY_TEMPLATE: str | None = None
-
-def _load_build_techs_civics_query_template() -> str:
-    """Read and cache the build_tech_civics_query Lua template from disk."""
-    global _BUILD_TECHS_CIVICS_QUERY_TEMPLATE
-    if _BUILD_TECHS_CIVICS_QUERY_TEMPLATE is None:
-        _BUILD_TECHS_CIVICS_QUERY_TEMPLATE = (Path(__file__).resolve().parent / "build_tech_civics_query.lua").read_text(encoding="utf-8")
-    return _BUILD_TECHS_CIVICS_QUERY_TEMPLATE
-
 def build_tech_civics_query() -> str:
-    return _load_build_techs_civics_query_template().replace("{SENTINEL}", SENTINEL)
+    return load_lua_template("build_tech_civics_query.lua").replace("{SENTINEL}", SENTINEL)
 
 def _build_set_ingame(
     name: str,

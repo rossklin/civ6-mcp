@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from civ_mcp.connection import GameConnection
-from civ_mcp.lua._helpers import SENTINEL, lua_quote
+from civ_mcp.lua._helpers import SENTINEL, load_lua_template, lua_quote
 
 log = logging.getLogger(__name__)
 
@@ -235,24 +235,6 @@ async def install_diplomacy_ui_fix(conn: GameConnection) -> str:
 #: run inside the same context, so one state name covers them.
 GOVERNMENT_UI_STATES = ("GovernmentScreen",)
 
-# Template Lua for the government screen repair, kept in a separate file for
-# readability / IDE support.  One tag is substituted per-call by
-# build_government_screen_fix_lua():
-#   __MCP_SENTINEL_TAG__  -> the response sentinel (_helpers.SENTINEL)
-_GOV_FIX_PATH = (
-    Path(__file__).resolve().parent.parent / "lua" / "government_screen_fix.lua"
-)
-_GOV_FIX_TEMPLATE: str | None = None
-
-
-def _load_government_screen_fix_template() -> str:
-    """Read and cache the government screen repair Lua template from disk."""
-    global _GOV_FIX_TEMPLATE
-    if _GOV_FIX_TEMPLATE is None:
-        _GOV_FIX_TEMPLATE = _GOV_FIX_PATH.read_text(encoding="utf-8")
-    return _GOV_FIX_TEMPLATE
-
-
 def build_government_screen_fix_lua() -> str:
     """Lua that repairs GovernmentScreen's cached local-player state after a handoff.
 
@@ -262,8 +244,7 @@ def build_government_screen_fix_lua() -> str:
     player it fixed and re-fires whenever that changes.  See the template for
     the full rationale.
     """
-    lua = _load_government_screen_fix_template()
-    return lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    return load_lua_template("government_screen_fix.lua").replace("__MCP_SENTINEL_TAG__", SENTINEL)
 
 
 async def install_government_screen_fix(conn: GameConnection) -> str:
@@ -658,23 +639,6 @@ async def wait_for_turn(
 
 DEAL_SHIM_STATE = "DiplomacyDealView"
 
-
-# Template Lua for the deal shim, kept in a separate file for readability.
-# Two tags are substituted per-call by build_deal_shim_install_lua():
-#   __MCP_MANAGED_IDS_TAG__  -> {[p]=true,...} for the managed IDs
-#   __MCP_SENTINEL_TAG__     -> the response sentinel (_helpers.SENTINEL)
-_DEAL_SHIM_PATH = Path(__file__).resolve().parent.parent / "lua" / "deal_shim.lua"
-_DEAL_SHIM_TEMPLATE: str | None = None
-
-
-def _load_deal_shim_template() -> str:
-    """Read and cache the deal-shim Lua template from disk."""
-    global _DEAL_SHIM_TEMPLATE
-    if _DEAL_SHIM_TEMPLATE is None:
-        _DEAL_SHIM_TEMPLATE = _DEAL_SHIM_PATH.read_text(encoding="utf-8")
-    return _DEAL_SHIM_TEMPLATE
-
-
 def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
     """Lua that wraps SendWorkingDeal, IsAutoPropose and UpdateDealStatus in
     the DiplomacyDealView state.
@@ -701,10 +665,11 @@ def build_deal_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
     managed_entries = ",".join(f"[{p}]=true" for p in managed_ids)
     managed_table = "{" + managed_entries + "}"
 
-    lua = _load_deal_shim_template()
-    lua = lua.replace("__MCP_MANAGED_IDS_TAG__", managed_table)
-    lua = lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
-    return lua
+    return (
+        load_lua_template("deal_shim.lua")
+        .replace("__MCP_MANAGED_IDS_TAG__", managed_table)
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def build_deal_shim_uninstall_lua() -> str:
@@ -764,21 +729,6 @@ async def install_deal_shim(
 CHAT_SHIM_STATE = "ChatPanel"
 WORLDTRACKER_STATE = "WorldTracker"
 
-# Template Lua for the chat shim, kept in a separate file for readability.
-# One tag is substituted per-call by build_chat_shim_install_lua():
-#   __MCP_SENTINEL_TAG__  -> the response sentinel (_helpers.SENTINEL)
-_CHAT_SHIM_PATH = Path(__file__).resolve().parent.parent / "lua" / "chat_shim.lua"
-_CHAT_SHIM_TEMPLATE: str | None = None
-
-
-def _load_chat_shim_template() -> str:
-    """Read and cache the chat-shim Lua template from disk."""
-    global _CHAT_SHIM_TEMPLATE
-    if _CHAT_SHIM_TEMPLATE is None:
-        _CHAT_SHIM_TEMPLATE = _CHAT_SHIM_PATH.read_text(encoding="utf-8")
-    return _CHAT_SHIM_TEMPLATE
-
-
 def build_chat_shim_install_lua() -> str:
     """Lua that wraps ParseInputChatString in the ChatPanel state.
 
@@ -799,9 +749,7 @@ def build_chat_shim_install_lua() -> str:
     UpdateDealStatus.  It is called once per message inside SendChat
     (ChatPanel.lua:301), on Enter-key commit.
     """
-    lua = _load_chat_shim_template()
-    lua = lua.replace("__MCP_SENTINEL_TAG__", SENTINEL)
-    return lua
+    return load_lua_template("chat_shim.lua").replace("__MCP_SENTINEL_TAG__", SENTINEL)
 
 
 def build_chat_shim_uninstall_lua() -> str:
