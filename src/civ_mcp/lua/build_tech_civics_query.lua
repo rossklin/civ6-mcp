@@ -98,8 +98,7 @@ for civic in GameInfo.Civics() do
                 local currentProg = 0
                 pcall(function() currentProg = cu:GetCulturalProgress(civic.Index) end)
                 local pct2 = cost > 0 and math.floor(currentProg * 100 / cost) or 0
-                local cultureYield = Players[id]:GetCulture():GetCultureYield() or 1
-                local turns2 = cultureYield > 0 and math.ceil(cost / cultureYield) or -1
+                local turns2 = cu:GetTurnsToProgressCivic(civic.Index)
                 local boosted2 = cu:HasBoostBeenTriggered(civic.Index)
                 local boostDesc2 = ""
                 local b2 = boostsByCivic[civic.CivicType]
