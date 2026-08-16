@@ -9,6 +9,8 @@ local function SpacePad(num, len)
 end
 
 local function GetMapASCII_Terrain()
+    local me = Game.GetLocalPlayer()
+    local vis = PlayersVisibility[me]
     local output = ""
     local w, h = Map.GetGridSize()
 
@@ -20,6 +22,7 @@ local function GetMapASCII_Terrain()
         TUNDRA="t", TUNDRA_HILLS="T",
         SNOW="s", SNOW_HILLS="S",
         COAST="c", OCEAN="o",
+        CITY="C",
         UNDISCOVERED="?", UNKNOWN="U",
     }
 
@@ -39,7 +42,6 @@ local function GetMapASCII_Terrain()
     }
 
     for y = 0, h - 1 do
-        local rowStared = false
         for x = 0, w - 1 do
             local plot = Map.GetPlot(x, y)
             if plot then
@@ -79,6 +81,17 @@ local function GetMapASCII_Terrain()
 
                     local tChar = TERRAIN_CHARS[terrain] or "U"
                     local fChar = FEATURE_CHARS[feature] or "U"
+
+                    -- Special case: check for city
+                    local distIdx = plot:GetDistrictType()
+                    if distIdx >= 0 then
+                        local dInfo = GameInfo.Districts[distIdx]
+                        if dInfo and dInfo.DistrictType == "CITY_CENTER" then
+                            tChar = "C"
+                            fChar = " "
+                        end
+                    end
+
                     tileString = prefix .. tChar .. fChar
                 else
                     tileString = prefix .. "??"
@@ -112,8 +125,6 @@ local function GetMapASCII_Terrain()
     output = output .. "\nLegend (each tile is terrain char + feature char; unrevealed tiles shown as '??'):\n"
     output = output .. BuildLegend("Terrain", TERRAIN_CHARS)
     output = output .. BuildLegend("Feature", FEATURE_CHARS)
-
-    output = output .. "{SENTINEL}"
     return output
 end
 
