@@ -11,7 +11,7 @@ end
 local function GetMapASCII_Terrain()
     local me = Game.GetLocalPlayer()
     local vis = PlayersVisibility[me]
-    local output = ""
+    local output = " Y\n"
     local w, h = Map.GetGridSize()
 
     -- Single-char glyphs for terrain (first char) and feature (second char).
@@ -41,15 +41,22 @@ local function GetMapASCII_Terrain()
         UNDISCOVERED="?", UNKNOWN="U",
     }
 
-    for y = 0, h - 1 do
+    for y = h - 1, 0, -1 do
         for x = 0, w - 1 do
             local plot = Map.GetPlot(x, y)
             if plot then
                 local isFirst = x == 0
 
-                -- Look at the NW (dir enum 5) tile to determine if this row is left or right shifted
+                -- Look at the NW (dir enum 5) or SW (dir enum 3) tile to determine if this row is left or right shifted
                 local adj = Map.GetAdjacentPlot(x, y, 5)
-                local adjX = adj and adj:GetX() or -1
+                if (not adj) then
+                    adj = Map.GetAdjacentPlot(x, y, 3)
+                end
+                if (not adj) then
+                    return "ERROR: Map.GetAdjacentPlot returned nil both NW and SW"
+                end
+
+                local adjX = adj:GetX() or -1
                 local parity
                 if (x == adjX) then
                     parity = "right"
@@ -75,9 +82,13 @@ local function GetMapASCII_Terrain()
                     
                     -- map terrain and feature to ascii symbols
                     local terrain = GameInfo.Terrains[plot:GetTerrainType()].TerrainType
+                    terrain = terrain and (terrain:gsub("^TERRAIN_", "")) or nil
                     local featureIdx = plot:GetFeatureType()
-                    local feature = "UNKNOWN"
-                    if featureIdx >= 0 then feature = GameInfo.Features[featureIdx].FeatureType end
+                    local feature = "none"
+                    if featureIdx >= 0 then
+                        local f = GameInfo.Features[featureIdx].FeatureType
+                        feature = f and (f:gsub("^FEATURE_", "")) or "UNKNOWN"
+                    end
 
                     local tChar = TERRAIN_CHARS[terrain] or "U"
                     local fChar = FEATURE_CHARS[feature] or "U"
@@ -86,7 +97,7 @@ local function GetMapASCII_Terrain()
                     local distIdx = plot:GetDistrictType()
                     if distIdx >= 0 then
                         local dInfo = GameInfo.Districts[distIdx]
-                        if dInfo and dInfo.DistrictType == "CITY_CENTER" then
+                        if dInfo and dInfo.DistrictType == "DISTRICT_CITY_CENTER" then
                             tChar = "C"
                             fChar = " "
                         end
