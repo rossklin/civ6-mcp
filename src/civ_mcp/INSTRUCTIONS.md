@@ -121,7 +121,7 @@ Units:
     check_unit_upgrade(unit_id) — returns upgrade cost/availability
 
 Settling & cities:
-    found_city(unit_index)
+    found_city(unit_index) - must be at least 4 steps away from any other city
     resolve_city_capture(action) — action: keep | reject | raze |
     liberate_founder | liberate_previous
     set_city_production(city_id, item_type, item_name, target_x?, target_y?)
@@ -134,7 +134,7 @@ Settling & cities:
     set_city_focus(city_id, focus) — focus: DEFAULT (clear) | FOOD |
         PRODUCTION | GOLD | SCIENCE | CULTURE | FAITH
     purchase_tile(city_id, x, y)
-    city_attack(city_id, target_x, target_y) — ranged attack from a city
+    city_attack(city_id, target_x, target_y) — ranged attack from a city (must build walls in city center first)
 
 Builders & improvements:
     improve_tile(unit_index, improvement_name) — e.g. IMPROVEMENT_MINE
@@ -260,7 +260,7 @@ You can also gain a lot of value by harvesting features or resources. Weight the
 Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it.
 
 ### Expansion
-Each city multiplies your districts, yields, and Great Person generation. The gap between a 3-city and 5-city empire by the Medieval era is hard to recover from. If city count is lagging, a settler is typically the highest-impact production choice — more so than most infrastructure in existing cities. Check loyalty before settling: negative-loyalty sites near rivals need a governor assigned immediately via `assign_governor(governor_type, city_id)` or they'll flip.
+Each city multiplies your districts, yields, and Great Person generation. The gap between a 3-city and 5-city empire by the Medieval era is hard to recover from. If city count is lagging, a settler is typically the highest-impact production choice — more so than most infrastructure in existing cities. Check loyalty before settling: negative-loyalty sites near rivals need a governor assigned immediately via `assign_governor(governor_type, city_id)` or they'll flip. Cities must have at least a 3 tile gap between them, ie be 4 tiles away from the nearest city.
 
 ### Growth
 Stagnant cities fall behind exponentially. If any city has food surplus ≤ 0, that's worth fixing this turn (Farm, Granary, domestic Trade Route, or `set_city_focus(city_id, "FOOD")`). Turns-to-growth over 15 is a signal the city needs food or housing.
@@ -280,7 +280,7 @@ If favor is accumulating above 100 with no World Congress imminent, it's worth t
 War declarations take effect for diplomacy immediately but the **combat engine does not sync until the next turn**. After declaring war via `send_diplomatic_action`, units cannot attack the new enemy until the following turn. Plan accordingly: declare war on turn N, position units adjacent to targets, then attack on turn N+1. Do not reload or retry if attacks return `NO_ENEMY` on the declaration turn — this is expected behavior.
 
 ### Wartime
-Cities with walls can fire at enemies via `city_attack(city_id, target_x, target_y)` (range 2). Cities that fall are expensive to recover — when you capture a city, `resolve_city_capture(action)` with `keep`, `reject`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(other_player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
+Cities with walls can fire at enemies via `city_attack(city_id, target_x, target_y)` (range 2). You must build the walls in the city center (or research the steel technology). Cities that fall are expensive to recover — when you capture a city, `resolve_city_capture(action)` with `keep`, `reject`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(other_player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
 
 ### Military Readiness
 Keep an eye on opponents' military strength. A neighbor at 2x+ your strength who isn't a friend or ally is a risk worth taking seriously. Make sure you have a plan to handle if your opponent becomes aggressive. Units become progressively weaker relative to rivals if not upgraded (Slinger→Archer with Archery, Warrior→Swordsman with Iron Working) — use `upgrade_unit`.
