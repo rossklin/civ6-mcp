@@ -1,4 +1,14 @@
-local function GetMapASCII()
+local function SpacePad(num, len)
+    local str = tostring(num)
+    local pad = len - string.len(str)
+    if (pad > 0) then
+        return string.rep(" ", pad) .. str
+    else
+        return str
+    end
+end
+
+local function GetMapASCII_Terrain()
     local output = ""
     local w, h = Map.GetGridSize()
 
@@ -48,8 +58,7 @@ local function GetMapASCII()
                 -- add two spaces before tile info unless this is the first tile in a left shifted row
                 local prefix = ""
                 if (isFirst) then
-                    -- TODO space pad y to 2 chars
-                    prefix = y .. " |"
+                    prefix = SpacePad(y, 2) .. " |"
                     if (parity ~= "left") then
                         prefix = prefix .. "  "
                     end
@@ -63,11 +72,9 @@ local function GetMapASCII()
                 if revealed then
                     
                     -- map terrain and feature to ascii symbols
-                    
                     local terrain = GameInfo.Terrains[plot:GetTerrainType()].TerrainType
-                    local hills = plot:IsHills() and "1" or "0"
                     local featureIdx = plot:GetFeatureType()
-                    local feature = "none"
+                    local feature = "UNKNOWN"
                     if featureIdx >= 0 then feature = GameInfo.Features[featureIdx].FeatureType end
 
                     local tChar = TERRAIN_CHARS[terrain] or "U"
@@ -81,12 +88,19 @@ local function GetMapASCII()
                 return "ERROR: Map.GetPlot(" .. x .. ", " .. y .. ") returned nil"
             end
         end
+        -- TODO add newline to output
     end
 
-    -- TODO print axis and legend
+    -- X-axis labels
+    output = output .. "  X"
+    for x = 0, w - 1 do
+        output = output .. SpacePad(x, 4)
+    end
+
+    -- TODO Legend
 
     output = output .. "{SENTINEL}"
     return output
 end
 
-print(GetMapASCII())
+print(GetMapASCII_Terrain())
