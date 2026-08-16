@@ -88,7 +88,7 @@ local function GetMapASCII_Terrain()
                 return "ERROR: Map.GetPlot(" .. x .. ", " .. y .. ") returned nil"
             end
         end
-        -- TODO add newline to output
+        output = output .. "\n"
     end
 
     -- X-axis labels
@@ -97,7 +97,21 @@ local function GetMapASCII_Terrain()
         output = output .. SpacePad(x, 4)
     end
 
-    -- TODO Legend
+    -- Legend (generated from the char tables so it stays in sync)
+    local function CharLabel(ch)
+        if ch == " " then return "(space)" end
+        return ch
+    end
+    local function BuildLegend(title, table)
+        local line = "  " .. title .. ":"
+        for key, ch in pairs(table) do
+            line = line .. " " .. CharLabel(ch) .. "=" .. key
+        end
+        return line .. "\n"
+    end
+    output = output .. "\nLegend (each tile is terrain char + feature char; unrevealed tiles shown as '??'):\n"
+    output = output .. BuildLegend("Terrain", TERRAIN_CHARS)
+    output = output .. BuildLegend("Feature", FEATURE_CHARS)
 
     output = output .. "{SENTINEL}"
     return output
