@@ -1,4 +1,29 @@
 local w, h = Map.GetGridSize()
+
+-- Single-char glyphs for terrain (first char) and feature (second char).
+local TERRAIN_CHARS = {
+    GRASS="g", GRASS_HILLS="G", GRASS_MOUNTAIN="^",
+    PLAINS="p", PLAINS_HILLS="P", PLAINS_MOUNTAIN="M",
+    DESERT="d", DESERT_HILLS="D",
+    TUNDRA="t", TUNDRA_HILLS="T",
+    SNOW="s", SNOW_HILLS="S",
+    COAST="c", OCEAN="o",
+}
+
+local FEATURE_CHARS = {
+    none=" ",
+    ICE="i",
+    FOREST="f",
+    GEOTHERMAL_FISSURE="g",
+    VOLCANIC_SOIL="v",
+    VOLCANO="V",
+    FLOODPLAINS_GRASSLAND="=",
+    FLOODPLAINS_PLAINS="+",
+    MARSH="m",
+    JUNGLE="j",
+    KILIMANJARO="K",
+}
+
 for y = 0, h - 1 do
     local rowStared = false
     for x = 0, w - 1 do
@@ -33,10 +58,14 @@ for y = 0, h - 1 do
                     if (parity ~= "left") then
                         prefix = prefix .. "  "
                     end
+                else
+                    prefix = "  "
                 end
 
-                -- TODO map terrain and feature to ascii symbols
-
+                -- map terrain and feature to ascii symbols
+                local tChar = TERRAIN_CHARS[terrain] or "?"
+                local fChar = FEATURE_CHARS[feature] or " "
+                print(prefix .. tChar .. fChar)
             end
         end
     end
