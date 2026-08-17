@@ -280,7 +280,7 @@ def narrate_builder_tasks(
     if not builders:
         return "No builders with charges available."
     idle = [b for b in builders if b.moves > 0]
-    lines = [f"=== BUILDER TASKS ({len(tasks)} tasks, {len(idle)} idle builders) ==="]
+    lines = [f"({len(tasks)} tasks, {len(idle)} idle builders)"]
     lines.append("")
     lines.append(
         "NOTE: Tasks suggest improvements based on terrain/resources but do NOT check "
@@ -296,41 +296,26 @@ def narrate_builder_tasks(
         _append_builder_list(lines, builders)
         return "\n".join(lines)
 
-    # Group by priority
-    by_priority: dict[str, list[lq.BuilderTask]] = {
-        "urgent": [],
-        "high": [],
-        "normal": [],
-    }
-    for t in tasks:
-        by_priority.setdefault(t.priority, []).append(t)
+    # Sort by distance so nearest tasks come first
+    for t in sorted(tasks, key=lambda t: t.distance):
+        if t.resource_class == "pillaged":
+            action = f"repair {t.resource}"
+        else:
+            imp_label = t.improvement.replace("IMPROVEMENT_", "")
+            suffix = ""
+            if t.resource_class == "luxury":
+                suffix = "+"
+            elif t.resource_class == "strategic":
+                suffix = "*"
+            res_prefix = f"{t.resource}{suffix} — " if t.resource else ""
+            action = f"{res_prefix}build {imp_label}"
 
-    for pri, label in [("urgent", "URGENT"), ("high", "HIGH"), ("normal", "NORMAL")]:
-        group = by_priority.get(pri, [])
-        if not group:
-            continue
-        lines.append("")
-        lines.append(f"{label}:")
-        # Sort by distance so nearest tasks come first
-        for t in sorted(group, key=lambda t: t.distance):
-            if t.resource_class == "pillaged":
-                action = f"repair {t.resource}"
-            else:
-                imp_label = t.improvement.replace("IMPROVEMENT_", "")
-                suffix = ""
-                if t.resource_class == "luxury":
-                    suffix = "+"
-                elif t.resource_class == "strategic":
-                    suffix = "*"
-                res_prefix = f"{t.resource}{suffix} — " if t.resource else ""
-                action = f"{res_prefix}build {imp_label}"
-
-            builder_str = ""
-            if t.nearest_builder_id >= 0:
-                builder_str = f" — nearest builder id:{t.nearest_builder_id}, {t.distance} tile{'s' if t.distance != 1 else ''}"
-            lines.append(
-                f"  ({t.x},{t.y}): {action} [city: {t.city_name}]{builder_str}"
-            )
+        builder_str = ""
+        if t.nearest_builder_id >= 0:
+            builder_str = f" — nearest builder id:{t.nearest_builder_id}, {t.distance} tile{'s' if t.distance != 1 else ''}"
+        lines.append(
+            f"  ({t.x},{t.y}): {action} [city: {t.city_name}]{builder_str}"
+        )
 
     lines.append("")
     _append_builder_list(lines, builders)

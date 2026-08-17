@@ -219,7 +219,7 @@ Common reasons unit movement does not go as expected:
 - zone of control (ZOC): when your unit moves adjacent to an object which exerts ZOC, it can't move further that turn except to attack the ZOC object. Melee units (land and naval), cities, encampments and units with a ZOC promotion exert ZOC. However cavalry units ignore ZOC.
 
 ### Builder Management
-Idle builders are wasted production. The builder tasks section shows all tiles needing improvements across your empire, prioritized (URGENT > HIGH > NORMAL), with the nearest idle builder for each task. These tasks are naive recommendations and you need to make your own judgement. For instance they may recommend you to build a mine when it is better to keep the forest on the hill, or to place an improvement that you do not have the required tech to place.
+Idle builders are wasted production. The builder tasks section shows all tiles needing improvements across your empire with the nearest idle builder for each task. These tasks are naive recommendations and you need to make your own judgement. For instance they may recommend you to build a mine when it is better to keep the forest on the hill, or to place an improvement that you do not have the required tech to place.
 
 Before building an improvement, consider whether it actually improves the yields of the city. For instance if your city is currently working a grassland hill with forest (2 food, 2 production), building a farm on a plains would create a 2 food 1 production tile which would not be worthwhile for the city to work.
 
