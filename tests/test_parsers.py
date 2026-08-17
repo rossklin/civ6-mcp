@@ -13,7 +13,6 @@ from civ_mcp.lua.units import (
     parse_threat_scan_response,
     parse_units_response,
 )
-from civ_mcp.lua.cities import parse_cities_response
 from civ_mcp.lua.notifications import parse_end_turn_blocking
 
 
@@ -315,55 +314,6 @@ class TestParseThreatScan:
         assert len(threats) == 1
         assert threats[0].unit_type == "UNIT_WARRIOR"
         assert threats[0].x == 15
-
-
-# ---------------------------------------------------------------------------
-# parse_cities_response
-# ---------------------------------------------------------------------------
-
-
-class TestParseCities:
-    # 30 pipe-separated fields: id|name|x,y|pop|food|prod|gold|sci|cul|faith|
-    #   housing|amenities|turns_grow|building|prod_turns|defense|gar_hp|wall_hp|
-    #   attack_targets|pillaged_districts|districts|loyalty|loyalty_max|loyalty_pt|
-    #   turns_flip|food_surplus|food_stored|growth_threshold|pillaged_buildings|garrison
-    CITY_LINE = (
-        "0|Delhi|10,24|4|8.0|5.0|3.0|2.0|1.5|0.0|"
-        "6.0|3|12|BUILDING_GRANARY|5|"
-        "15|200/200|0/0|"
-        "||DISTRICT_CITY_CENTER;DISTRICT_CAMPUS|"
-        "100.0|100.0|5.0|0|3.5|20.0|36||Warrior"
-    )
-
-    def test_basic_city(self):
-        cities, distances = parse_cities_response([self.CITY_LINE])
-        assert len(cities) == 1
-        c = cities[0]
-        assert c.city_id == 0
-        assert c.name == "Delhi"
-        assert c.x == 10
-        assert c.y == 24
-        assert c.population == 4
-        assert c.food == 8.0
-        assert c.production == 5.0
-        assert c.currently_building == "BUILDING_GRANARY"
-        assert c.production_turns_left == 5
-
-    def test_districts_parsed(self):
-        cities, _ = parse_cities_response([self.CITY_LINE])
-        assert "DISTRICT_CITY_CENTER" in cities[0].districts
-        assert "DISTRICT_CAMPUS" in cities[0].districts
-
-    def test_distances(self):
-        lines = [self.CITY_LINE, "DIST|Delhi|Agra|8"]
-        cities, distances = parse_cities_response(lines)
-        assert len(cities) == 1
-        assert len(distances) == 1
-        assert "8 tiles" in distances[0]
-
-    def test_short_line_skipped(self):
-        cities, _ = parse_cities_response(["too|short"])
-        assert len(cities) == 0
 
 # ---------------------------------------------------------------------------
 # parse_end_turn_blocking

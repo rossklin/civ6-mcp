@@ -295,62 +295,6 @@ class SpyInfo:
     is_escaping: bool = False  # True if spy is caught and needs escape route
     status: str = "idle"  # "idle", "in_transit", "on_mission", "escaping"
 
-
-@dataclass
-class CityInfo:
-    city_id: int
-    name: str
-    x: int
-    y: int
-    population: int
-    food: float
-    production: float
-    gold: float
-    science: float
-    culture: float
-    faith: float
-    housing: float
-    amenities: int
-    turns_to_grow: int
-    food_surplus: float = 0.0
-    food_stored: float = 0.0
-    growth_threshold: int = 0
-    currently_building: str = "NONE"
-    production_turns_left: int = 0
-    defense_strength: int = 0
-    garrison_hp: int = 0
-    garrison_max_hp: int = 0
-    wall_hp: int = 0
-    wall_max_hp: int = 0
-    attack_targets: list[str] = field(default_factory=list)
-    pillaged_districts: list[str] = field(default_factory=list)
-    pillaged_buildings: list[str] = field(default_factory=list)
-    districts: list[str] = field(default_factory=list)
-    loyalty: float = 100.0
-    loyalty_max: float = 100.0
-    loyalty_per_turn: float = 0.0
-    turns_to_loyalty_flip: int = 0
-    garrison_unit: str = ""
-    unimproved_resources: list[str] = field(
-        default_factory=list
-    )  # e.g. ["HORSES@5,10"]
-    pillaged_improvements: list[str] = field(default_factory=list)  # e.g. ["MINE@6,11"]
-    buildings: list[str] = field(
-        default_factory=list
-    )  # completed buildings (BUILDING_ prefix stripped)
-
-
-@dataclass
-class ProductionOption:
-    category: str  # "UNIT", "BUILDING", "DISTRICT"
-    item_name: str  # "UNIT_WARRIOR", "BUILDING_MONUMENT"
-    cost: int  # production cost
-    turns: int = 0  # estimated turns to produce
-    gold_cost: int = -1  # gold purchase cost (-1 = not purchasable)
-    is_repair: bool = False  # True if repairing a pillaged district/building
-    repair_x: int | None = None  # district repair X coordinate
-    repair_y: int | None = None  # district repair Y coordinate
-
 @dataclass
 class DiplomacyModifier:
     score: int
@@ -1340,7 +1284,6 @@ class FullGameState:
 
     overview: GameOverview | None = None
     units: list[UnitInfo] = field(default_factory=list)
-    cities: list[CityInfo] = field(default_factory=list)
     city_distances: list[str] = field(default_factory=list)
     spies: list[SpyInfo] = field(default_factory=list)
 

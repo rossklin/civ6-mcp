@@ -1396,6 +1396,10 @@ Note: neighbours with "RC" have a river crossing.
 """
         text = text + "\n".join(lines)
 
+        # Append the cities query output
+        lines: list[str] = await gs.conn.execute_write(load_lua_template("cities.lua"))
+        text = text + "## Cities\n\n" + "\n".join(lines)
+
         # Prepend the deferred post-turn report (snapshot diff, threats,
         # warnings) stashed when this seat ended its last turn. Built once —
         # on the first get_full_game_state call after the seat is back on the

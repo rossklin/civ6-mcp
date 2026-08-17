@@ -32,7 +32,6 @@ _SECTIONS: list[tuple[str, str, bool]] = [
     # (section_name, attribute_name on FullGameState, uses_write_context)
     ("overview", "overview", True),
     ("units", "units", True),
-    ("cities", "cities", True),
     ("spies", "spies", True),
     ("diplomacy", "diplomacy", True),
     ("own_abilities", "own_abilities", True),

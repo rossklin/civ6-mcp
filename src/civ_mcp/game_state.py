@@ -176,10 +176,6 @@ class GameState:
         lines = await self.conn.execute_write(lq.build_victory_progress_query())
         return lq.parse_victory_progress_response(lines)
 
-    async def get_cities(self) -> tuple[list[lq.CityInfo], list[str]]:
-        lines = await self.conn.execute_write(lq.build_cities_query())
-        return lq.parse_cities_response(lines)
-
     async def get_strategic_map(self) -> lq.StrategicMapData:
         lines = await self.conn.execute_read(lq.build_strategic_map_query())
         return lq.parse_strategic_map_response(lines)
@@ -726,12 +722,6 @@ class GameState:
         lua = lq.build_purchase_item(city_id, item_type, item_name, yield_type)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
-
-    async def list_city_production(self, city_id: int) -> list[lq.ProductionOption]:
-        lua = lq.build_city_production_query(city_id)
-        # Must use InGame context — bq:CanProduce() throws "Not Implemented" in GameCore
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_city_production_response(lines)
 
     async def set_research(self, tech_name: str) -> str:
         lua = lq.build_set_research(tech_name)
