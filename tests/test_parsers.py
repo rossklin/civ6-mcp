@@ -14,7 +14,6 @@ from civ_mcp.lua.units import (
     parse_units_response,
 )
 from civ_mcp.lua.cities import parse_cities_response
-from civ_mcp.lua.map import parse_map_response
 from civ_mcp.lua.notifications import parse_end_turn_blocking
 
 
@@ -365,61 +364,6 @@ class TestParseCities:
     def test_short_line_skipped(self):
         cities, _ = parse_cities_response(["too|short"])
         assert len(cities) == 0
-
-
-# ---------------------------------------------------------------------------
-# parse_map_response
-# ---------------------------------------------------------------------------
-
-
-class TestParseMap:
-    # Fields: x,y|terrain|feature|resource|hills|river|coastal|improvement|owner|units|
-    #   visibility|fresh_water|yields|district|owner_name|own_units|route|move_cost
-    PLAINS_TILE = "10,24|TERRAIN_PLAINS|none|none|0|1|0|none|-1|none|visible|1|2,1,0,0,0,0|none||||-1|1"
-    HILLS_WITH_MINE = (
-        "12,22|TERRAIN_PLAINS|none|RESOURCE_IRON:RESOURCECLASS_STRATEGIC|1|0|0|"
-        "IMPROVEMENT_MINE|0|none|visible|0|1,3,0,0,0,0|none|India|none|-1|2"
-    )
-
-    def test_basic_tile(self):
-        tiles = parse_map_response([self.PLAINS_TILE])
-        assert len(tiles) == 1
-        t = tiles[0]
-        assert t.x == 10
-        assert t.y == 24
-        assert t.terrain == "TERRAIN_PLAINS"
-        assert t.feature is None
-        assert t.resource is None
-        assert t.is_hills is False
-        assert t.is_river is True
-        assert t.owner_id == -1
-        assert t.visibility == "visible"
-        assert t.is_fresh_water is True
-
-    def test_resource_with_class(self):
-        tiles = parse_map_response([self.HILLS_WITH_MINE])
-        t = tiles[0]
-        assert t.resource == "RESOURCE_IRON"
-        assert t.resource_class == "strategic"
-        assert t.is_hills is True
-        assert t.improvement == "IMPROVEMENT_MINE"
-        assert t.owner_name == "India"
-        assert t.movement_cost == 2
-
-    def test_pillaged_improvement(self):
-        line = "5,5|TERRAIN_GRASSLAND|none|none|0|0|0|IMPROVEMENT_FARM:PILLAGED|0|none|visible|0|0,0,0,0,0,0|none||||-1|1"
-        tiles = parse_map_response([line])
-        assert tiles[0].improvement == "IMPROVEMENT_FARM"
-        assert tiles[0].is_pillaged is True
-
-    def test_yields_parsing(self):
-        tiles = parse_map_response([self.PLAINS_TILE])
-        assert tiles[0].yields == (2, 1, 0, 0, 0, 0)
-
-    def test_short_line_skipped(self):
-        tiles = parse_map_response(["too|few|fields"])
-        assert len(tiles) == 0
-
 
 # ---------------------------------------------------------------------------
 # parse_end_turn_blocking

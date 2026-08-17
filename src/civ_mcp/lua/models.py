@@ -351,39 +351,6 @@ class ProductionOption:
     repair_x: int | None = None  # district repair X coordinate
     repair_y: int | None = None  # district repair Y coordinate
 
-
-@dataclass
-class TileInfo:
-    x: int
-    y: int
-    terrain: str
-    feature: str | None
-    resource: str | None
-    is_hills: bool
-    is_river: bool
-    is_coastal: bool
-    improvement: str | None
-    owner_id: int
-    visibility: str = "visible"  # "visible", "revealed", or "unexplored"
-    is_fresh_water: bool = False
-    yields: tuple[int, ...] | None = None  # (food, prod, gold, science, culture, faith)
-    units: list[str] | None = None  # visible foreign units, e.g. ["Barbarian WARRIOR"]
-    own_units: list[str] | None = (
-        None  # player's own units on this tile, e.g. ["WARRIOR", "BUILDER"]
-    )
-    resource_class: str | None = None  # "strategic", "luxury", "bonus"
-    is_pillaged: bool = False
-    district: str | None = None  # e.g. "DISTRICT_CAMPUS", None if no district
-    owner_name: str | None = (
-        None  # resolved name, e.g. "Vatican City" (with :CS suffix for city-states)
-    )
-    route_type: int = (
-        -1
-    )  # -1=none, 0=ancient, 1=medieval, 2=industrial, 3=modern, 4=railroad
-    movement_cost: int = 1  # base movement cost for land units
-    row_parity: str = ""  # "left" or "right" — determined by GetAdjacentPlot at query time
-
-
 @dataclass
 class DiplomacyModifier:
     score: int
@@ -1410,5 +1377,3 @@ class FullGameState:
     world_congress: WorldCongressStatus | None = None
     notifications: list[GameNotification] = field(default_factory=list)
 
-    # Map
-    map: list[TileInfo] = field(default_factory=list)

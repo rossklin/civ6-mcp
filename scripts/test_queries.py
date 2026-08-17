@@ -36,17 +36,6 @@ async def main():
     for c in cities:
         print(f"  {c}")
 
-    # Map around first city (or 0,0 if no cities)
-    if cities:
-        cx, cy = cities[0].x, cities[0].y
-    else:
-        cx, cy = 0, 0
-    lines = await conn.execute_read(lq.build_map_area_query(cx, cy, 1))
-    tiles = lq.parse_map_response(lines)
-    print(f"MAP ({len(tiles)} tiles around {cx},{cy}):")
-    for t in tiles:
-        print(f"  ({t.x},{t.y}) {t.terrain} feat={t.feature} res={t.resource}")
-
     # Diplomacy
     lines = await conn.execute_read(lq.build_diplomacy_query())
     civs = lq.parse_diplomacy_response(lines)

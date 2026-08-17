@@ -51,7 +51,6 @@ _SECTIONS: list[tuple[str, str, bool]] = [
     ("great_people", "great_people", True),
     ("world_congress", "world_congress", True),
     ("notifications", "notifications", True),
-    ("map", "map", True),
 ]
 
 

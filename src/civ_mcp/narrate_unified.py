@@ -121,11 +121,6 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
         parts.append("\n## Notifications\n")
         parts.append(nr.narrate_notifications(state.notifications))
 
-    # ── Map ────────────────────────────────────────────────────────
-    if state.map:
-        parts.append("\n## Map\nEach tile lists its six neighbours at the end of the line after NB\n")
-        parts.append(nr.narrate_map_tiles(state.map))
-
     # ── Strategic Map ──────────────────────────────────────────────
     if state.strategic_map is not None:
         parts.append("\n## Strategic Map\n")

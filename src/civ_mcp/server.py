@@ -31,6 +31,7 @@ from civ_mcp.diary import (
 from civ_mcp.game_state import GameState
 from civ_mcp.handoff import HandoffConfig, HandoffKeeper
 from civ_mcp.logger import GameLogger
+from civ_mcp.lua._helpers import load_lua_template
 from civ_mcp.lua.units import build_pathing_estimate_query
 from civ_mcp.map_capture import MapCapture
 from civ_mcp.command_executor import execute_commands as _execute_commands
@@ -1379,10 +1380,14 @@ async def get_full_game_state(ctx: Context) -> str:
             except Exception:
                 pass
 
-        # The available governors section is to verbose to appear here, there is
-        # a separate tool to get the governors available to appoint.
+        # First run section queries in the old format, that go through the parser/narrator roundabout
         state.governors.available_to_appoint = []
         text = narrate_full_state(state, app.handoff_config.managed_ids)
+
+        # Then run queries in the new format that output the correct format directly
+        # Append the map query output
+        lines: list[str] = await gs.conn.execute_write(load_lua_template("map.lua"))
+        text = text + "\n\n## Map\nEach tile lists its six neighbours at the end of the line after NB\n\n" + "\n".join(lines)
 
         # Prepend the deferred post-turn report (snapshot diff, threats,
         # warnings) stashed when this seat ended its last turn. Built once —

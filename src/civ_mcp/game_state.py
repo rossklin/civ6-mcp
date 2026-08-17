@@ -180,14 +180,6 @@ class GameState:
         lines = await self.conn.execute_write(lq.build_cities_query())
         return lq.parse_cities_response(lines)
 
-    async def get_map_area(
-        self, center_x: int, center_y: int, radius: int = 2
-    ) -> list[lq.TileInfo]:
-        lines = await self.conn.execute_read(
-            lq.build_map_area_query(center_x, center_y, radius)
-        )
-        return lq.parse_map_response(lines)
-
     async def get_strategic_map(self) -> lq.StrategicMapData:
         lines = await self.conn.execute_read(lq.build_strategic_map_query())
         return lq.parse_strategic_map_response(lines)
