@@ -1387,7 +1387,7 @@ async def get_full_game_state(ctx: Context) -> str:
         # Then run queries in the new format that output the correct format directly
         # Append the map query output
         lines: list[str] = await gs.conn.execute_write(load_lua_template("map.lua"))
-        text = text + "\n\n## Map\nEach tile lists its six neighbours at the end of the line after NB\n\n" + "\n".join(lines)
+        text = text + "\n\n## Map\nNote: neighbours with \"RC\" have a river crossing\n\n" + "\n".join(lines)
 
         # Prepend the deferred post-turn report (snapshot diff, threats,
         # warnings) stashed when this seat ended its last turn. Built once —

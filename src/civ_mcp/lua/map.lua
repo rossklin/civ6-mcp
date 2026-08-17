@@ -14,7 +14,7 @@ local function strip(s, prefix)
     return (s:gsub(prefix, ""))
 end
 
--- Pass 1: build enemy unit lookup table (avoid O(tiles*players*units))
+-- Build enemy unit lookup table (avoid O(tiles*players*units))
 -- Values are joined with ", " to match narrate_map's unit formatting.
 local enemyLookup = {}
 for i = 0, 63 do
@@ -63,43 +63,9 @@ if myPlayerUnits then
     end
 end
 
--- Pass 2: determine row parity (left/right offset) for each revealed row.
--- dir 5 = NW. Use modulo to handle map wrapping at edges (cylindrical maps).
-local rowParity = {}
-do
-    local rowFirstTile = {}
-    for y = 0, h - 1 do
-        for x = 0, w - 1 do
-            local plot = Map.GetPlot(x, y)
-            if plot and vis:IsRevealed(plot:GetIndex()) then
-                rowFirstTile[y] = {x = x, y = y}
-                break
-            end
-        end
-    end
-    for y, tile in pairs(rowFirstTile) do
-        for dx = 0, 10 do
-            local tx = tile.x + dx
-            local adj = Map.GetAdjacentPlot(tx, y, 5)
-            if adj then
-                local ax = adj:GetX()
-                -- Normalize delta accounting for map wrap: (ax - tx + w) % w
-                local d = (ax - tx + w) % w
-                if d == 0 then
-                    rowParity[y] = "right"
-                elseif d == w - 1 then
-                    rowParity[y] = "left"
-                end
-                break
-            end
-        end
-    end
-end
-
--- Pass 3: scan every tile, format each revealed one as a narrate_map line.
+-- Scan every tile, format each revealed one as a narrate_map line.
 local lines = {}
-for y = 0, h - 1 do
-    local parity = rowParity[y] or "right"
+for y = h - 1, 0, -1 do
     for x = 0, w - 1 do
         local plot = Map.GetPlot(x, y)
         if plot then
@@ -231,15 +197,19 @@ for y = 0, h - 1 do
                     unitStr = " **[" .. enemyLookup[key] .. "]**"
                 end
 
-                -- Neighbour coordinate list depends on row parity
-                local parityStr
-                if parity == "left" then
-                    parityStr = "NW (" .. (x - 1) .. "," .. (y + 1) .. "), NE (" .. x .. "," .. (y + 1) .. "), E (" .. (x + 1) .. "," .. y .. "), SE (" .. x .. "," .. (y - 1) .. "), SW (" .. (x - 1) .. "," .. (y - 1) .. "), W (" .. (x - 1) .. "," .. y .. ")"
-                else
-                    parityStr = "NW (" .. x .. "," .. (y + 1) .. "), NE (" .. (x + 1) .. "," .. (y + 1) .. "), E (" .. (x + 1) .. "," .. y .. "), SE (" .. (x + 1) .. "," .. (y - 1) .. "), SW (" .. x .. "," .. (y - 1) .. "), W (" .. (x - 1) .. "," .. y .. ")"
+                -- Neighbour tiles
+                local dirNames = {"NE","E","SE","SW","W","NW"}
+                local neighbours = {}
+                for i = 0,5 do
+                    local adj = Map.GetAdjacentPlot(x, y, i)
+                    if adj then
+                        local strbuf = dirNames[i+1] .. " (" .. adj:GetX() .. "," .. adj:GetY() .. ")"
+                        if (adj:IsRiverCrossingToPlot(plot)) then strbuf = strbuf .. " RC" end
+                        neighbours[#neighbours+1] = strbuf
+                    end
                 end
 
-                lines[#lines + 1] = "  (" .. x .. "," .. y .. "): " .. table.concat(parts, " ") .. ownerStr .. visTag .. mvStr .. ownStr .. unitStr .. ", NB: " .. parityStr
+                lines[#lines + 1] = "  (" .. x .. "," .. y .. "): " .. table.concat(parts, " ") .. ownerStr .. visTag .. mvStr .. ownStr .. unitStr .. ", neighbours: " .. table.concat(neighbours, ", ")
             end
         end
     end
@@ -249,5 +219,5 @@ if #lines == 0 then
     print("No tiles.")
 else
     print(#lines .. " tiles:")
-    for _, ln in ipairs(lines) do print(ln) end
+    print(table.concat(lines, "\n"))
 end
