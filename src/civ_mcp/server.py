@@ -31,7 +31,6 @@ from civ_mcp.diary import (
 from civ_mcp.game_state import GameState
 from civ_mcp.handoff import HandoffConfig, HandoffKeeper
 from civ_mcp.logger import GameLogger
-from civ_mcp.lua._helpers import load_lua_template
 from civ_mcp.map_capture import MapCapture
 from civ_mcp.command_executor import execute_commands as _execute_commands
 from civ_mcp.narrate_unified import narrate_full_state
@@ -1383,18 +1382,6 @@ async def get_full_game_state(ctx: Context) -> str:
         # a separate tool to get the governors available to appoint.
         state.governors.available_to_appoint = []
         text = narrate_full_state(state, app.handoff_config.managed_ids)
-
-        # Add the trial ascii map. It generates the correct output format directly
-        # so it does not need to be parsed and re-narrated.
-        ascii_map_output = ""
-        try:
-            lua = load_lua_template("map_ascii.lua")
-            lines = await gs.conn.execute_write(lua, perspective=False)
-            ascii_map_output = "\n".join(lines)
-        except Exception as e:
-            ascii_map_output = f"Error generating trial ascii map: {e}"
-
-        text = text + "\n\n## TRIAL ASCII MAP\n" + ascii_map_output
 
         # Prepend the deferred post-turn report (snapshot diff, threats,
         # warnings) stashed when this seat ended its last turn. Built once —
