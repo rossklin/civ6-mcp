@@ -543,7 +543,7 @@ def narrate_city_production(options: list[lq.ProductionOption]) -> str:
     return "\n".join(lines)
 
 
-def _format_tile(t: lq.TileInfo) -> str:
+def _format_tile(t: lq.TileInfo, p: str) -> str:
     """Format a single tile as one human-readable line."""
     parts = [t.terrain.replace("TERRAIN_", "")]
     if t.is_hills:
@@ -607,8 +607,14 @@ def _format_tile(t: lq.TileInfo) -> str:
     mv_str = ""
     if t.movement_cost > 1:
         mv_str = f" [mv:{t.movement_cost}]"
+
+    if (p == "left"): 
+        parity_str = f"NW ({t.x-1},{t.y+1}), NE ({t.x},{t.y+1}), E ({t.x+1},{t.y}), SE ({t.x},{t.y-1}), SW ({t.x-1},{t.y-1}), W ({t.x-1},{t.y})"
+    else:
+        parity_str = f"NW ({t.x},{t.y+1}), NE ({t.x+1},{t.y+1}), E ({t.x+1},{t.y}), SE ({t.x+1},{t.y-1}), SW ({t.x},{t.y-1}), W ({t.x-1},{t.y})"
+    
     return (
-        f"  ({t.x},{t.y}): {' '.join(parts)}{owner}{vis_tag}{mv_str}{own_str}{unit_str}"
+        f"  ({t.x},{t.y}): {' '.join(parts)}{owner}{vis_tag}{mv_str}{own_str}{unit_str}, NB: {parity_str}"
     )
 
 
@@ -640,16 +646,10 @@ def narrate_map_tiles(tiles: list[lq.TileInfo]) -> str:
     lines = [f"{len(tiles)} revealed tiles:"]
     for y in sorted(by_row.keys(), reverse=True):
         row_tiles = sorted(by_row[y], key=lambda t: t.x)
-        parity_tag = ""
-        if y in row_parity_info:
-            p = row_parity_info[y]
-            if p == "left":
-                parity_tag = " [LS: NW at (x-1,y+1)]"
-            elif p == "right":
-                parity_tag = " [RS: NW at (x,y+1)]"
-        lines.append(f"  --- Row {y}{parity_tag} ---")
+        p = row_parity_info[y] if y in row_parity_info else "left"
+        lines.append(f"  --- Row {y} ---")
         for t in row_tiles:
-            lines.append(_format_tile(t))
+            lines.append(_format_tile(t, p))
 
     return "\n".join(lines)
 

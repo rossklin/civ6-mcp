@@ -123,7 +123,7 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
 
     # ── Map ────────────────────────────────────────────────────────
     if state.map:
-        parts.append("\n## Map\n")
+        parts.append("\n## Map\nEach tile lists its six neighbours at the end of the line after NB\n")
         parts.append(nr.narrate_map_tiles(state.map))
 
     # ── Strategic Map ──────────────────────────────────────────────
