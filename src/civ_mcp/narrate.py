@@ -462,26 +462,6 @@ def narrate_cities(
             lines.append(f"  {d}")
     return "\n".join(lines)
 
-
-def narrate_pathing_estimate(est: lq.PathingEstimate) -> str:
-    if est.turns == -2:
-        return "Unit has no moves remaining this turn."
-    if est.turns < 0:
-        return (
-            "Unreachable — no path found. Destination may be in fog, "
-            "behind foreign borders, or blocked by impassable terrain."
-        )
-    if est.turns == 0:
-        return f"Reachable this turn ({est.total_tiles} tiles in path, all within movement range)."
-    wp_str = ""
-    if est.waypoints and len(est.waypoints) > 2:
-        wp_str = f"\n  Path: {est.waypoints[0]} -> ... -> {est.waypoints[-1]}"
-    return (
-        f"~{est.turns} turns ({est.total_tiles} tiles total, "
-        f"{est.reachable_this_turn} reachable this turn){wp_str}"
-    )
-
-
 def narrate_combat_estimate(est: lq.CombatEstimate) -> str:
     atk_type = "Ranged" if est.is_ranged else "Melee"
     mods_str = ", ".join(est.modifiers) if est.modifiers else "none"

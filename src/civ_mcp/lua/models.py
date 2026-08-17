@@ -621,17 +621,6 @@ class CombatEstimate:
     defender_hp: int
     attacker_hp: int
 
-
-@dataclass
-class PathingEstimate:
-    """Estimated turns for a unit to reach a destination."""
-
-    turns: int
-    total_tiles: int
-    reachable_this_turn: int
-    waypoints: list[str] = field(default_factory=list)  # ["(x,y)", ...]
-
-
 @dataclass
 class SettleCandidate:
     """A candidate location for founding a city."""

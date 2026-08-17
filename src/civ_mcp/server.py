@@ -31,6 +31,7 @@ from civ_mcp.diary import (
 from civ_mcp.game_state import GameState
 from civ_mcp.handoff import HandoffConfig, HandoffKeeper
 from civ_mcp.logger import GameLogger
+from civ_mcp.lua.units import build_pathing_estimate_query
 from civ_mcp.map_capture import MapCapture
 from civ_mcp.command_executor import execute_commands as _execute_commands
 from civ_mcp.narrate_unified import narrate_full_state
@@ -2011,8 +2012,8 @@ async def get_pathing_estimate(
     unit_index = unit_id % 65536
 
     async def _run():
-        est = await gs.get_pathing_estimate(unit_index, target_x, target_y)
-        return nr.narrate_pathing_estimate(est)
+        lines: list[str] = await gs.conn.execute_write(build_pathing_estimate_query(unit_index, target_x, target_y))
+        return "\n".join(lines)
 
     return await _logged(
         ctx,

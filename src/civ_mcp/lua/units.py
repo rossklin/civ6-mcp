@@ -19,7 +19,6 @@ from civ_mcp.lua.models import (
     BuilderTask,
     CombatEstimate,
     GoodyReward,
-    PathingEstimate,
     PromotionOption,
     ThreatInfo,
     UnitInfo,
@@ -1820,81 +1819,12 @@ def diff_threats(
 
 
 def build_pathing_estimate_query(unit_index: int, target_x: int, target_y: int) -> str:
-    """InGame context: estimate turns for a unit to reach a destination.
-
-    Uses UnitManager.GetMoveToPath for the full path and
-    UnitManager.GetReachableMovement for this-turn reachable tiles.
-    """
-    return f"""
-{_lua_get_unit(unit_index)}
--- Guard: GetMoveToPath returns degenerate paths for units with 0 moves
-if unit:GetMovesRemaining() <= 0 then
-    print("PATH|-2|0|0")
-    print("WAYPOINTS|")
-    print("{SENTINEL}")
-    return
-end
-local targetPlot = Map.GetPlot({target_x}, {target_y})
-if not targetPlot then {_bail(f"ERR:INVALID_TARGET|Target ({target_x},{target_y}) is out of bounds")} end
-local path = UnitManager.GetMoveToPath(unit, targetPlot:GetIndex())
-if not path or #path == 0 then
-    print("PATH|-1|0|0")
-    print("WAYPOINTS|")
-    print("{SENTINEL}")
-    return
-end
--- Validate path reaches destination (GetMoveToPath returns garbage for unreachable targets)
-local lastPlot = Map.GetPlotByIndex(path[#path])
-if lastPlot:GetX() ~= {target_x} or lastPlot:GetY() ~= {target_y} then
-    print("PATH|-1|" .. #path .. "|0")
-    print("WAYPOINTS|")
-    print("{SENTINEL}")
-    return
-end
-local reach = UnitManager.GetReachableMovement(unit)
-local reachSet = {{}}
-if reach then
-    for _, pIdx in ipairs(reach) do reachSet[pIdx] = true end
-end
--- Count how many path tiles are reachable this turn
-local reachCount = 0
-for _, pIdx in ipairs(path) do
-    if reachSet[pIdx] then reachCount = reachCount + 1 end
-end
-local totalTiles = #path
-local tilesPerTurn = math.max(reachCount, 1)
-local turnsNeeded
-if reachCount >= totalTiles then
-    turnsNeeded = 0
-else
-    turnsNeeded = math.ceil((totalTiles - reachCount) / tilesPerTurn)
-end
-print("PATH|" .. turnsNeeded .. "|" .. totalTiles .. "|" .. reachCount)
--- Emit waypoints for context (first tile, last reachable, destination)
-local waypoints = {{}}
-for i, pIdx in ipairs(path) do
-    local plot = Map.GetPlotByIndex(pIdx)
-    waypoints[#waypoints + 1] = "(" .. plot:GetX() .. "," .. plot:GetY() .. ")"
-end
-print("WAYPOINTS|" .. table.concat(waypoints, ";"))
-print("{SENTINEL}")
-"""
-
-
-def parse_pathing_estimate(lines: list[str]) -> PathingEstimate:
-    """Parse PATH| and WAYPOINTS| output."""
-    est = PathingEstimate(turns=0, total_tiles=0, reachable_this_turn=0, waypoints=[])
-    for line in lines:
-        if line.startswith("PATH|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                est.turns = int(parts[1])
-                est.total_tiles = int(parts[2])
-                est.reachable_this_turn = int(parts[3])
-        elif line.startswith("WAYPOINTS|"):
-            est.waypoints = line.split("|", 1)[1].split(";")
-    return est
-
+    """InGame context: suggested path to destination."""
+    return (load_lua_template("pathing_estimate.lua")
+    .replace("__MCP_UNIT_INDEX_TAG__", str(unit_index))
+    .replace("__MCP_TARGET_X_TAG__", str(target_x))
+    .replace("__MCP_TARGET_Y_TAG__", str(target_y))
+    )
 
 # ── Post-move visibility ────────────────────────────────────────────────
 

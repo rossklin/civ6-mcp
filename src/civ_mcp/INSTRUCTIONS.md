@@ -104,7 +104,7 @@ Conventions:
 Command reference (params in parentheses; ``?`` = optional):
 
 Units:
-    move_unit(unit_index, target_x, target_y) — move toward a tile
+    move_unit(unit_index, target_x, target_y) — move toward a tile (can target tiles beyond this turn's movement range)
     attack_unit(unit_index, target_x, target_y) — attack enemy at tile
     fortify_unit(unit_index)
     skip_unit(unit_index)
@@ -242,7 +242,9 @@ Moving into a tile costs movement points depending on the terrain and features. 
 
 Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort.
 
-`get_pathing_estimate(unit_id, target_x, target_y)` estimates how many turns a unit needs to reach a destination, using the game's actual pathfinding. Use it before committing units to long marches, but beware that it may take a weird path to avoid temporary blockage such as units or unexplored tiles.
+You can use the move_unit command to initiate movement to a target that is further away than this turn's movement allows. The unit will then automatically continue towards that target at the end of each turn unless you give it other orders.
+
+`get_pathing_estimate(unit_id, target_x, target_y)` returns the quickest path to a target, using the game's actual pathfinding and considering terrain and other movement modifiers. Reasoning about every step when moving to a distant target can be very difficult. Prefer calling this tool when moving more than a couple tiles. But beware that it may generate a weird path to avoid temporary blockage such as units or unexplored tiles.
 
 Common reasons unit movement does not go as expected:
 - failure to account for map features like crossing a river

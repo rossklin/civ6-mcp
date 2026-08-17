@@ -172,14 +172,6 @@ class GameState:
         lines = await self.conn.execute_read(lq.build_threat_scan_query())
         return lq.parse_threat_scan_response(lines)
 
-    async def get_pathing_estimate(
-        self, unit_index: int, target_x: int, target_y: int
-    ) -> lq.PathingEstimate:
-        lines = await self.conn.execute_write(
-            lq.build_pathing_estimate_query(unit_index, target_x, target_y)
-        )
-        return lq.parse_pathing_estimate(lines)
-
     async def get_victory_progress(self) -> lq.VictoryProgress:
         lines = await self.conn.execute_write(lq.build_victory_progress_query())
         return lq.parse_victory_progress_response(lines)
