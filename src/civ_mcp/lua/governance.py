@@ -381,7 +381,7 @@ csTypeMap["LEADER_MINOR_CIV_MILITARISTIC"] = "Militaristic"
 csTypeMap["LEADER_MINOR_CIV_RELIGIOUS"] = "Religious"
 csTypeMap["LEADER_MINOR_CIV_TRADE"] = "Trade"
 csTypeMap["LEADER_MINOR_CIV_INDUSTRIAL"] = "Industrial"
-for i = 0, 62 do
+for i = 0, 61 do
     if Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() == false and Players[i]:IsBarbarian() == false and pDiplo:HasMet(i) then
         local cfg = PlayerConfigurations[i]
         local name = Locale.Lookup(cfg:GetPlayerName())
