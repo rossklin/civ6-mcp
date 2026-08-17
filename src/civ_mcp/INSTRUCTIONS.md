@@ -40,39 +40,6 @@ This server exposes **two primary tools** plus admin utilities:
 
 There are also a couple getters that were kept separate because they are only needed rarely.
 
-## Coordinate System
-
-**Hex grid: (X, Y) where higher Y = visually north.**
-- Y increases → north (down). Y decreases → north (up).
-- X increases → east. X decreases → west.
-- Moving from (9,24) to (9,26) is **north**
-
-**Hex adjacency: simple rules by row parity.**
-
-The game uses offset hex coordinates. Moving ±1 in ONLY X or ONLY Y is **always** adjacent. For diagonal moves (±1 in both axes), use the parity rules below. The Map section header shows the parity hint for quick reference.
-
-**Left shifted rows: NW neighbor at (x-1, y+1)**
-| Direction | Offset |
-|-----------|--------|
-| NE | (x, y+1) |
-| E | (x+1, y) |
-| SE | (x, y-1) |
-| SW | (x-1, y-1) |
-| W | (x-1, y) |
-| NW | (x-1, y+1) |
-
-**Right shifted rows: NW neighbor at (x, y+1)**
-| Direction | Offset |
-|-----------|--------|
-| NE | (x+1, y+1) |
-| E | (x+1, y) |
-| SE | (x+1, y-1) |
-| SW | (x, y-1) |
-| W | (x-1, y) |
-| NW | (x, y+1) |
-
-When calculating movement: check the `[mv:N]` notation in the map output. A tile costing `[mv:3]` (hills + forest/jungle) cannot be entered or attacked by a unit with only 2 moves remaining, except if it is an adjacent tile and 2 moves is the full movement points for that unit. Check map movement costs BEFORE issuing move or attack commands.
-
 ## Tool execute_commands
 Execute a batch of game commands sequentially. Here is the full reference of each command.
 
