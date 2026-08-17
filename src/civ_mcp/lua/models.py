@@ -381,7 +381,7 @@ class TileInfo:
         -1
     )  # -1=none, 0=ancient, 1=medieval, 2=industrial, 3=modern, 4=railroad
     movement_cost: int = 1  # base movement cost for land units
-    row_parity: str = ""  # "even" or "odd" — determined by GetAdjacentPlot at query time
+    row_parity: str = ""  # "left" or "right" — determined by GetAdjacentPlot at query time
 
 
 @dataclass

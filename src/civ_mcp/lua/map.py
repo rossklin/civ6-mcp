@@ -424,9 +424,9 @@ for y, tile in pairs(rowFirstTile) do
             -- Normalize delta accounting for map wrap: (ax - tx + w) % w
             local d = (ax - tx + w) % w
             if d == 0 then
-                print("ROWINFO|" .. y .. "|odd")
+                print("ROWINFO|" .. y .. "|right")
             elseif d == w - 1 then
-                print("ROWINFO|" .. y .. "|even")
+                print("ROWINFO|" .. y .. "|left")
             end
             break
         end

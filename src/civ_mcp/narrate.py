@@ -643,9 +643,9 @@ def narrate_map_tiles(tiles: list[lq.TileInfo]) -> str:
         parity_tag = ""
         if y in row_parity_info:
             p = row_parity_info[y]
-            if p == "even":
+            if p == "left":
                 parity_tag = " [LS: NW at (x-1,y+1)]"
-            elif p == "odd":
+            elif p == "right":
                 parity_tag = " [RS: NW at (x,y+1)]"
         lines.append(f"  --- Row {y}{parity_tag} ---")
         for t in row_tiles:
