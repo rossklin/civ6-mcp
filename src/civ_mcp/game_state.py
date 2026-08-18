@@ -106,28 +106,6 @@ class GameState:
     # Query methods
     # ------------------------------------------------------------------
 
-    async def get_game_overview(self) -> lq.GameOverview:
-        # InGame context needed for GetFavor() (nil in GameCore)
-        lines = await self.conn.execute_write(lq.build_overview_query())
-        ov = lq.parse_overview_response(lines)
-        # Bootstrap: capture baseline snapshot for first end_turn diff
-        if self._last_snapshot is None:
-            try:
-                self._last_snapshot = await self._take_snapshot(ov)
-            except Exception:
-                log.debug("Failed to bootstrap snapshot", exc_info=True)
-        return ov
-
-    async def get_diary_snapshot(self) -> lq.DiarySnapshot:
-        """Full per-turn snapshot for diary JSONL. InGame context."""
-        lines = await self.conn.execute_write(lq.build_diary_full_query())
-        return lq.parse_diary_full_response(lines)
-
-    async def get_rival_snapshot(self) -> list[lq.RivalSnapshot]:
-        """Lightweight per-rival stats for diary entries."""
-        lines = await self.conn.execute_write(lq.build_rival_snapshot_query())
-        return lq.parse_rival_snapshot_response(lines)
-
     async def check_game_over(self) -> lq.GameOverStatus | None:
         """Check if the game has ended (victory/defeat screen showing).
 
@@ -148,20 +126,6 @@ class GameState:
             log.debug("Game-over check failed in GameCore too", exc_info=True)
             return None
 
-    async def get_units(self) -> list[lq.UnitInfo]:
-        lines = await self.conn.execute_write(lq.build_units_query())
-        return lq.parse_units_response(lines)
-
-    async def get_builder_tasks(
-        self,
-    ) -> tuple[list[lq.BuilderTask], list[lq.BuilderInfo]]:
-        lines = await self.conn.execute_write(lq.build_builder_tasks_query())
-        return lq.parse_builder_tasks(lines)
-
-    async def get_spies(self) -> list[lq.SpyInfo]:
-        lines = await self.conn.execute_write(lq.build_get_spies_query())
-        return lq.parse_spies_response(lines)
-
     async def spy_travel(self, unit_index: int, target_x: int, target_y: int) -> str:
         lua = lq.build_spy_travel(unit_index, target_x, target_y)
         lines = await self.conn.execute_write(lua)
@@ -173,39 +137,6 @@ class GameState:
         lua = lq.build_spy_mission(unit_index, mission_type, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
-
-    async def get_threat_scan(self) -> list[lq.ThreatInfo]:
-        lines = await self.conn.execute_read(lq.build_threat_scan_query())
-        return lq.parse_threat_scan_response(lines)
-
-    async def get_victory_progress(self) -> lq.VictoryProgress:
-        lines = await self.conn.execute_write(lq.build_victory_progress_query())
-        return lq.parse_victory_progress_response(lines)
-
-    async def get_strategic_map(self) -> lq.StrategicMapData:
-        lines = await self.conn.execute_read(lq.build_strategic_map_query())
-        return lq.parse_strategic_map_response(lines)
-
-    async def get_diplomacy(self) -> list[lq.CivInfo]:
-        # Uses InGame context for GetDiplomaticAI access
-        lines = await self.conn.execute_write(lq.build_diplomacy_query())
-        return lq.parse_diplomacy_response(lines)
-
-    async def get_tech_civics(self) -> lq.TechCivicStatus:
-        lines = await self.conn.execute_read(lq.build_tech_civics_query())
-        return lq.parse_tech_civics_response(lines)
-
-    async def get_empire_resources(
-        self,
-    ) -> tuple[
-        list[lq.ResourceStockpile],
-        list[lq.OwnedResource],
-        list[lq.NearbyResource],
-        dict[str, int],
-    ]:
-        # InGame context needed for GetResourceStockpileCap etc.
-        lines = await self.conn.execute_write(lq.build_empire_resources_query())
-        return lq.parse_empire_resources_response(lines)
 
     # ------------------------------------------------------------------
     # Action methods (run in InGame context for UnitManager access)
@@ -901,16 +832,6 @@ class GameState:
     # Trade deal methods (InGame context)
     # ------------------------------------------------------------------
 
-    async def get_deal_options(self, other_player_id: int) -> lq.DealOptions:
-        lua = lq.build_deal_options_query(other_player_id)
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_deal_options_response(lines)
-
-    async def get_pending_deals(self) -> list[lq.PendingDeal]:
-        lua = lq.build_pending_deals_query()
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_pending_deals_response(lines)
-
     async def respond_to_deal(self, other_player_id: int, accept: bool) -> str:
         lua = lq.build_respond_to_deal(other_player_id, accept)
         lines = await self.conn.execute_write(lua)
@@ -977,11 +898,6 @@ class GameState:
     # ------------------------------------------------------------------
     # Policy methods (InGame context)
     # ------------------------------------------------------------------
-
-    async def get_policies(self) -> lq.GovernmentStatus:
-        lua = lq.build_policies_query()
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_policies_response(lines)
 
     async def set_policies(self, assignments: dict[int, str]) -> str:
         lua = lq.build_set_policies(assignments)
@@ -1072,11 +988,6 @@ class GameState:
     # ------------------------------------------------------------------
     # City-state / Envoy methods (InGame context)
     # ------------------------------------------------------------------
-
-    async def get_city_states(self) -> lq.EnvoyStatus:
-        lua = lq.build_city_states_query()
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_city_states_response(lines)
 
     async def send_envoy(self, city_state_player_id: int) -> str:
         lua = lq.build_send_envoy(city_state_player_id)
@@ -1218,27 +1129,9 @@ class GameState:
         self._advisor_budget_warning = soft_warn
         return lq.parse_district_advisor_response(lines)
 
-    async def get_wonder_advisor(
-        self, city_id: int, wonder_name: str
-    ) -> list[lq.WonderPlacement] | str:
-        """Returns placements list, or an error string if budget exceeded."""
-        hard_err, soft_warn = self._advisor_budget_check()
-        if hard_err:
-            return hard_err
-        lua = lq.build_wonder_advisor_query(city_id, wonder_name)
-        lines = await self.conn.execute_write(lua)
-        # Warning only attaches to the success path (same reason as above)
-        self._advisor_budget_warning = soft_warn
-        return lq.parse_wonder_advisor_response(lines)
-
     # ------------------------------------------------------------------
     # Tile purchase methods (InGame context)
     # ------------------------------------------------------------------
-
-    async def get_purchasable_tiles(self, city_id: int) -> list[lq.PurchasableTile]:
-        lua = lq.build_purchasable_tiles_query(city_id)
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_purchasable_tiles_response(lines)
 
     async def purchase_tile(self, city_id: int, x: int, y: int) -> str:
         lua = lq.build_purchase_tile(city_id, x, y)
@@ -1258,16 +1151,6 @@ class GameState:
     # Great People (InGame context)
     # ------------------------------------------------------------------
 
-    async def get_great_people(self) -> list[lq.GreatPersonInfo]:
-        lua = lq.build_great_people_query()
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_great_people_response(lines)
-
-    async def get_gp_advisor(self, unit_index: int) -> lq.GPAdvisorResult | None:
-        lua = lq.build_gp_advisor_query(unit_index)
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_gp_advisor_response(lines)
-
     async def recruit_great_person(self, individual_id: int) -> str:
         lua = lq.build_recruit_great_person(individual_id)
         lines = await self.conn.execute_write(lua)
@@ -1280,10 +1163,6 @@ class GameState:
         lines = await self.conn.execute_write(lua)
         return lines[0] if lines else "No response"
 
-    async def get_religion_status(self) -> lq.ReligionStatus:
-        lines = await self.conn.execute_write(lq.build_religion_status_query())
-        return lq.parse_religion_status_response(lines)
-
     async def reject_great_person(self, individual_id: int) -> str:
         lua = lq.build_reject_great_person(individual_id)
         lines = await self.conn.execute_write(lua)
@@ -1292,13 +1171,6 @@ class GameState:
     # ------------------------------------------------------------------
     # Trade route methods (InGame context)
     # ------------------------------------------------------------------
-
-    async def get_trade_routes(self) -> lq.TradeRouteStatus:
-        lua = lq.build_trade_routes_query()
-        lines = await self.conn.execute_write(
-            lua
-        )  # InGame context (GetOutgoingRoutes is InGame-only)
-        return lq.parse_trade_routes_response(lines)
 
     async def get_trade_destinations(
         self, unit_index: int
@@ -1374,15 +1246,6 @@ class GameState:
         lua = lq.build_set_yield_focus(city_id, focus)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
-
-    # ------------------------------------------------------------------
-    # Notifications
-    # ------------------------------------------------------------------
-
-    async def get_notifications(self) -> list[lq.GameNotification]:
-        lua = lq.build_notifications_query()
-        lines = await self.conn.execute_write(lua)
-        return lq.parse_notifications_response(lines)
 
     # ------------------------------------------------------------------
     # Snapshot-diff for turn event detection
