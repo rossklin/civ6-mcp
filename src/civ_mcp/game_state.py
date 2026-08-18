@@ -1558,6 +1558,7 @@ class GameState:
 
 ## Map
 The map consists of hexagonal tiles so each tile has six neighbours.
+If the tile is a valid settle location it is marked [VSL].
 Note: neighbours with "RC" have a river crossing.
 
 """

@@ -63,6 +63,24 @@ if myPlayerUnits then
     end
 end
 
+-- Return true if dist to closest city > 3
+local function citySettleCondition(x, y) 
+    for i = 0, 62 do
+        if Players[i] and Players[i]:IsAlive() then
+            local cities = Players[i]:GetCities()
+            if cities then
+                for _, c in cities:Members() do
+                    local dist = Map.GetPlotDistance(x, y, c:GetX(), c:GetY())
+                    if dist <= 3 then
+                        return false
+                    end
+                end
+            end
+        end
+    end
+    return true
+end
+
 -- Scan every tile, format each revealed one as a narrate_map line.
 local lines = {}
 for y = h - 1, 0, -1 do
@@ -113,7 +131,8 @@ for y = h - 1, 0, -1 do
                 pcall(function() routeType = plot:GetRouteType() end)
 
                 local moveCost = 1
-                if terrain ~= "TERRAIN_OCEAN" and terrain ~= "TERRAIN_COAST" then
+                local canSettleTag = ""
+                if not (plot:IsWater() or plot:IsImpassable()) then
                     if isHills then moveCost = 2 end
                     if featureIdx >= 0 then
                         local fInfo = GameInfo.Features[featureIdx]
@@ -122,12 +141,12 @@ for y = h - 1, 0, -1 do
                         end
                     end
                     if routeType >= 0 then moveCost = 1 end
+                    if citySettleCondition(x, y) then canSettleTag = "[VSL]" end
                 end
 
                 -- Build the space-joined descriptor parts (order matches _format_tile)
                 local parts = {}
                 table.insert(parts, strip(terrain, "TERRAIN_"))
-                if isHills then table.insert(parts, "Hills") end
                 if featureIdx >= 0 then table.insert(parts, strip(feature, "FEATURE_")) end
                 if resEntry and resVisible(resEntry) then
                     local resLabel = strip(resEntry.ResourceType, "RESOURCE_")
@@ -138,7 +157,7 @@ for y = h - 1, 0, -1 do
                     table.insert(parts, "[" .. resLabel .. "]")
                 end
                 if isRiver then table.insert(parts, "River") end
-                if isCoastal then table.insert(parts, "Coast") end
+                if isCoastal then table.insert(parts, "Coastal") end
                 if visible and plot:IsFreshWater() and not isRiver then
                     table.insert(parts, "FreshWater")
                 end
@@ -209,7 +228,7 @@ for y = h - 1, 0, -1 do
                     end
                 end
 
-                lines[#lines + 1] = "  (" .. x .. "," .. y .. "): " .. table.concat(parts, " ") .. ownerStr .. visTag .. mvStr .. ownStr .. unitStr .. ", neighbours: " .. table.concat(neighbours, ", ")
+                lines[#lines + 1] = "  (" .. x .. "," .. y .. "): " .. table.concat(parts, " ") .. ownerStr .. visTag .. canSettleTag .. mvStr .. ownStr .. unitStr .. ", neighbours: " .. table.concat(neighbours, ", ")
             end
         end
     end
