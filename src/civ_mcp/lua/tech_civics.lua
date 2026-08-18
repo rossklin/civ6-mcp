@@ -86,19 +86,33 @@ local function descStrFor(row)
     if d == "" then return "" end
     return " [Abilities: " .. d .. "]"
 end
--- Envoy awards per civic (civicType -> count).
-local envoysByCivic = {}
-for cm in GameInfo.CivicModifiers() do
-    local m = GameInfo.Modifiers[cm.ModifierId]
-    if m and m.ModifierType == "MODIFIER_PLAYER_GRANT_INFLUENCE_TOKEN" then
-        for ma in GameInfo.ModifierArguments() do
-            if ma.ModifierId == cm.ModifierId then
-                local v = tonumber(ma.Value)
-                if v then envoysByCivic[cm.CivicType] = (envoysByCivic[cm.CivicType] or 0) + v end
+-- Per-civic award counts, read from CivicModifiers + ModifierArguments.
+-- Envoy awards (MODIFIER_PLAYER_GRANT_INFLUENCE_TOKEN, "Amount") are the civic
+-- tree's numbered icon; governor titles (MODIFIER_PLAYER_ADJUST_GOVERNOR_POINTS,
+-- "Delta") have no tree icon but are granted by ~13 civics (State Workforce,
+-- Early Empire, ... Future Civic), one each.
+local modTypeById = {}
+for m in GameInfo.Modifiers() do modTypeById[m.ModifierId] = m.ModifierType end
+local argByNameByModId = {}
+for ma in GameInfo.ModifierArguments() do
+    if not argByNameByModId[ma.ModifierId] then argByNameByModId[ma.ModifierId] = {} end
+    argByNameByModId[ma.ModifierId][ma.Name] = ma.Value
+end
+local function awardsByCivic(modifierType, argName)
+    local map = {}
+    for cm in GameInfo.CivicModifiers() do
+        if modTypeById[cm.ModifierId] == modifierType then
+            local args = argByNameByModId[cm.ModifierId]
+            if args then
+                local v = tonumber(args[argName])
+                if v then map[cm.CivicType] = (map[cm.CivicType] or 0) + v end
             end
         end
     end
+    return map
 end
+local envoysByCivic = awardsByCivic("MODIFIER_PLAYER_GRANT_INFLUENCE_TOKEN", "Amount")
+local govTitlesByCivic = awardsByCivic("MODIFIER_PLAYER_ADJUST_GOVERNOR_POINTS", "Delta")
 -- Build the " -> item, item, ..." unlock string for a tech or civic.
 -- prereqField/initiatorField select PrereqTech/PrereqCivic vs the diplomatic-
 -- action InitiatorPrereqTech/InitiatorPrereqCivic columns; isCivic also pulls
@@ -126,6 +140,10 @@ local function buildUnlocks(prereqField, initiatorField, typeStr, isCivic)
         local n = envoysByCivic[typeStr]
         table.insert(unlocks, "Awards " .. n .. " Envoy" .. (n > 1 and "s" or ""))
     end
+    if isCivic and govTitlesByCivic[typeStr] then
+        local n = govTitlesByCivic[typeStr]
+        table.insert(unlocks, "Awards " .. n .. " Governor Title" .. (n > 1 and "s" or ""))
+    end
     if #unlocks == 0 then return "" end
     return " -> " .. table.concat(unlocks, ", "):gsub("|", "/")
 end
@@ -146,13 +164,7 @@ for row in GameInfo.CivicPrereqs() do
     table.insert(civicPrereqs[row.Civic], row.PrereqCivic)
 end
 
--- Era index from GameInfo (matches GetCurrentEra()) — used for the
--- "within curEra + 2" gating so far-future items are skipped.
-local eraIndex = {}
-for e in GameInfo.Eras() do eraIndex[e.EraType] = e.Index end
-local curEra = Game.GetEras():GetCurrentEra()
-
--- Display ordering for locked groupings (matches narrate's era_order).
+-- Display ordering for era groupings (completed / locked sections).
 local eraOrder = {
     "ERA_ANCIENT", "ERA_CLASSICAL", "ERA_MEDIEVAL", "ERA_RENAISSANCE",
     "ERA_INDUSTRIAL", "ERA_MODERN", "ERA_ATOMIC", "ERA_INFORMATION", "ERA_FUTURE",
@@ -163,6 +175,50 @@ local function eraLabel(eraType)
     if not eraType then return "UNKNOWN" end
     return (eraType:gsub("ERA_", ""))
 end
+-- Emit a by-era table (eraType -> list of lines) sorted chronologically,
+-- each era under a "-- ERA --" header. No-op when empty.
+local function emitByEra(header, byEra)
+    local eras = {}
+    for era in pairs(byEra) do table.insert(eras, era) end
+    if #eras == 0 then return end
+    table.sort(eras, function(a, b) return (eraRank[a] or 99) < (eraRank[b] or 99) end)
+    emit("")
+    emit(header)
+    for _, era in ipairs(eras) do
+        emit("  -- " .. eraLabel(era) .. " --")
+        for _, line in ipairs(byEra[era]) do emit(line) end
+    end
+end
+
+-- Completed techs (grouped by era, full detail)
+local completedTechsByEra = {}
+for tech in GameInfo.Technologies() do
+    if te:HasTech(tech.Index) then
+        local eraStr = tech.EraType and (" [" .. eraLabel(tech.EraType) .. "]") or ""
+        local unlocksStr = buildUnlocks("PrereqTech", "InitiatorPrereqTech", tech.TechnologyType, false)
+        local abilityStr = descStrFor(tech)
+        local line = "  " .. Locale.Lookup(tech.Name):gsub("|", "/") .. " (" .. tech.TechnologyType .. ")" .. eraStr .. unlocksStr .. abilityStr
+        local eraKey = tech.EraType or "UNKNOWN"
+        if not completedTechsByEra[eraKey] then completedTechsByEra[eraKey] = {} end
+        table.insert(completedTechsByEra[eraKey], line)
+    end
+end
+emitByEra("Completed techs:", completedTechsByEra)
+
+-- Completed civics (grouped by era, full detail)
+local completedCivicsByEra = {}
+for civic in GameInfo.Civics() do
+    if cu:HasCivic(civic.Index) then
+        local eraStr = civic.EraType and (" [" .. eraLabel(civic.EraType) .. "]") or ""
+        local unlocksStr = buildUnlocks("PrereqCivic", "InitiatorPrereqCivic", civic.CivicType, true)
+        local abilityStr = descStrFor(civic)
+        local line = "  " .. Locale.Lookup(civic.Name):gsub("|", "/") .. " (" .. civic.CivicType .. ")" .. eraStr .. unlocksStr .. abilityStr
+        local eraKey = civic.EraType or "UNKNOWN"
+        if not completedCivicsByEra[eraKey] then completedCivicsByEra[eraKey] = {} end
+        table.insert(completedCivicsByEra[eraKey], line)
+    end
+end
+emitByEra("Completed civics:", completedCivicsByEra)
 
 -- Available techs (researchable, not yet completed)
 local techOptions = {}
@@ -199,44 +255,41 @@ if #techOptions > 0 then
     for _, t in ipairs(techOptions) do emit(t.line) end
 end
 
--- Available civics (within curEra + 2, prereqs satisfied)
+-- Available civics (prereqs satisfied)
 local civicOptions = {}
 for civic in GameInfo.Civics() do
     if not cu:HasCivic(civic.Index) then
-        local civicEra = eraIndex[civic.EraType] or 99
-        if civicEra <= curEra + 2 then
-            local canProgress = true
+        local canProgress = true
+        if civicPrereqs[civic.CivicType] then
+            for _, pType in ipairs(civicPrereqs[civic.CivicType]) do
+                local pEntry = GameInfo.Civics[pType]
+                if pEntry and not cu:HasCivic(pEntry.Index) then canProgress = false; break end
+            end
+        end
+        if canProgress then
+            local cost = cu:GetCultureCost(civic.Index)
+            local currentProg = 0
+            pcall(function() currentProg = cu:GetCulturalProgress(civic.Index) end)
+            local pct2 = cost > 0 and math.floor(currentProg * 100 / cost) or 0
+            local turns2 = cu:GetTurnsToProgressCivic(civic.Index)
+            local boosted2 = cu:HasBoostBeenTriggered(civic.Index)
+            local boostDesc2 = ""
+            local b2 = boostsByCivic[civic.CivicType]
+            if b2 and b2.TriggerDescription then
+                boostDesc2 = Locale.Lookup(b2.TriggerDescription):gsub("|", "/")
+            end
+            local eraStr = civic.EraType and (" [" .. eraLabel(civic.EraType) .. "]") or ""
+            local boostStr = boosted2 and " BOOSTED" or ""
+            local boostDescStr = (boostDesc2 ~= "" and (" [Boost: " .. boostDesc2 .. "]")) or ""
+            local unlocksStr = buildUnlocks("PrereqCivic", "InitiatorPrereqCivic", civic.CivicType, true)
+            local abilityStr = descStrFor(civic)
+            local prereqStr = ""
             if civicPrereqs[civic.CivicType] then
-                for _, pType in ipairs(civicPrereqs[civic.CivicType]) do
-                    local pEntry = GameInfo.Civics[pType]
-                    if pEntry and not cu:HasCivic(pEntry.Index) then canProgress = false; break end
-                end
+                prereqStr = " (needs: " .. table.concat(civicPrereqs[civic.CivicType], ",") .. ")"
             end
-            if canProgress then
-                local cost = cu:GetCultureCost(civic.Index)
-                local currentProg = 0
-                pcall(function() currentProg = cu:GetCulturalProgress(civic.Index) end)
-                local pct2 = cost > 0 and math.floor(currentProg * 100 / cost) or 0
-                local turns2 = cu:GetTurnsToProgressCivic(civic.Index)
-                local boosted2 = cu:HasBoostBeenTriggered(civic.Index)
-                local boostDesc2 = ""
-                local b2 = boostsByCivic[civic.CivicType]
-                if b2 and b2.TriggerDescription then
-                    boostDesc2 = Locale.Lookup(b2.TriggerDescription):gsub("|", "/")
-                end
-                local eraStr = civic.EraType and (" [" .. eraLabel(civic.EraType) .. "]") or ""
-                local boostStr = boosted2 and " BOOSTED" or ""
-                local boostDescStr = (boostDesc2 ~= "" and (" [Boost: " .. boostDesc2 .. "]")) or ""
-                local unlocksStr = buildUnlocks("PrereqCivic", "InitiatorPrereqCivic", civic.CivicType, true)
-                local abilityStr = descStrFor(civic)
-                local prereqStr = ""
-                if civicPrereqs[civic.CivicType] then
-                    prereqStr = " (needs: " .. table.concat(civicPrereqs[civic.CivicType], ",") .. ")"
-                end
-                local flag = (turns2 <= 2) and " !! GRAB THIS" or ""
-                local line = "  " .. Locale.Lookup(civic.Name) .. " (" .. civic.CivicType .. ")" .. eraStr .. " - " .. pct2 .. "%, " .. turns2 .. " turns" .. boostStr .. boostDescStr .. unlocksStr .. abilityStr .. prereqStr .. flag
-                table.insert(civicOptions, {turns = turns2, line = line})
-            end
+            local flag = (turns2 <= 2) and " !! GRAB THIS" or ""
+            local line = "  " .. Locale.Lookup(civic.Name) .. " (" .. civic.CivicType .. ")" .. eraStr .. " - " .. pct2 .. "%, " .. turns2 .. " turns" .. boostStr .. boostDescStr .. unlocksStr .. abilityStr .. prereqStr .. flag
+            table.insert(civicOptions, {turns = turns2, line = line})
         end
     end
 end
@@ -247,12 +300,10 @@ if #civicOptions > 0 then
     for _, c in ipairs(civicOptions) do emit(c.line) end
 end
 
--- Locked techs (within curEra + 2 only - skip far-future clutter)
+-- Locked techs (all eras, prerequisites missing)
 local lockedTechsByEra = {}
-local hasLockedTechs = false
 for tech in GameInfo.Technologies() do
-    local techEra = eraIndex[tech.EraType] or 99
-    if not te:HasTech(tech.Index) and not te:CanResearch(tech.Index) and techEra <= curEra + 2 then
+    if not te:HasTech(tech.Index) and not te:CanResearch(tech.Index) then
         local missing = {}
         if techPrereqs[tech.TechnologyType] then
             for _, pType in ipairs(techPrereqs[tech.TechnologyType]) do
@@ -268,33 +319,21 @@ for tech in GameInfo.Technologies() do
             if b and b.TriggerDescription then boostDesc = Locale.Lookup(b.TriggerDescription):gsub("|", "/") end
             local boostTag = te:HasBoostBeenTriggered(tech.Index) and " BOOSTED" or ""
             local boostDescStr = (boostDesc ~= "" and (" [Boost: " .. boostDesc .. "]")) or ""
+            local unlocksStr = buildUnlocks("PrereqTech", "InitiatorPrereqTech", tech.TechnologyType, false)
             local abilityStr = descStrFor(tech)
-            local line = "  " .. Locale.Lookup(tech.Name):gsub("|", "/") .. " (" .. tech.TechnologyType .. ") - needs: " .. table.concat(missing, ", ") .. boostTag .. boostDescStr .. abilityStr
+            local line = "  " .. Locale.Lookup(tech.Name):gsub("|", "/") .. " (" .. tech.TechnologyType .. ") - needs: " .. table.concat(missing, ", ") .. boostTag .. boostDescStr .. unlocksStr .. abilityStr
             local eraKey = tech.EraType or "UNKNOWN"
             if not lockedTechsByEra[eraKey] then lockedTechsByEra[eraKey] = {} end
             table.insert(lockedTechsByEra[eraKey], line)
-            hasLockedTechs = true
         end
     end
 end
-if hasLockedTechs then
-    emit("")
-    emit("Locked techs (prerequisites missing):")
-    local eras = {}
-    for era in pairs(lockedTechsByEra) do table.insert(eras, era) end
-    table.sort(eras, function(a, b) return (eraRank[a] or 99) < (eraRank[b] or 99) end)
-    for _, era in ipairs(eras) do
-        emit("  -- " .. eraLabel(era) .. " --")
-        for _, line in ipairs(lockedTechsByEra[era]) do emit(line) end
-    end
-end
+emitByEra("Locked techs (prerequisites missing):", lockedTechsByEra)
 
--- Locked civics (within curEra + 2 only)
+-- Locked civics (all eras, prerequisites missing)
 local lockedCivicsByEra = {}
-local hasLockedCivics = false
 for civic in GameInfo.Civics() do
-    local civicEra = eraIndex[civic.EraType] or 99
-    if not cu:HasCivic(civic.Index) and civicEra <= curEra + 2 then
+    if not cu:HasCivic(civic.Index) then
         local missing = {}
         if civicPrereqs[civic.CivicType] then
             for _, pType in ipairs(civicPrereqs[civic.CivicType]) do
@@ -310,25 +349,15 @@ for civic in GameInfo.Civics() do
             if b and b.TriggerDescription then boostDesc = Locale.Lookup(b.TriggerDescription):gsub("|", "/") end
             local boostTag = cu:HasBoostBeenTriggered(civic.Index) and " BOOSTED" or ""
             local boostDescStr = (boostDesc ~= "" and (" [Boost: " .. boostDesc .. "]")) or ""
+            local unlocksStr = buildUnlocks("PrereqCivic", "InitiatorPrereqCivic", civic.CivicType, true)
             local abilityStr = descStrFor(civic)
-            local line = "  " .. Locale.Lookup(civic.Name):gsub("|", "/") .. " (" .. civic.CivicType .. ") - needs: " .. table.concat(missing, ", ") .. boostTag .. boostDescStr .. abilityStr
+            local line = "  " .. Locale.Lookup(civic.Name):gsub("|", "/") .. " (" .. civic.CivicType .. ") - needs: " .. table.concat(missing, ", ") .. boostTag .. boostDescStr .. unlocksStr .. abilityStr
             local eraKey = civic.EraType or "UNKNOWN"
             if not lockedCivicsByEra[eraKey] then lockedCivicsByEra[eraKey] = {} end
             table.insert(lockedCivicsByEra[eraKey], line)
-            hasLockedCivics = true
         end
     end
 end
-if hasLockedCivics then
-    emit("")
-    emit("Locked civics (prerequisites missing):")
-    local eras = {}
-    for era in pairs(lockedCivicsByEra) do table.insert(eras, era) end
-    table.sort(eras, function(a, b) return (eraRank[a] or 99) < (eraRank[b] or 99) end)
-    for _, era in ipairs(eras) do
-        emit("  -- " .. eraLabel(era) .. " --")
-        for _, line in ipairs(lockedCivicsByEra[era]) do emit(line) end
-    end
-end
+emitByEra("Locked civics (prerequisites missing):", lockedCivicsByEra)
 
 print(table.concat(out, "\n"))
