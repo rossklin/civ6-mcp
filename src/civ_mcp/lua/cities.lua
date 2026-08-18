@@ -132,8 +132,6 @@ local function CityProductionOptions(cityId)
 end
 
 -- Cities
-local output = ""
-local function PrintOutput(v) output = output .. v .. "\n" end
 local me = Game.GetLocalPlayer()
 local hashName = {}
 for u in GameInfo.Units() do hashName[u.Hash] = u.UnitType end
@@ -245,16 +243,16 @@ for i, c in Players[me]:GetCities():Members() do
     local defense = string.format("HP:%d/%d Wall:%d/%d Def:%d Gar:%s", garHP, garMax, wallHP, wallMax, defStr, garrisonUnit)
     local loyalty = string.format("Loyalty:%.1f/%.1f, per turn:%.1f, turns to flip:%d", loy, loyMax, loyPT, loyFlip)
     
-    PrintOutput(string.format("%s - %s | %s | %s | %s | %s", baseInfo, yields, growth, producingStr, defense, loyalty))
+    print(string.format("%s - %s | %s | %s | %s | %s", baseInfo, yields, growth, producingStr, defense, loyalty))
     if #allBuildings > 0 then
-        PrintOutput("Buildings:" .. table.concat(allBuildings, ","))
+        print("Buildings:" .. table.concat(allBuildings, ","))
     end
-    PrintOutput("Production options for city " .. nm .. " (" .. c:GetID() .. ")")
-    PrintOutput(CityProductionOptions(c:GetID()))
+    print("Production options for city " .. nm .. " (" .. c:GetID() .. ")")
+    print(CityProductionOptions(c:GetID()))
 end
 
-PrintOutput("City distance matrix")
+print("City distance matrix")
 for i = 1, #cityCoords do for j = i + 1, #cityCoords do
     local d = Map.GetPlotDistance(cityCoords[i].x, cityCoords[i].y, cityCoords[j].x, cityCoords[j].y)
-    PrintOutput("Distance from " .. cityCoords[i].name .. " to " .. cityCoords[j].name .. " is " .. d)
+    print("Distance from " .. cityCoords[i].name .. " to " .. cityCoords[j].name .. " is " .. d)
 end end
