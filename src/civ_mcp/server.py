@@ -24,12 +24,8 @@ from civ_mcp import game_launcher, handoff, heartbeat, seats as seats_mod
 from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
-from civ_mcp.diary import (
-    game_keyed_diary_path as _diary_path,
-    get_current_plans as _get_current_plans,
-)
 from civ_mcp.game_state import GameState
-from civ_mcp.handoff import HandoffConfig, HandoffKeeper
+from civ_mcp.handoff import HandoffConfig, HandoffKeeper, TurnOwnership
 from civ_mcp.logger import GameLogger
 from civ_mcp.lua._helpers import load_lua_template
 from civ_mcp.lua.units import build_pathing_estimate_query
@@ -1364,13 +1360,14 @@ async def get_full_game_state(ctx: Context) -> str:
     gs = _get_game(ctx)
 
     async def _run():
-        state = await gs.get_full_game_state()
         app = _app(ctx)
+        text = await gs.get_full_game_state(app.handoff_config.managed_ids)
+        status: TurnOwnership = await handoff.get_ownership(gs.conn)
         logger = _get_logger(ctx)
-        if state.overview is not None:
-            logger.set_turn(state.overview.turn)
+        if status is not None:
+            logger.set_turn(status.turn)
             spatial = _get_spatial(ctx)
-            spatial.set_turn(state.overview.turn)
+            spatial.set_turn(status.turn)
             try:
                 civ, seed = await gs.get_game_identity()
                 logger.bind_game(civ, seed)
@@ -1379,26 +1376,6 @@ async def get_full_game_state(ctx: Context) -> str:
                 gs.spatial = spatial
             except Exception:
                 pass
-
-        # First run section queries in the old format, that go through the parser/narrator roundabout
-        state.governors.available_to_appoint = []
-        text = narrate_full_state(state, app.handoff_config.managed_ids)
-
-        # Then run queries in the new format that output the correct format directly
-        # Append the map query output
-        lines: list[str] = await gs.conn.execute_write(load_lua_template("map.lua"))
-        text = text + """
-
-## Map
-The map consists of hexagonal tiles so each tile has six neighbours.
-Note: neighbours with "RC" have a river crossing.
-
-"""
-        text = text + "\n".join(lines)
-
-        # Append the cities query output
-        lines: list[str] = await gs.conn.execute_write(load_lua_template("cities.lua"))
-        text = text + "## Cities\n\n" + "\n".join(lines)
 
         # Prepend the deferred post-turn report (snapshot diff, threats,
         # warnings) stashed when this seat ended its last turn. Built once —
@@ -1441,29 +1418,6 @@ Note: neighbours with "RC" have a river crossing.
             log.debug(
                 "Failed to prepend deferred turn report", exc_info=True
             )
-
-        # Append diary plans (long-term + next-turn) from the JSONL file
-        try:
-            civ_type, seed = await gs.get_game_identity()
-            path = _diary_path(civ_type, seed)
-            plans = _get_current_plans(path)
-            ntp = plans.get("next_turn_plan", "").strip()
-            ltp = plans.get("long_term_plans", "").strip()
-            notes = plans.get("notes", "").strip()
-            if ltp or ntp or notes:
-                text += "\n\n## DIARY"
-                if ltp:
-                    text += f"\nLong-term Plans:\n{ltp}"
-                else:
-                    text += "\nLong-term Plans: (none)"
-                if ntp:
-                    text += f"\n\nPlan for This Turn (from last turn):\n{ntp}"
-                else:
-                    text += "\n\nPlan for This Turn: (none)"
-                if notes:
-                    text += f"\n\nNotes (accumulated learnings):\n{notes}"
-        except Exception:
-            log.debug("Failed to append diary to full game state", exc_info=True)
 
         # Append mailbox deals (managed civ proposals).
         try:

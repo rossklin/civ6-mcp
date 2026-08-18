@@ -16,12 +16,18 @@ from typing import TYPE_CHECKING
 
 from civ_mcp import lua as lq
 from civ_mcp.connection import GameConnection
+from civ_mcp.diary import (
+    game_keyed_diary_path as _diary_path,
+    get_current_plans as _get_current_plans,
+)
+from civ_mcp.lua._helpers import load_lua_template
 from civ_mcp.narrate import (
     narrate_goody_rewards,
     narrate_move_discoveries,
     narrate_settle_candidates,
     narrate_test_trade,
 )
+from civ_mcp.narrate_unified import narrate_full_state
 
 if TYPE_CHECKING:
     from civ_mcp.spatial import SpatialTracker
@@ -1661,7 +1667,7 @@ class GameState:
 
     # ── Unified State Query ────────────────────────────────────────
 
-    async def get_full_game_state(self) -> "lq.FullGameState":
+    async def get_full_game_state(self, managed_ids: tuple[int, ...]) -> str:
         """Fetch all game state in a single Lua query.
 
         Returns a ``FullGameState`` dataclass with all read sections
@@ -1670,7 +1676,52 @@ class GameState:
         """
         from civ_mcp.unified_state import fetch_full_state
 
-        return await fetch_full_state(self.conn)
+        # First run section queries in the old format, that go through the parser/narrator roundabout
+        state = await fetch_full_state(self.conn)
+        # Unset available governors because they should be accessed through the get_available_governors tool        
+        state.governors.available_to_appoint = []
+        text = narrate_full_state(state, managed_ids)
+
+        # Then run queries in the new format that output the correct format directly
+        # Append the map query output
+        lines: list[str] = await self.conn.execute_write(load_lua_template("map.lua"))
+        text = text + """
+
+## Map
+The map consists of hexagonal tiles so each tile has six neighbours.
+Note: neighbours with "RC" have a river crossing.
+
+"""
+        text = text + "\n".join(lines)
+
+        # Append the cities query output
+        lines: list[str] = await self.conn.execute_write(load_lua_template("cities.lua"))
+        text = text + "\n\n## Cities\n" + "\n".join(lines)
+
+        # Append diary plans (long-term + next-turn) from the JSONL file
+        try:
+            civ_type, seed = await self.get_game_identity()
+            path = _diary_path(civ_type, seed)
+            plans = _get_current_plans(path)
+            ntp = plans.get("next_turn_plan", "").strip()
+            ltp = plans.get("long_term_plans", "").strip()
+            notes = plans.get("notes", "").strip()
+            if ltp or ntp or notes:
+                text += "\n\n## DIARY"
+                if ltp:
+                    text += f"\nLong-term Plans:\n{ltp}"
+                else:
+                    text += "\nLong-term Plans: (none)"
+                if ntp:
+                    text += f"\n\nPlan for This Turn (from last turn):\n{ntp}"
+                else:
+                    text += "\n\nPlan for This Turn: (none)"
+                if notes:
+                    text += f"\n\nNotes (accumulated learnings):\n{notes}"
+        except Exception:
+            log.debug("Failed to append diary to full game state", exc_info=True)
+
+        return text
 
 
 def _action_result(lines: list[str]) -> str:
