@@ -1546,6 +1546,12 @@ class GameState:
         text = narrate_full_state(state, managed_ids)
 
         # Then run queries in the new format that output the correct format directly
+        # Append the tech/civics query output
+        lines: list[str] = await self.conn.execute_write(
+            load_lua_template("build_tech_civics_query.lua")
+        )
+        text = text + "\n\n## Research & Civics\n" + "\n".join(lines)
+
         # Append the map query output
         lines: list[str] = await self.conn.execute_write(load_lua_template("map.lua"))
         text = text + """

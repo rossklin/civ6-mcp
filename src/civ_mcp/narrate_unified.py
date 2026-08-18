@@ -53,11 +53,6 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
         parts.append("\n## Pending Trades\n")
         parts.append(nr.narrate_pending_deals(state.pending_deals))
 
-    # ── Research ───────────────────────────────────────────────────
-    if state.tech_civics is not None:
-        parts.append("\n## Research & Civics\n")
-        parts.append(nr.narrate_tech_civics(state.tech_civics))
-
     # ── Trade Routes ───────────────────────────────────────────────
     if state.trade_routes is not None:
         parts.append("\n## Trade Routes\n")

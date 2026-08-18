@@ -381,71 +381,6 @@ class CivInfo:
 
 
 @dataclass
-class LockedCivic:
-    name: str
-    civic_type: str
-    missing_prereqs: list[str]  # localized names of unmet prerequisites
-    era: str = ""  # e.g. "ERA_MODERN"
-    boosted: bool = False
-    boost_desc: str = ""  # trigger description
-
-
-@dataclass
-class LockedTech:
-    name: str
-    tech_type: str
-    missing_prereqs: list[str]  # localized names of unmet prerequisites
-    era: str = ""  # e.g. "ERA_MODERN"
-    boosted: bool = False
-    boost_desc: str = ""  # trigger description
-
-
-@dataclass
-class TechOption:
-    """An available technology for research."""
-
-    name: str
-    tech_type: str  # e.g. "TECHNOLOGY_MINING"
-    cost: int
-    progress_pct: int  # 0-100
-    turns: int
-    boosted: bool
-    boost_desc: str  # trigger description, empty if none
-    unlocks: str  # comma-separated unlock names
-    prereqs: str = ""  # comma-separated prereq tech type names
-    era: str = ""  # e.g. "ERA_ANCIENT"
-
-
-@dataclass
-class CivicOption:
-    """An available civic for progression."""
-
-    name: str
-    civic_type: str  # e.g. "CIVIC_CODE_OF_LAWS"
-    cost: int
-    progress_pct: int  # 0-100
-    turns: int
-    boosted: bool
-    boost_desc: str  # trigger description, empty if none
-    prereqs: str = ""  # comma-separated prereq civic type names
-    era: str = ""  # e.g. "ERA_MEDIEVAL"
-
-
-@dataclass
-class TechCivicStatus:
-    current_research: str
-    current_research_turns: int
-    current_civic: str
-    current_civic_turns: int
-    available_techs: list[TechOption]
-    available_civics: list[CivicOption]
-    completed_tech_count: int = 0
-    completed_civic_count: int = 0
-    locked_civics: list[LockedCivic] | None = None
-    locked_techs: list[LockedTech] | None = None
-
-
-@dataclass
 class DiplomacyChoice:
     key: str  # e.g. "CHOICE_POSITIVE", "CHOICE_EXIT"
     text: str  # localized display text
@@ -1294,9 +1229,6 @@ class FullGameState:
 
     # Our own civilization's abilities & uniques
     own_abilities: OwnAbilities | None = None
-
-    # Research
-    tech_civics: TechCivicStatus | None = None
 
     # Economy
     trade_routes: TradeRouteStatus | None = None
