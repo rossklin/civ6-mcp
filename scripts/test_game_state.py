@@ -7,6 +7,12 @@ Map coordinates depend on your current game — adjust as needed.
 """
 
 import asyncio
+import sys
+
+# Windows defaults stdout to the system ANSI codepage (cp1252), which crashes
+# on non-Latin-1 characters (civ/city names). Force UTF-8 regardless of shell
+# or .env configuration.
+sys.stdout.reconfigure(encoding="utf-8")
 
 from civ_mcp.connection import GameConnection
 from civ_mcp.game_state import GameState
