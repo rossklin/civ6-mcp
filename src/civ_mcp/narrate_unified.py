@@ -38,11 +38,6 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
         parts.append("\n## Spies\n")
         parts.append(nr.narrate_spies(state.spies))
 
-    # ── Cities ─────────────────────────────────────────────────────
-    if state.cities:
-        parts.append("\n## Cities\n")
-        parts.append(nr.narrate_cities(state.cities, state.city_distances))
-
     # ── Known Civilizations ───────────────────────────────────────
     if state.diplomacy:
         parts.append("\n## Known Civilizations\n")

@@ -212,16 +212,7 @@ def _parse_special(
     state: FullGameState, section_name: str, lines: list[str]
 ) -> None:
     """Handle sections that don't follow the standard parse_*_response pattern."""
-    if section_name == "cities":
-        # parse_cities_response returns (cities, distances)
-        try:
-            cities, distances = lq.parse_cities_response(lines)
-            state.cities = cities
-            state.city_distances = distances
-        except Exception:
-            log.warning("Failed to parse cities section", exc_info=True)
-
-    elif section_name == "empire_resources":
+    if section_name == "empire_resources":
         try:
             result = lq.parse_empire_resources_response(lines)
             state.empire_resources = result
