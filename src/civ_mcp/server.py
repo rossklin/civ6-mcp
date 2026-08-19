@@ -21,17 +21,16 @@ import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, handoff, heartbeat, seats as seats_mod
+from civ_mcp.diary import game_keyed_diary_path, get_current_plans
 from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
 from civ_mcp.game_state import GameState
 from civ_mcp.handoff import HandoffConfig, HandoffKeeper, TurnOwnership
 from civ_mcp.logger import GameLogger
-from civ_mcp.lua._helpers import load_lua_template
 from civ_mcp.lua.units import build_pathing_estimate_query
 from civ_mcp.map_capture import MapCapture
 from civ_mcp.command_executor import execute_commands as _execute_commands
-from civ_mcp.narrate_unified import narrate_full_state
 from civ_mcp.seats import Seat, SeatRegistry
 from civ_mcp.spatial import SpatialTracker
 from civ_mcp.spectator import CameraController, PopupWatcher
@@ -2083,11 +2082,11 @@ async def end_turn(ctx: Context) -> str:
     _diary_civ_type = None
     _diary_seed = None
     try:
-        ov = await gs.get_game_overview()
-        _diary_turn = ov.turn
+        status: TurnOwnership = await handoff.get_ownership(gs.conn)
+        _diary_turn = status.turn
         # Keep logger/spatial turn in sync
-        _get_logger(ctx).set_turn(ov.turn)
-        _get_spatial(ctx).set_turn(ov.turn)
+        _get_logger(ctx).set_turn(status.turn)
+        _get_spatial(ctx).set_turn(status.turn)
     except Exception:
         log.warning("Failed to capture overview before end_turn", exc_info=True)
     try:
@@ -2432,12 +2431,12 @@ async def update_diary(
     # Capture current turn for the diary row
     diary_turn = 0
     try:
-        ov = await gs.get_game_overview()
-        diary_turn = ov.turn
+        status: TurnOwnership = await handoff.get_ownership(gs.conn)
+        diary_turn = status.turn
     except Exception:
         log.warning("update_diary: failed to capture overview", exc_info=True)
 
-    path = _diary_path(civ_type, seed)
+    path = game_keyed_diary_path(civ_type, seed)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     ntp = next_turn_plan.strip()
@@ -2448,7 +2447,7 @@ async def update_diary(
     # next_turn_plan is always overwritten (empty = no plan for next turn).
     # notes is append-only: a non-empty value is appended to the running
     # body (with a turn marker); an empty value preserves the existing notes.
-    previous = _get_current_plans(path)
+    previous = get_current_plans(path)
     if not ltp:
         ltp = previous.get("long_term_plans", "")
     prev_notes = previous.get("notes", "")
