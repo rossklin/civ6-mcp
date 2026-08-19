@@ -1238,6 +1238,7 @@ class FullGameState:
     # Victory & Religion
     victory_progress: VictoryProgress | None = None
     religion_status: ReligionStatus | None = None
+    pantheon_status: PantheonStatus | None = None
 
     # Governance
     governors: GovernorStatus | None = None

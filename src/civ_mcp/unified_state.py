@@ -14,7 +14,7 @@ import re
 from typing import TYPE_CHECKING
 
 from civ_mcp import lua as lq
-from civ_mcp.lua.models import FullGameState
+from civ_mcp.lua.models import FullGameState, PantheonStatus
 
 if TYPE_CHECKING:
     from civ_mcp.connection import GameConnection
@@ -41,6 +41,7 @@ _SECTIONS: list[tuple[str, str, bool]] = [
     ("strategic_map", "strategic_map", True),
     ("victory_progress", "victory_progress", True),
     ("religion_status", "religion_status", True),
+    ("pantheon_status", "pantheon_status", True),
     ("governors", "governors", True),
     ("policies", "policies", True),
     ("city_states", "city_states", True),
@@ -176,7 +177,7 @@ def _split_sections(lines: list[str]) -> dict[str, list[str]]:
 # Sections whose parsers return tuples that need destructuring, or whose
 # parser function name doesn't follow the standard parse_*_response pattern.
 _SPECIAL_SECTIONS: frozenset[str] = frozenset(
-    {"cities", "empire_resources", "builder_tasks", "pending_deals"}
+    {"cities", "empire_resources", "builder_tasks", "pending_deals", "pantheon_status"}
 )
 
 
@@ -246,3 +247,13 @@ def _parse_special(
             state.religion_status = status
         except Exception:
             log.warning("Failed to parse religion_status section", exc_info=True)
+
+    elif section_name == "pantheon_status":
+        try:
+            # For the full game state, we remove the available beliefs as they have a separate getter
+            status: PantheonStatus = lq.parse_pantheon_status_response(lines)
+            status.available_beliefs = []
+            state.pantheon_status = status
+        except Exception:
+            log.warning("Failed to parse religion_status section", exc_info=True)
+

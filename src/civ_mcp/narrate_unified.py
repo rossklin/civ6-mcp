@@ -101,6 +101,11 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
         parts.append("\n## Religion\n")
         parts.append(nr.narrate_religion_status(state.religion_status))
 
+    # ── Pantheon ───────────────────────────────────────────────────
+    if state.pantheon_status is not None:
+        parts.append("\n## Pantheon\n")
+        parts.append(nr.narrate_pantheon_status(state.pantheon_status))
+
     # ── World Congress ─────────────────────────────────────────────
     if state.world_congress is not None:
         parts.append("\n## World Congress\n")
