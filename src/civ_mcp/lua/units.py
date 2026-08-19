@@ -85,13 +85,13 @@ for i, u in Players[id]:GetUnits():Members() do
                         if plotUnits then
                             for other in plotUnits:Units() do
                                 local otherOwner = other:GetOwner()
-                                if otherOwner ~= id and (otherOwner == 63 or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)) then
+                                if otherOwner ~= id and (otherOwner >= 62 or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)) then
                                     -- LOS check for ranged units (d>1): verify the
                                     -- game engine agrees we can actually fire there.
                                     -- Melee (d==1) doesn't need LOS.
                                     local losOK = true
                                     if rs > 0 and d > 1 then
-                                        local lp = {{}}
+                                        local lp = {}
                                         lp[UnitOperationTypes.PARAM_X] = tx
                                         lp[UnitOperationTypes.PARAM_Y] = ty
                                         losOK = UnitManager.CanStartOperation(u, UnitOperationTypes.RANGE_ATTACK, nil, lp)
