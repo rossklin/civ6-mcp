@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
-    _LUA_COMBAT_ESTIMATE,
     _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
@@ -17,7 +16,6 @@ from civ_mcp.lua.models import (
     AttackTarget,
     BuilderInfo,
     BuilderTask,
-    CombatEstimate,
     GoodyReward,
     PromotionOption,
     ThreatInfo,
@@ -26,227 +24,17 @@ from civ_mcp.lua.models import (
 
 
 def build_units_query() -> str:
-    """InGame context: lists all units with upgrade and builder improvement info."""
-    return """
-local id = Game.GetLocalPlayer()
-{COMBAT_ESTIMATE}
-local promoBonuses = buildPromoBonuses()
-local tileUnits = {}
-for i, u in Players[id]:GetUnits():Members() do
-    local x, y = u:GetX(), u:GetY()
-    if x ~= -9999 then
-        local uid = u:GetID()
-        local entry = GameInfo.Units[u:GetType()]
-        local ut = entry and entry.UnitType or "UNKNOWN"
-        local nm = Locale.Lookup(u:GetName())
-        local cs = entry and entry.Combat or 0
-        local rs = entry and entry.RangedCombat or 0
-        local charges = u:GetBuildCharges() or 0
-        local gp = u:GetGreatPerson()
-        if gp then
-            local ok_gp, gp_charges = pcall(function() return gp:GetActionCharges() end)
-            if ok_gp and gp_charges and gp_charges > 0 then charges = gp_charges end
-            if charges == 0 then
-                -- Cultural GPs (Writers/Artists/Musicians) return 0 from
-                -- GetActionCharges(). Fall back to the individual definition.
-                pcall(function()
-                    local indIdx = gp:GetIndividual()
-                    for ind in GameInfo.GreatPersonIndividuals() do
-                        if ind.Index == indIdx then
-                            charges = ind.ActionCharges or 0
-                            break
-                        end
-                    end
-                end)
-            end
-        end
-        if charges == 0 then
-            local ok_sp, sp = pcall(function() return u:GetSpreadCharges() end)
-            if ok_sp and sp and sp > 0 then charges = sp end
-        end
-        local relName = ""
-        local ok_r, rIdx = pcall(function() return u:GetReligionType() end)
-        if ok_r and rIdx and rIdx >= 0 then
-            for row in GameInfo.Religions() do
-                if row.Index == rIdx then relName = row.ReligionType; break end
-            end
-        end
-        -- Scan for attackable enemies if unit has moves
-        local targets = ""
-        if u:GetMovesRemaining() > 0 and (cs > 0 or rs > 0) then
-            local rng = (rs > 0) and (entry and entry.Range or 1) or 1
-            local tgtList = {}
-            for dy = -rng, rng do
-                for dx = -rng, rng do
-                    local tx, ty = x + dx, y + dy
-                    local d = Map.GetPlotDistance(x, y, tx, ty)
-                    if d >= 1 and d <= rng then
-                        local plotUnits = Map.GetUnitsAt(tx, ty)
-                        if plotUnits then
-                            for other in plotUnits:Units() do
-                                local otherOwner = other:GetOwner()
-                                if otherOwner ~= id and (otherOwner >= 62 or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)) then
-                                    -- LOS check for ranged units (d>1): verify the
-                                    -- game engine agrees we can actually fire there.
-                                    -- Melee (d==1) doesn't need LOS.
-                                    local losOK = true
-                                    if rs > 0 and d > 1 then
-                                        local lp = {}
-                                        lp[UnitOperationTypes.PARAM_X] = tx
-                                        lp[UnitOperationTypes.PARAM_Y] = ty
-                                        losOK = UnitManager.CanStartOperation(u, UnitOperationTypes.RANGE_ATTACK, nil, lp)
-                                    end
-                                    if losOK then
-                                        local eInfo = GameInfo.Units[other:GetType()]
-                                        local eName = eInfo and eInfo.UnitType or "UNKNOWN"
-                                        local eHP = other:GetMaxDamage() - other:GetDamage()
-                                        local eCombat = eInfo and eInfo.Combat or 0
-                                        local eAtt, eDef, eR, eMods = computeEstimate(u, other, tx, ty, x, y, cs, rs, eCombat, promoBonuses, id)
-                                        local modStr = ""
-                                        if eMods and #eMods > 0 then modStr = "~m:" .. table.concat(eMods, ",") end
-                                        table.insert(tgtList, eName .. "@" .. tx .. "," .. ty .. "~hp:" .. eHP .. "~att:" .. eAtt .. "~def:" .. eDef .. "~r:" .. (eR and "1" or "0") .. modStr)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            if #tgtList > 0 then targets = table.concat(tgtList, ";") end
-        end
-        -- Available promotions (InGame). Cheap gate first (xp >= next-level
-        -- threshold), then ask the engine for the authoritative list via the
-        -- same CanStartCommand(PROMOTE) call the UI uses. Returns promotion
-        -- indices; we map to "TYPE~Name~Description" joined by ";".
-        local promo = ""
-        do
-            local ok_exp, exp = pcall(function() return u:GetExperience() end)
-            if ok_exp and exp then
-                local ok_pc, pc = pcall(function() return entry and entry.PromotionClass or "" end)
-                if ok_pc and pc and pc ~= "" then
-                    local ok_xp, xp = pcall(function() return exp:GetExperiencePoints() end)
-                    local ok_ne, need = pcall(function() return exp:GetExperienceForNextLevel() end)
-                    if ok_xp and ok_ne and xp >= need then
-                        pcall(function()
-                            local bCan, tRes = UnitManager.CanStartCommand(u, UnitCommandTypes.PROMOTE, true, true)
-                            if bCan and tRes then
-                                local idxs = tRes[UnitCommandResults.PROMOTIONS]
-                                if idxs then
-                                    local parts = {}
-                                    for _, pidx in pairs(idxs) do
-                                        local pinfo = GameInfo.UnitPromotions[pidx]
-                                        if pinfo then
-                                            local pn = Locale.Lookup(pinfo.Name):gsub("[|;~]", " "):gsub("\\n", " ")
-                                            local pd = Locale.Lookup(pinfo.Description):gsub("[|;~]", " "):gsub("\\n", " ")
-                                            table.insert(parts, pinfo.UnitPromotionType .. "~" .. pn .. "~" .. pd)
-                                        end
-                                    end
-                                    if #parts > 0 then promo = table.concat(parts, ";") end
-                                end
-                            end
-                        end)
-                    end
-                end
-            end
-        end
-        -- Upgrade info (InGame only: CanStartCommand)
-        local canUp, upName, upCost = "0", "", "0"
-        local ok1, _ = pcall(function()
-            if UnitManager.CanStartCommand(u, UnitCommandTypes.UPGRADE, nil, true) then
-                canUp = "1"
-                local c2 = u:GetUpgradeCost()
-                if c2 then upCost = tostring(c2) end
-                if entry and entry.UpgradeUnitCollection then
-                    for _, row in ipairs(entry.UpgradeUnitCollection) do
-                        if row.UpgradeUnit then upName = row.UpgradeUnit end
-                        break
-                    end
-                end
-            end
-        end)
-        -- Builder improvement advisor (InGame only: CanStartOperation)
-        local validImps = ""
-        if ut == "UNIT_BUILDER" and u:GetMovesRemaining() > 0 then
-            local plot = Map.GetPlot(x, y)
-            if plot and plot:GetOwner() == id then
-                local impList = {}
-                for imp in GameInfo.Improvements() do
-                    if imp.Buildable and not imp.TraitType then
-                        local bParams = {}
-                        bParams[UnitOperationTypes.PARAM_X] = x
-                        bParams[UnitOperationTypes.PARAM_Y] = y
-                        bParams[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = imp.Hash
-                        local ok2, _ = pcall(function()
-                            if UnitManager.CanStartOperation(u, UnitOperationTypes.BUILD_IMPROVEMENT, nil, bParams) then
-                                table.insert(impList, imp.ImprovementType)
-                            end
-                        end)
-                    end
-                end
-                if #impList > 0 then validImps = table.concat(impList, ";") end
-            end
-        end
-        -- Military Engineer advisor (BUILD_ROUTE + fort/airstrip)
-        if ut == "UNIT_MILITARY_ENGINEER" and u:GetMovesRemaining() > 0 then
-            local meList = {}
-            pcall(function()
-                local opRow = GameInfo.UnitOperations["UNITOPERATION_BUILD_ROUTE"]
-                if opRow then
-                    local rp = {}
-                    rp[UnitOperationTypes.PARAM_X] = x
-                    rp[UnitOperationTypes.PARAM_Y] = y
-                    if UnitManager.CanStartOperation(u, opRow.Hash, nil, rp) then
-                        table.insert(meList, "BUILD_ROUTE")
-                    end
-                end
-            end)
-            local plot = Map.GetPlot(x, y)
-            if plot and plot:GetOwner() == id then
-                for imp in GameInfo.Improvements() do
-                    if imp.Buildable and not imp.TraitType then
-                        pcall(function()
-                            local bp = {}
-                            bp[UnitOperationTypes.PARAM_X] = x
-                            bp[UnitOperationTypes.PARAM_Y] = y
-                            bp[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = imp.Hash
-                            if UnitManager.CanStartOperation(u, UnitOperationTypes.BUILD_IMPROVEMENT, nil, bp) then
-                                table.insert(meList, imp.ImprovementType)
-                            end
-                        end)
-                    end
-                end
-            end
-            if #meList > 0 then validImps = table.concat(meList, ";") end
-        end
-        print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName)
-        -- Track tile occupancy + formation state (checked via game API, not heuristic)
-        local key = x .. "," .. y
-        if not tileUnits[key] then tileUnits[key] = {} end
-        local inFormation = false
-        pcall(function()
-            inFormation = UnitManager.CanStartCommand(u, UnitCommandTypes.EXIT_FORMATION, id, true)
-        end)
-        table.insert(tileUnits[key], {idx = uid % 65536, utype = ut, in_fm = inFormation})
-    end
-end
--- Detect formations: pair units on same tile where at least one is linked
-for key, group in pairs(tileUnits) do
-    if #group >= 2 then
-        -- Pair each formation unit with every other formation unit on the same tile
-        -- (when linked, both units return CanStartCommand(EXIT_FORMATION)=true)
-        for _, a in ipairs(group) do
-            if a.in_fm then
-                for _, b in ipairs(group) do
-                    if a.idx ~= b.idx and b.in_fm then
-                        print("FORMATION|" .. a.idx .. "|" .. b.idx .. "|" .. b.utype:gsub("UNIT_", ""))
-                    end
-                end
-            end
-        end
-    end
-end
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL).replace("{COMBAT_ESTIMATE}", _LUA_COMBAT_ESTIMATE)
+    """InGame context: lists all units with upgrade and builder improvement info.
+
+    The Lua lives in ``units.lua`` (loaded via ``load_lua_template``) and emits
+    pipe-delimited lines for :func:`parse_units_response` — not narrated prose
+    — because the structured :class:`UnitInfo` is consumed by the turn-snapshot
+    functions in ``game_state.py``. Attack-target estimates come from the
+    engine's own ``CombatManager.SimulateAttackInto`` (the UI combat preview
+    call), which is authoritative for damage and modifiers.
+    """
+    return load_lua_template("units.lua").replace("__MCP_SENTINEL_TAG__", SENTINEL)
+
 
 
 def build_move_unit(unit_index: int, target_x: int, target_y: int) -> str:
@@ -740,112 +528,6 @@ def parse_blocked_diagnostic(lines: list[str]) -> str:
             if len(parts) >= 3:
                 return parts[2]
     return "unit did not move — impassable terrain, border, or no path"
-
-
-def build_combat_estimate_query(unit_index: int, target_x: int, target_y: int) -> str:
-    """InGame context: gather combat stats for damage estimation (no attack executed).
-
-    Includes: base CS, promotions, fortification, terrain (hills, forest/jungle),
-    river crossing, flanking bonus, and support bonus.
-    """
-    return f"""
-{_lua_get_unit(unit_index)}
-local ux, uy = unit:GetX(), unit:GetY()
-local dist = Map.GetPlotDistance(ux, uy, {target_x}, {target_y})
-local unitInfo = GameInfo.Units[unit:GetType()]
-local attType = unitInfo and unitInfo.UnitType or "UNKNOWN"
-local attCS = unitInfo and unitInfo.Combat or 0
-local attRS = unitInfo and unitInfo.RangedCombat or 0
-local isRanged = attRS > 0 and dist > 1
-local effAttCS = isRanged and attRS or attCS
--- Find defender
-local enemy = nil
-local tgtUnits = Map.GetUnitsAt({target_x}, {target_y})
-if tgtUnits then
-    for other in tgtUnits:Units() do
-        if other:GetOwner() ~= me then
-            local eInfo = GameInfo.Units[other:GetType()]
-            local eCombat = eInfo and eInfo.Combat or 0
-            if eCombat > 0 or enemy == nil then enemy = other end
-            if eCombat > 0 then break end
-        end
-    end
-end
-if enemy == nil then {_bail(f"ERR:NO_ENEMY|No hostile unit at ({target_x},{target_y})")} end
--- Check diplomatic status — estimates for units at peace are misleading
-local enemyOwner = enemy:GetOwner()
-if enemyOwner ~= 63 then
-    local pDiplo = Players[me]:GetDiplomacy()
-    if not pDiplo:IsAtWarWith(enemyOwner) then
-        local ownerCfg = PlayerConfigurations[enemyOwner]
-        local ownerName = ownerCfg and Locale.Lookup(ownerCfg:GetCivilizationDescription()) or ("player " .. enemyOwner)
-        local eInfo2 = GameInfo.Units[enemy:GetType()]
-        local eName = eInfo2 and eInfo2.UnitType or "UNKNOWN"
-        {_bail_lua('"ERR:NOT_AT_WAR|Cannot attack " .. eName .. " — you are at peace with " .. ownerName .. ". Declare war first."')}
-    end
-end
-local eInfo = GameInfo.Units[enemy:GetType()]
-local defType = eInfo and eInfo.UnitType or "UNKNOWN"
-local defCS = eInfo and eInfo.Combat or 0
-local enemyHP = enemy:GetMaxDamage() - enemy:GetDamage()
-local myHP = unit:GetMaxDamage() - unit:GetDamage()
-{_LUA_COMBAT_ESTIMATE}
-local promoBonuses = buildPromoBonuses()
-local effAttCS, effDefCS, isRanged, mods = computeEstimate(unit, enemy, {target_x}, {target_y}, ux, uy, attCS, attRS, defCS, promoBonuses, me)
-print("ESTIMATE|" .. attType .. "|" .. defType .. "|" .. effAttCS .. "|" .. effDefCS .. "|" .. (isRanged and "1" or "0") .. "|" .. table.concat(mods, ";") .. "|" .. myHP .. "|" .. enemyHP)
-print("{SENTINEL}")
-"""
-
-
-def compute_damages(eff_att: int, eff_def: int, is_ranged: bool) -> tuple[int, int]:
-    """Civ 6 damage formula: BASE * 10^((att-def)/30), BASE=24.
-
-    Returns ``(damage_to_defender, damage_to_attacker)``. Ranged attacks deal
-    no counter-damage (attacker damage is 0).
-    """
-    base_damage = 24
-    if eff_att > 0 and eff_def > 0:
-        dmg_to_def = base_damage * (10 ** ((eff_att - eff_def) / 30))
-        dmg_to_att = (
-            base_damage * (10 ** ((eff_def - eff_att) / 30))
-            if not is_ranged
-            else 0
-        )
-    else:
-        dmg_to_def = 0
-        dmg_to_att = 0
-    return int(round(dmg_to_def)), int(round(dmg_to_att))
-
-
-def parse_combat_estimate(
-    lines: list[str], att_cs: int, def_cs: int
-) -> CombatEstimate | None:
-    """Parse ESTIMATE line and compute damage using Civ 6 formula."""
-    for line in lines:
-        if line.startswith("ESTIMATE|"):
-            p = line.split("|")
-            if len(p) < 9:
-                return None
-            eff_att = int(p[3])
-            eff_def = int(p[4])
-            is_ranged = p[5] == "1"
-            mods = [m for m in p[6].split(";") if m]
-            my_hp = int(p[7])
-            enemy_hp = int(p[8])
-            dmg_to_def, dmg_to_att = compute_damages(eff_att, eff_def, is_ranged)
-            return CombatEstimate(
-                attacker_type=p[1],
-                defender_type=p[2],
-                attacker_cs=eff_att,
-                defender_cs=eff_def,
-                is_ranged=is_ranged,
-                modifiers=mods,
-                est_damage_to_defender=dmg_to_def,
-                est_damage_to_attacker=dmg_to_att,
-                defender_hp=enemy_hp,
-                attacker_hp=my_hp,
-            )
-    return None
 
 
 def build_threat_scan_query() -> str:
@@ -1527,11 +1209,13 @@ def _parse_attack_target(token: str) -> AttackTarget:
     """Parse one target token from the units query into an AttackTarget.
 
     Formats (most-derived first):
-      new:   ``eName@tx,ty~hp:EHP~att:N~def:N~r:0~m:mod1,mod2``
+      new:   ``eName@tx,ty~hp:EHP~dd:N~da:N~r:0~m:mod1,mod2``
+             dd/da are the engine's predicted damage to the defender/attacker
+             (from CombatManager.SimulateAttackInto), carried verbatim.
       old:   ``eName@tx,ty(EHP hp)``
       legacy:``tx,ty``  (bare — tests only; no estimate)
     """
-    # New format: carries estimate primitives after '~'
+    # New format: carries the engine's damage estimates after '~'
     if "~" in token:
         head, *rest = token.split("~")
         # head = "eName@tx,ty"
@@ -1551,10 +1235,9 @@ def _parse_attack_target(token: str) -> AttackTarget:
             else:
                 fields[k] = v
         hp = int(fields.get("hp", "0") or "0")
-        att = int(fields.get("att", "0") or "0")
-        df = int(fields.get("def", "0") or "0")
+        dmg_def = int(fields.get("dd", "0") or "0")
+        dmg_att = int(fields.get("da", "0") or "0")
         is_ranged = fields.get("r", "0") == "1"
-        dmg_def, dmg_att = compute_damages(att, df, is_ranged)
         return AttackTarget(
             unit_type=e_name,
             x=tx,

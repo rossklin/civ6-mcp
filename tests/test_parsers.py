@@ -9,7 +9,6 @@ import pytest
 from civ_mcp.lua.overview import parse_gameover_response, parse_overview_response
 from civ_mcp.lua.units import (
     parse_attack_outcome,
-    parse_combat_estimate,
     parse_threat_scan_response,
     parse_units_response,
 )
@@ -172,8 +171,9 @@ class TestParseUnits:
         assert t[0].est_damage_to_defender == 0
 
     def test_targets_with_estimate(self):
-        # New format: eName@x,y~hp:N~att:N~def:N~r:0/1~m:mod,mod
-        tgt = "UNIT_WARRIOR@14,6~hp:100~att:27~def:20~r:0~m:att Battlecry +7,hills +3"
+        # New format: eName@x,y~hp:N~dd:N~da:N~r:0/1~m:mod,mod
+        # dd/da are the engine's predicted damage to defender/attacker.
+        tgt = "UNIT_WARRIOR@14,6~hp:100~dd:30~da:18~r:0~m:att Battlecry +7,hills +3"
         line = f"2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
         units = parse_units_response([line])
         t = units[0].targets
@@ -182,15 +182,15 @@ class TestParseUnits:
         assert t[0].x == 14 and t[0].y == 6
         assert t[0].hp == 100
         assert t[0].is_ranged is False
-        # att 27 vs def 20 -> dmg_to_def > 24; melee -> counter-damage > 0
-        assert t[0].est_damage_to_defender > 24
-        assert t[0].est_damage_to_attacker > 0
+        # Engine damage values carried verbatim
+        assert t[0].est_damage_to_defender == 30
+        assert t[0].est_damage_to_attacker == 18
         assert "att Battlecry +7" in t[0].modifiers
         assert "hills +3" in t[0].modifiers
 
     def test_target_ranged_kill(self):
         # Ranged attacker, enough damage to kill: is_kill True, no counter-damage.
-        tgt = "UNIT_WARRIOR@14,6~hp:20~att:30~def:15~r:1~m:"
+        tgt = "UNIT_WARRIOR@14,6~hp:20~dd:25~da:0~r:1~m:"
         line = f"2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
         units = parse_units_response([line])
         t = units[0].targets[0]
@@ -198,40 +198,6 @@ class TestParseUnits:
         assert t.est_damage_to_attacker == 0
         assert t.est_damage_to_defender >= 20
         assert t.is_kill is True
-
-
-# ---------------------------------------------------------------------------
-# parse_combat_estimate
-# ---------------------------------------------------------------------------
-
-
-class TestParseCombat:
-    def test_melee_combat(self):
-        # ESTIMATE|att_type|def_type|eff_att_cs|eff_def_cs|is_ranged|modifiers|my_hp|enemy_hp
-        line = "ESTIMATE|UNIT_WARRIOR|UNIT_WARRIOR|20|20|0|Flanking +2;Fortified -4|100|100"
-        result = parse_combat_estimate([line], att_cs=20, def_cs=20)
-        assert result is not None
-        assert result.attacker_type == "UNIT_WARRIOR"
-        assert result.defender_type == "UNIT_WARRIOR"
-        assert result.attacker_cs == 20
-        assert result.defender_cs == 20
-        assert result.is_ranged is False
-        assert "Flanking +2" in result.modifiers
-        assert "Fortified -4" in result.modifiers
-        # Equal CS: damage should be base (24) for both sides
-        assert result.est_damage_to_defender == 24
-        assert result.est_damage_to_attacker == 24
-
-    def test_ranged_no_counter(self):
-        line = "ESTIMATE|UNIT_ARCHER|UNIT_WARRIOR|25|20|1||100|100"
-        result = parse_combat_estimate([line], att_cs=25, def_cs=20)
-        assert result is not None
-        assert result.is_ranged is True
-        assert result.est_damage_to_attacker == 0  # ranged = no counter
-        assert result.est_damage_to_defender > 24  # attacker stronger
-
-    def test_no_estimate_line(self):
-        assert parse_combat_estimate(["some other line"], att_cs=20, def_cs=20) is None
 
 
 # ---------------------------------------------------------------------------
