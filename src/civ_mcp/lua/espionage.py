@@ -23,7 +23,7 @@ _SPY_OP_HASHES: dict[str, int] = {
 _RANK_NAMES = {1: "Recruit", 2: "Agent", 3: "Special Agent", 4: "Senior Agent"}
 
 
-def build_get_spies_query() -> str:
+def build_spies_query() -> str:
     """InGame context: list all spy units with rank, position, city, and available ops."""
     # Build the op table literal for Lua (key=name, value=hash)
     op_entries = ", ".join(
