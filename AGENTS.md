@@ -1,7 +1,8 @@
 # Agent instructions
 ## Testing
-To run the full test suite, target the tests directory:
-uv run python -m pytest .\tests -q 2>&1
+To run the full test suite, target the tests directory, otherwise it will run other files with test in name that are not intended to be tests.
+Powershell: uv run python -m pytest .\tests -q 2>&1
+Or bash equivalent.
 ## User interaction
 Do not use the AskUserQuestion tool, just ask the question in plain text.
 ## Developing Lua code in this project
