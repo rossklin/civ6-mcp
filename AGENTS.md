@@ -10,3 +10,7 @@ All new Lua code should use the Lua template file structure:
 - Add a Lua template file in src/civ_mcp/lua
 - In a python file in src/civ_mcp/lua add a builder function that loads the lua using load_lua_template from civ_mcp.lua._helpers
 - The python function can call replace to set values of template parameters for the Lua code
+## How to read files
+Bash tools for reading are disabled so use the file read tools like glob, grep and read instead.
+## Note on sub agents and rate limits
+We are running against the Z.ai backend and currently have a concurrency limit of 1, so we should not run parallel sub agents as this will likely cause them to hit a rate limit.
