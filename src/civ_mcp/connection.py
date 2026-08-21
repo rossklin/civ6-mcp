@@ -319,6 +319,25 @@ class GameConnection:
                 await self.reconnect()
                 return await self._locked_execute(state_index, lua_code, timeout)
 
+    def _dispatch_unsolicited(self, messages) -> None:
+        """Parse shim prints (MCPDEAL/MCPDIPLO/…) and fire deal callbacks.
+
+        Used for messages drained before/after a command AND for unsolicited
+        prints that interleave with a command's own output — a shim print
+        landing between the command send and its sentinel must still become
+        an event, or it is silently swallowed into the command result (the
+        human's click happened, the screen closed, but the mailbox never
+        heard about it).
+        """
+        for msg in messages:
+            event = _parse_mcpdeal_line(msg.payload)
+            if event:
+                for cb in self._deal_callbacks:
+                    try:
+                        cb(event["type"], event)
+                    except Exception:
+                        log.debug("Deal callback failed", exc_info=True)
+
     async def _locked_execute(
         self, state_index: int, lua_code: str, timeout: float
     ) -> list[str]:
@@ -329,14 +348,7 @@ class GameConnection:
         # Drain any stale messages — route through deal callbacks so
         # MCPDEAL lines aren't lost between monitor poll cycles.
         stale = await tuner_client.drain_messages(self._reader, timeout=0.1)
-        for msg in stale:
-            event = _parse_mcpdeal_line(msg.payload)
-            if event:
-                for cb in self._deal_callbacks:
-                    try:
-                        cb(event["type"], event)
-                    except Exception:
-                        log.debug("Deal callback failed", exc_info=True)
+        self._dispatch_unsolicited(stale)
 
         await tuner_client.send_message(
             self._writer, tuner_client.TAG_COMMAND, f"CMD:{state_index}:{lua_code}"
@@ -359,6 +371,11 @@ class GameConnection:
             if msg.payload.startswith("ERR:"):
                 raise LuaError(msg.payload)
 
+            # An unsolicited shim print can interleave with this command's
+            # output — dispatch it as an event before treating it as a
+            # result line (see _dispatch_unsolicited).
+            self._dispatch_unsolicited([msg])
+
             text = _parse_output(msg.payload)
             if text is not None:
                 if text.strip() == SENTINEL:
@@ -369,14 +386,7 @@ class GameConnection:
         # Drain any trailing unsolicited output — also route through deal
         # callbacks in case the Lua code produced MCPDEAL lines.
         trailing = await tuner_client.drain_messages(self._reader, timeout=0.2)
-        for msg in trailing:
-            event = _parse_mcpdeal_line(msg.payload)
-            if event:
-                for cb in self._deal_callbacks:
-                    try:
-                        cb(event["type"], event)
-                    except Exception:
-                        log.debug("Deal callback failed", exc_info=True)
+        self._dispatch_unsolicited(trailing)
 
         return lines
 
