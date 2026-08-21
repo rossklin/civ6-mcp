@@ -1269,7 +1269,7 @@ async def _diplo_notify_loop(
     conn: GameConnection,
     diplo_mb: DiploMailbox,
     cfg: HandoffConfig,
-    gs,
+    gs: GameState,
     poll_interval: float = 5.0,
 ) -> None:
     """Background loop: at the start of the human's slot, (a) re-send
@@ -1337,7 +1337,7 @@ async def _send_diplo_notifications(
 
 
 async def _drain_human_diplo_proposals(
-    gs, conn: GameConnection, diplo_mb: DiploMailbox, cfg: HandoffConfig
+    gs: GameState, conn: GameConnection, diplo_mb: DiploMailbox, cfg: HandoffConfig
 ) -> None:
     """Execute/report human-proposed diplo proposals the target has answered.
 
