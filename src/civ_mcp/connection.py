@@ -120,11 +120,12 @@ class GameConnection:
     # ------------------------------------------------------------------
 
     def add_deal_callback(self, callback) -> None:
-        """Register a callback for parsed MCPDEAL events.
+        """Register a callback for parsed MCPDEAL/MCPDIPLO events.
 
         ``callback(event_type: str, data: dict)`` is called for each parsed
         event.  ``event_type`` is one of ``"proposed"``, ``"click"``,
-        ``"health"``, ``"item"``.
+        ``"health"``, ``"item"``, ``"chat_send"``, ``"diplo_proposed"``,
+        ``"diplo_click"``, ``"diplo_responded"``, ``"diplo_health"``.
         """
         self._deal_callbacks.append(callback)
 
@@ -424,6 +425,10 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
         {"type": "click", "proposal_id": str, "pid": int}
         {"type": "health", "ok": bool}
         {"type": "chat_send", "from": int, "to": int, "ttype": int, "text": str}
+        {"type": "diplo_proposed", "from": int, "to": int, "action": str}
+        {"type": "diplo_click", "proposal_id": str, "pid": int}
+        {"type": "diplo_responded", "proposal_id": str, "response": str}
+        {"type": "diplo_health", "ok": bool}
     """
     global _pending_deal_items, _pending_deal_from, _pending_deal_to
 
@@ -441,6 +446,65 @@ def _parse_mcpdeal_line(payload: str) -> dict | None:
                 if k == "pid":
                     data["pid"] = int(v)
         return data
+
+    # Diplo shim: human proposed a response-able diplo action (friendship /
+    # delegation / embassy) to a managed civ from the native leader screen.
+    # Format: MCPDIPLO|PROPOSED|from=<pid>|to=<pid>|action=<session string>
+    if text.startswith("MCPDIPLO|"):
+        parts = text[len("MCPDIPLO|"):].split("|")
+        if parts and parts[0] == "PROPOSED":
+            data: dict = {"type": "diplo_proposed"}
+            for part in parts[1:]:
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    if k in ("from", "to"):
+                        try:
+                            data[k] = int(v)
+                        except ValueError:
+                            data[k] = -1
+                    elif k == "action":
+                        data["action"] = v
+            log.info(
+                "DIPLO TRACE: human P%s proposed %s to P%s",
+                data.get("from", -1),
+                data.get("action", "?"),
+                data.get("to", -1),
+            )
+            return data
+        return None
+
+    # Diplo notification click — forwarded by the click handler.
+    # Format: MCPDIPLO_CLICK|<proposal_id>|pid=<pid>
+    if text.startswith("MCPDIPLO_CLICK|"):
+        parts = text[len("MCPDIPLO_CLICK|"):].split("|")
+        data: dict = {
+            "type": "diplo_click",
+            "proposal_id": parts[0] if parts else "",
+        }
+        for part in parts[1:]:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k == "pid":
+                    data["pid"] = int(v)
+        return data
+
+    # Diplo shim: human answered a presented mailbox proposal on the native
+    # leader screen. Format: MCPDIPLO_RESPONDED|<proposal_id>|<response>
+    # (POSITIVE / NEGATIVE / REJECTED_PERMANENT / RESPONSE_IGNORE).
+    if text.startswith("MCPDIPLO_RESPONDED|"):
+        parts = text[len("MCPDIPLO_RESPONDED|"):].split("|")
+        if len(parts) >= 2:
+            return {
+                "type": "diplo_responded",
+                "proposal_id": parts[0],
+                "response": parts[1],
+            }
+        return None
+
+    # Diplo shim health check
+    if text.startswith("DIPLOSHIM_HEALTH|"):
+        status = text[len("DIPLOSHIM_HEALTH|"):].strip()
+        return {"type": "diplo_health", "ok": status == "true"}
 
     # Deal shim health check
     if text.startswith("DEALSHIM_HEALTH|"):

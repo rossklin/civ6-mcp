@@ -723,6 +723,185 @@ async def install_deal_shim(
 
 
 # ---------------------------------------------------------------------------
+# Diplo mailbox — DiplomacyActionView shim
+# ---------------------------------------------------------------------------
+# Sister of the deal shim, installed in the DiplomacyActionView Lua state
+# (the 3D leader screen).  Wraps DiplomacyManager.RequestSession so the
+# human's friendship/delegation/embassy proposals to managed civs are filed
+# to the diplo mailbox instead of auto-resolving against the built-in AI,
+# and DiplomacyManager.AddResponse so the human's answer to a presented
+# mailbox proposal (synthetic AI-initiated session) is reported back.
+#
+# Like the deal shim it lives in a UI context, dies on save load, and is
+# re-armed by HandoffKeeper on the same path.
+
+DIPLO_SHIM_STATE = "DiplomacyActionView"
+
+def build_diplo_shim_install_lua(managed_ids: tuple[int, ...]) -> str:
+    """Lua that wraps DiplomacyManager.RequestSession/AddResponse in the
+    DiplomacyActionView state.
+
+    Same idempotent re-arm pattern as :func:`build_deal_shim_install_lua`:
+    originals captured once in ``__MCP_orig_*`` and called through local
+    upvalues, so repeated installs never stack wrappers.
+
+    - ``RequestSession`` wrapper: for the three response-able proposal
+      strings (DECLARE_FRIEND / DIPLOMATIC_DELEGATION / RESIDENT_EMBASSY) to
+      a managed target, suppress the engine call (the target's built-in AI
+      would answer a freshly-opened session within seconds) and print
+      ``MCPDIPLO|PROPOSED|...`` for the mailbox; everything else passes
+      through.
+    - ``AddResponse`` wrapper: while ``__MCP_diplo_proposal_id`` is set
+      (Python arms it before presenting a proposal), report the human's
+      answer as ``MCPDIPLO_RESPONDED|<id>|<resp>`` and call through — the
+      engine applies the effect from that single response.
+
+    If ``DiplomacyManager`` is read-only in this state, the template falls
+    back to wrapping the UI globals
+    ``OnSelectInitialDiplomacyStatement``/``OnSelectConversationDiplomacyStatement``
+    and says so in its status line (``hook=uiglobal``).
+    """
+    managed_entries = ",".join(f"[{p}]=true" for p in managed_ids)
+    managed_table = "{" + managed_entries + "}"
+
+    return (
+        load_lua_template("diplo_shim.lua")
+        .replace("__MCP_MANAGED_IDS_TAG__", managed_table)
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
+
+
+def build_diplo_shim_uninstall_lua() -> str:
+    """Restore the original RequestSession/AddResponse (either hook path)."""
+    return (
+        "pcall(function() "
+        "  if __MCP_orig_RS ~= nil then "
+        "    DiplomacyManager.RequestSession = __MCP_orig_RS "
+        "    __MCP_orig_RS = nil "
+        "  end "
+        "  if __MCP_orig_AR ~= nil then "
+        "    DiplomacyManager.AddResponse = __MCP_orig_AR "
+        "    __MCP_orig_AR = nil "
+        "  end "
+        "end) "
+        "if __MCP_orig_OIDS ~= nil then "
+        "  OnSelectInitialDiplomacyStatement = __MCP_orig_OIDS "
+        "  __MCP_orig_OIDS = nil "
+        "end "
+        "if __MCP_orig_OCDR ~= nil then "
+        "  OnSelectConversationDiplomacyStatement = __MCP_orig_OCDR "
+        "  __MCP_orig_OCDR = nil "
+        "end "
+        "__MCP_managed_ids = nil "
+        "__MCP_diplo_proposal_id = nil "
+        'print("DIPLOSHIM|removed") '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_diplo_shim_health_check_lua() -> str:
+    """Verify a diplo wrapper is in place (either hook path)."""
+    return (
+        'print("DIPLOSHIM_HEALTH|" .. tostring(__MCP_orig_RS ~= nil '
+        "  or __MCP_orig_OIDS ~= nil)) "
+        f'print("{SENTINEL}")'
+    )
+
+
+async def install_diplo_shim(
+    conn: GameConnection, managed_ids: tuple[int, ...]
+) -> str:
+    """Install the diplo proposal interception shim in the
+    DiplomacyActionView state."""
+    index = await conn.state_index_for(DIPLO_SHIM_STATE)
+    if index is None:
+        log.warning("Diplo shim: %s state not found", DIPLO_SHIM_STATE)
+        return "absent"
+    lines = await conn.execute_in_named_state(
+        DIPLO_SHIM_STATE, build_diplo_shim_install_lua(managed_ids)
+    )
+    status = next(
+        (l[9:] for l in lines if l.startswith("DIPLOSHIM|")), "unknown"
+    )
+    log.info("Diplo shim: %s", status)
+    return status
+
+
+# ---------------------------------------------------------------------------
+# Diplo proposal presentation (agent -> human) and execution (human -> agent)
+# ---------------------------------------------------------------------------
+
+
+def build_open_diplo_session_lua(
+    agent_pid: int, human_pid: int, session_str: str
+) -> str:
+    """Lua (gamecore state) that opens a synthetic AI-initiated session for
+    a mailbox proposal.
+
+    ``RequestSession(agent, human, str)`` looks to the engine exactly like a
+    genuine AI proposal: it fires ``Events.DiplomacyStatement`` and the
+    DiplomacyActionView opens in conversation mode with the native
+    Accept/Decline buttons.  The human is the responder, so nothing
+    auto-resolves.  Runs in the gamecore state on purpose — the diplo shim
+    in the DiplomacyActionView state only sees calls made from that state.
+    """
+    return (
+        f"DiplomacyManager.RequestSession({agent_pid}, {human_pid}, "
+        f'"{session_str}") '
+        "local sid = DiplomacyManager.FindOpenSessionID("
+        f"{human_pid}, {agent_pid}) "
+        'print("DIPLO_SESSION_OPENED|" .. tostring(sid)) '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_set_diplo_proposal_lua(agent_pid: int, proposal_id: str) -> str:
+    """Lua (DiplomacyActionView state) that arms the AddResponse wrapper for
+    an about-to-be-presented proposal.
+
+    Mirrors ``build_force_deal_buttons_lua``: the flag tells the shim which
+    mailbox proposal the human is about to answer, so its AddResponse
+    wrapper can report ``MCPDIPLO_RESPONDED`` with the right id.
+    """
+    return (
+        f"__MCP_diplo_proposal_id = \"{proposal_id}\" "
+        'print("DIPLO_FLAG_SET") '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_clear_diplo_flag_lua() -> str:
+    """Lua (DiplomacyActionView state) that clears the proposal flag."""
+    return (
+        "__MCP_diplo_proposal_id = nil "
+        'print("DIPLO_FLAG_CLEARED") '
+        f'print("{SENTINEL}")'
+    )
+
+
+def build_send_diplo_notification_lua(
+    human_pid: int, agent_pid: int, proposal_id: str, summary: str
+) -> str:
+    """Lua (gamecore state) that sends a clickable diplo notification to
+    the human.
+
+    Same pattern as ``build_send_deal_notification_lua`` but with the
+    ``MCPDIPLO:`` marker so the notification click handler routes the click
+    to the diplo path.
+    """
+    safe_summary = summary.replace("\\", "\\\\").replace("'", "\\'")
+    return (
+        f"local pid = {human_pid} "
+        "local nType = DB.MakeHash('NOTIFICATION_USER_DEFINED_1') "
+        "NotificationManager.SendNotification(pid, nType, "
+        f"'MCPDIPLO:{proposal_id}', "
+        f"'{safe_summary}', -1, -1) "
+        f'print("DIPLO_NOTIFY_SENT|{proposal_id}") '
+        f'print("{SENTINEL}")'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Chat shim — wraps Network.SendChat in the ChatPanel state
 # ---------------------------------------------------------------------------
 
@@ -916,32 +1095,43 @@ def build_clear_deal_flag_lua() -> str:
 
 
 def build_notification_handler_lua(managed_ids: tuple[int, ...]) -> str:
-    """Lua (InGame) that registers a click handler for deal notifications.
+    """Lua (InGame) that registers a click handler for deal and diplo
+    notifications.
 
     On ``Events.NotificationActivated``, checks if the notification is one of
-    ours (message starts with ``MCPDEAL:``), extracts the proposal id, and
-    prints ``MCPDEAL_CLICK|<proposal_id>|<player_id>``.
+    ours (message starts with ``MCPDEAL:`` or ``MCPDIPLO:``), extracts the
+    proposal id, and prints ``MCPDEAL_CLICK|...`` or ``MCPDIPLO_CLICK|...``.
+
+    Always removes any previously installed handler before (re-)installing,
+    so a running game upgraded from an earlier handler version (which only
+    matched ``MCPDEAL:``) does not keep both.
     """
-    managed = ",".join(str(p) for p in managed_ids)
     return (
-        "if __MCP_note_handler == nil then "
-        "  __MCP_note_handler = function(pid, nid, byUser) "
-        "    if not byUser then return end "
-        "    if pid ~= Game.GetLocalPlayer() then return end "
-        "    local n = NotificationManager.Find(pid, nid) "
-        "    if not n then return end "
-        "    local msg = n:GetMessage() "
-        '    if not msg or not msg:find("MCPDEAL:") then return end '
-        '    local proposalId = msg:match("MCPDEAL:(.*)") '
-        "    NotificationManager.Dismiss(pid, nid) "
-        '    print("MCPDEAL_CLICK|" .. tostring(proposalId) '
-        '      .. "|pid=" .. tostring(pid)) '
-        "  end "
-        "  Events.NotificationActivated.Add(__MCP_note_handler) "
-        '  print("NOTE_HANDLER|installed") '
-        "else "
-        '  print("NOTE_HANDLER|present") '
+        "if __MCP_note_handler ~= nil then "
+        "  pcall(function() "
+        "    Events.NotificationActivated.Remove(__MCP_note_handler) end) "
+        "  __MCP_note_handler = nil "
         "end "
+        "__MCP_note_handler = function(pid, nid, byUser) "
+        "  if not byUser then return end "
+        "  if pid ~= Game.GetLocalPlayer() then return end "
+        "  local n = NotificationManager.Find(pid, nid) "
+        "  if not n then return end "
+        "  local msg = n:GetMessage() "
+        "  if not msg then return end "
+        "  local verb = nil "
+        '  if msg:find("MCPDEAL:") then '
+        '    verb = "MCPDEAL_CLICK" '
+        '  elseif msg:find("MCPDIPLO:") then '
+        '    verb = "MCPDIPLO_CLICK" '
+        "  else return end "
+        '  local proposalId = msg:match("MCP%a+:(.*)") '
+        "  NotificationManager.Dismiss(pid, nid) "
+        '  print(verb .. "|" .. tostring(proposalId) '
+        '    .. "|pid=" .. tostring(pid)) '
+        "end "
+        "Events.NotificationActivated.Add(__MCP_note_handler) "
+        'print("NOTE_HANDLER|installed") '
         f'print("{SENTINEL}")'
     )
 

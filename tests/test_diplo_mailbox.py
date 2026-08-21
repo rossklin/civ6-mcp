@@ -4,24 +4,31 @@ wiring in :mod:`civ_mcp.server`.
 Covers:
   - ``PendingDiploProposal`` defaults and the ``key`` property.
   - ``DiploMailbox`` lifecycle: unlike ``DealMailbox``, ``accept``/``reject``
-    *keep* the proposal so the proposer can drain it next turn.
+    *keep* the proposal so the proposer can drain it next turn;
+    ``mark_executed`` marks agent→human proposals the engine already applied.
   - ``DiploMailbox`` queries: ``get_pending_for``, ``get_sent_by``,
-    ``get_drainable_by``, ``has_pending``.
-  - ``execute_commands`` routing: response-able actions to managed civs go to
-    the mailbox; one-way actions and non-managed targets fall through to the
-    engine.
+    ``get_drainable_by`` (includes ``executed``), ``has_pending``.
+  - ``execute_commands`` routing: response-able actions to managed civs (and
+    the human) go to the mailbox; agent→human proposals are validity-gated;
+    one-way actions and non-managed targets fall through to the engine.
   - ``respond_to_diplo_action`` accept/reject marking, string coercion, and
     fall-through when no mailbox proposal matches.
   - ``_drain_diplo_proposals``: accepted → executes via the engine path and is
-    removed; rejected → reported and removed; pending → left alone.
+    removed; executed → reported without an engine call; rejected → reported
+    and removed; pending → left alone.
   - ``_mailbox_propose_diplo`` filing + the None-mailbox guard.
+  - Human-side handlers: ``_handle_human_diplo_proposed`` (shim interception
+    → mailbox + chat echo), ``_handle_diplo_notification_click`` (flag armed
+    before the synthetic session opens), ``_handle_diplo_response``, and
+    ``_drain_human_diplo_proposals`` (human slot-start execution).
+  - Diplo shim builders in :mod:`civ_mcp.handoff`.
 """
 
 import asyncio
 import json
 import types
 
-from civ_mcp import server, seats as seats_mod
+from civ_mcp import handoff, server, seats as seats_mod
 from civ_mcp.diplo_mailbox import DiploMailbox, PendingDiploProposal
 from civ_mcp.handoff import HandoffConfig
 from civ_mcp.lua.diplomacy import RESPONSEABLE_DIPLO_ACTIONS
@@ -249,17 +256,23 @@ def _make_ctx(agent_id=1, human_id=0, agent_ids=(1,)):
     return ctx, app
 
 
-def _patch_engine(monkeypatch):
-    """Patch _logged (turn-gating) and the engine executor. Returns the list
-    of forwarded command batches the fake executor captured."""
+def _patch_engine(monkeypatch, validity=(True, "")):
+    """Patch _logged (turn-gating), the engine executor, and the agent→human
+    validity pre-check. Returns the list of forwarded command batches the
+    fake executor captured.  ``validity`` seeds the pre-check result for
+    tests that exercise the gating itself."""
     executed = []
 
     async def fake_exec(gs, js):
         executed.append(js)
         return "engine-ok"
 
+    async def fake_validity(gs, target, action_name):
+        return validity
+
     monkeypatch.setattr(server, "_logged", _passthrough_logged)
     monkeypatch.setattr(server, "_execute_commands", fake_exec)
+    monkeypatch.setattr(server, "_check_diplo_action_validity", fake_validity)
     return executed
 
 
@@ -641,3 +654,347 @@ class TestResponseableActions:
     def test_oneway_actions_excluded(self):
         for a in ("DENOUNCE", "DECLARE_SURPRISE_WAR", "DECLARE_FORMAL_WAR"):
             assert a not in RESPONSEABLE_DIPLO_ACTIONS
+
+
+# ---------------------------------------------------------------------------
+# mark_executed (agent→human proposals answered on the native leader screen)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkExecuted:
+    def test_marks_executed_and_keeps(self):
+        mb = DiploMailbox()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+        result = mb.mark_executed(pid)
+        assert result is not None
+        assert result.status == "executed"
+        assert mb.get(pid) is result  # kept for the proposer's drain report
+
+    def test_unknown_returns_none(self):
+        assert DiploMailbox().mark_executed("nope") is None
+
+    def test_executed_is_drainable(self):
+        mb = DiploMailbox()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+        mb.mark_executed(pid)
+        assert [p.proposal_id for p in mb.get_drainable_by(1)] == [pid]
+
+    def test_executed_not_pending_for_target(self):
+        mb = DiploMailbox()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+        mb.mark_executed(pid)
+        assert mb.get_pending_for(0) == []
+
+
+class TestDrainDiploProposalsExecuted:
+    def test_executed_reports_without_engine_call(self):
+        """Agent→human proposal the human accepted on the native leader
+        screen: the engine already applied the effect, so the drain only
+        reports — never re-executes."""
+        mb = DiploMailbox()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+        mb.mark_executed(pid)
+        gs = _FakeGameState()
+
+        lines = asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+
+        assert gs.calls == []  # never re-executed
+        assert mb.get(pid) is None
+        assert len(lines) == 1
+        assert "took effect" in lines[0]
+        assert "diplomacy screen" in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# execute_commands routing — agent→human validity gate
+# ---------------------------------------------------------------------------
+
+
+class TestAgentToHumanValidityGate:
+    def test_invalid_proposal_not_filed(self, monkeypatch):
+        """Agent→human proposals are pre-checked so the human is never asked
+        to answer a doomed proposal (already friends, obsolete delegation)."""
+        ctx, app = _make_ctx()  # agent P1, human P0
+        _patch_engine(monkeypatch, validity=(False, "INVALID|Already friends"))
+        cmds = [{"action": "send_diplomatic_action",
+                 "params": {"other_player_id": 0,
+                            "action_name": "DECLARE_FRIENDSHIP"}}]
+
+        result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
+
+        assert app.diplo_mailbox.pending_count == 0
+        assert "not valid" in result
+        assert "Already friends" in result
+
+    def test_valid_proposal_filed(self, monkeypatch):
+        ctx, app = _make_ctx()
+        _patch_engine(monkeypatch, validity=(True, ""))
+        cmds = [{"action": "send_diplomatic_action",
+                 "params": {"other_player_id": 0,
+                            "action_name": "DECLARE_FRIENDSHIP"}}]
+
+        result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
+
+        assert app.diplo_mailbox.pending_count == 1
+        assert "awaiting response" in result
+
+
+# ---------------------------------------------------------------------------
+# _handle_human_diplo_proposed (human→agent interception callback)
+# ---------------------------------------------------------------------------
+
+
+class _FakeConn:
+    """Records execute_in_named_state / execute_write calls."""
+
+    def __init__(self):
+        self.named: list[tuple[str, str]] = []
+        self.writes: list[str] = []
+
+    async def execute_in_named_state(self, state, lua):
+        self.named.append((state, lua))
+        return []
+
+    async def execute_write(self, lua, perspective=True):
+        self.writes.append(lua)
+        return []
+
+
+def _make_cfg(human_id=0, agent_ids=(1,)):
+    return HandoffConfig(enabled=True, human_id=human_id, agent_ids=agent_ids)
+
+
+class TestHandleHumanDiploProposed:
+    def _run(self, conn, mb, data, cfg):
+        # The handler is sync but schedules an async chat echo, so it must
+        # run inside a loop for the ensure_future to resolve.
+        async def _go():
+            server._handle_human_diplo_proposed(conn, mb, data, cfg)
+            await asyncio.sleep(0)
+        asyncio.run(_go())
+
+    def test_files_proposal_with_mapped_action_name(self):
+        """The shim reports the session string (DECLARE_FRIEND); the mailbox
+        stores the action name (DECLARE_FRIENDSHIP)."""
+        conn, mb = _FakeConn(), DiploMailbox()
+        data = {"from": 0, "to": 1, "action": "DECLARE_FRIEND"}
+
+        self._run(conn, mb, data, _make_cfg())
+
+        p = mb.all_pending()[0]
+        assert p.from_player == 0 and p.to_player == 1
+        assert p.action_name == "DECLARE_FRIENDSHIP"
+        assert p.proposed_by == "human"
+        assert p.status == "pending"
+
+    def test_identity_action_strings_pass_through(self):
+        conn, mb = _FakeConn(), DiploMailbox()
+        data = {"from": 0, "to": 1, "action": "DIPLOMATIC_DELEGATION"}
+
+        self._run(conn, mb, data, _make_cfg())
+
+        assert mb.all_pending()[0].action_name == "DIPLOMATIC_DELEGATION"
+
+    def test_echoes_confirmation_to_human_chat(self):
+        conn, mb = _FakeConn(), DiploMailbox()
+        data = {"from": 0, "to": 1, "action": "DECLARE_FRIEND"}
+
+        self._run(conn, mb, data, _make_cfg())
+
+        assert len(conn.named) == 1
+        state, lua = conn.named[0]
+        assert state == handoff.CHAT_SHIM_STATE
+        assert "friendship" in lua
+
+    def test_non_managed_target_ignored(self):
+        conn, mb = _FakeConn(), DiploMailbox()
+        data = {"from": 0, "to": 5, "action": "DECLARE_FRIEND"}
+
+        self._run(conn, mb, data, _make_cfg())
+
+        assert mb.pending_count == 0
+        assert conn.named == []
+
+
+# ---------------------------------------------------------------------------
+# _handle_diplo_response / _handle_diplo_notification_click
+# ---------------------------------------------------------------------------
+
+
+class TestHandleDiploResponse:
+    def _file(self, mb):
+        return mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+
+    def test_positive_marks_executed(self):
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        server._handle_diplo_response(mb, {"proposal_id": pid,
+                                           "response": "POSITIVE"})
+        assert mb.get(pid).status == "executed"
+
+    def test_negative_marks_rejected(self):
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        server._handle_diplo_response(mb, {"proposal_id": pid,
+                                           "response": "NEGATIVE"})
+        assert mb.get(pid).status == "rejected"
+
+    def test_ignore_counts_as_rejected(self):
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        server._handle_diplo_response(mb, {"proposal_id": pid,
+                                           "response": "RESPONSE_IGNORE"})
+        assert mb.get(pid).status == "rejected"
+
+    def test_unknown_id_no_crash(self):
+        server._handle_diplo_response(DiploMailbox(),
+                                      {"proposal_id": "nope",
+                                       "response": "POSITIVE"})
+
+
+class TestHandleDiploNotificationClick:
+    def test_arms_flag_then_opens_session(self):
+        conn, mb = _FakeConn(), DiploMailbox()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+
+        asyncio.run(server._handle_diplo_notification_click(
+            conn, mb, {"proposal_id": pid}, _make_cfg(), None))
+
+        # 1. Flag armed in the DiplomacyActionView state...
+        assert conn.named[0][0] == handoff.DIPLO_SHIM_STATE
+        assert pid in conn.named[0][1]
+        # 2. ...BEFORE the synthetic session opens in the gamecore state.
+        assert len(conn.writes) == 1
+        assert 'DiplomacyManager.RequestSession(1, 0, "DECLARE_FRIEND")' \
+            in conn.writes[0]
+
+    def test_unknown_proposal_makes_no_calls(self):
+        conn, mb = _FakeConn(), DiploMailbox()
+
+        asyncio.run(server._handle_diplo_notification_click(
+            conn, mb, {"proposal_id": "nope"}, _make_cfg(), None))
+
+        assert conn.named == [] and conn.writes == []
+
+
+# ---------------------------------------------------------------------------
+# _drain_human_diplo_proposals (executed at the human's slot start)
+# ---------------------------------------------------------------------------
+
+
+class TestDrainHumanDiploProposals:
+    def _file_human_proposal(self, mb, status, action="DIPLOMATIC_DELEGATION"):
+        pid = mb.propose(PendingDiploProposal(
+            from_player=0, to_player=1, action_name=action))
+        if status == "accepted":
+            mb.accept(pid)
+        elif status == "rejected":
+            mb.reject(pid)
+        return pid
+
+    def test_accepted_executes_as_human_and_notifies(self):
+        mb = DiploMailbox()
+        pid = self._file_human_proposal(mb, "accepted")
+        conn, gs = _FakeConn(), _FakeGameState()
+
+        asyncio.run(server._drain_human_diplo_proposals(
+            gs, conn, mb, _make_cfg()))
+
+        assert gs.calls == [(1, "DIPLOMATIC_DELEGATION")]
+        assert mb.get(pid) is None
+        chat = conn.named[0]
+        assert chat[0] == handoff.CHAT_SHIM_STATE
+        assert "took effect" in chat[1]
+
+    def test_rejected_reports_decline_without_executing(self):
+        mb = DiploMailbox()
+        pid = self._file_human_proposal(mb, "rejected")
+        conn, gs = _FakeConn(), _FakeGameState()
+
+        asyncio.run(server._drain_human_diplo_proposals(
+            gs, conn, mb, _make_cfg()))
+
+        assert gs.calls == []
+        assert mb.get(pid) is None
+        assert "declined" in conn.named[0][1]
+
+    def test_engine_error_surfaces_in_chat(self):
+        mb = DiploMailbox()
+        self._file_human_proposal(mb, "accepted")
+        conn = _FakeConn()
+        gs = _FakeGameState(result="ERR:INVALID|Not enough gold")
+
+        asyncio.run(server._drain_human_diplo_proposals(
+            gs, conn, mb, _make_cfg()))
+
+        assert "could not be completed" in conn.named[0][1]
+
+    def test_agent_proposals_not_drained_here(self):
+        """Proposals FROM agents drain on the agent's own turn
+        (_drain_diplo_proposals), not in the human-slot drain."""
+        mb = DiploMailbox()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+        mb.accept(pid)
+        conn, gs = _FakeConn(), _FakeGameState()
+
+        asyncio.run(server._drain_human_diplo_proposals(
+            gs, conn, mb, _make_cfg()))
+
+        assert gs.calls == []
+        assert mb.get(pid) is not None
+
+
+# ---------------------------------------------------------------------------
+# Diplo shim builders (handoff.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDiploShimBuilders:
+    def test_install_substitutes_tags(self):
+        lua = handoff.build_diplo_shim_install_lua((1, 2))
+        assert "__MCP_MANAGED_IDS_TAG__" not in lua
+        assert "__MCP_SENTINEL_TAG__" not in lua
+        assert "{[1]=true,[2]=true}" in lua
+        assert "---END---" in lua
+
+    def test_install_wraps_request_and_response(self):
+        lua = handoff.build_diplo_shim_install_lua((1,))
+        assert "__MCP_orig_RS" in lua
+        assert "__MCP_orig_AR" in lua
+        # The three proposal session strings are intercepted; others pass.
+        assert "DECLARE_FRIEND" in lua
+        assert "MCPDIPLO|PROPOSED" in lua
+        assert "MCPDIPLO_RESPONDED" in lua
+
+    def test_uninstall_restores_both_hook_paths(self):
+        lua = handoff.build_diplo_shim_uninstall_lua()
+        assert "DiplomacyManager.RequestSession = __MCP_orig_RS" in lua
+        assert "DiplomacyManager.AddResponse = __MCP_orig_AR" in lua
+        assert "OnSelectInitialDiplomacyStatement = __MCP_orig_OIDS" in lua
+        assert "OnSelectConversationDiplomacyStatement = __MCP_orig_OCDR" in lua
+
+    def test_health_check_covers_both_hooks(self):
+        lua = handoff.build_diplo_shim_health_check_lua()
+        assert "__MCP_orig_RS ~= nil" in lua
+        assert "__MCP_orig_OIDS ~= nil" in lua
+
+    def test_open_session_uses_session_string(self):
+        lua = handoff.build_open_diplo_session_lua(1, 0, "DECLARE_FRIEND")
+        assert 'DiplomacyManager.RequestSession(1, 0, "DECLARE_FRIEND")' in lua
+
+    def test_set_flag_carries_proposal_id(self):
+        lua = handoff.build_set_diplo_proposal_lua(1, "abc123")
+        assert '__MCP_diplo_proposal_id = "abc123"' in lua
+
+    def test_notification_uses_diplo_marker(self):
+        lua = handoff.build_send_diplo_notification_lua(
+            0, 1, "abc123", "Cleopatra proposes friendship.")
+        assert "'MCPDIPLO:abc123'" in lua
+        assert "Cleopatra proposes friendship." in lua

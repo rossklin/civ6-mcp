@@ -260,6 +260,95 @@ class TestParseChatSend:
 
 
 # ---------------------------------------------------------------------------
+# MCPDIPLO lines (diplo shim)
+# ---------------------------------------------------------------------------
+
+
+class TestParseDiploProposed:
+    def test_proposed_emits_event(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO|PROPOSED|from=0|to=1|action=DECLARE_FRIEND")
+        )
+        assert result is not None
+        assert result["type"] == "diplo_proposed"
+        assert result["from"] == 0
+        assert result["to"] == 1
+        assert result["action"] == "DECLARE_FRIEND"
+
+    def test_delegation_and_embassy_actions(self):
+        for action in ("DIPLOMATIC_DELEGATION", "RESIDENT_EMBASSY"):
+            result = _parse_mcpdeal_line(
+                _p(f"MCPDIPLO|PROPOSED|from=0|to=2|action={action}")
+            )
+            assert result["action"] == action
+
+    def test_bad_numbers_do_not_crash(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO|PROPOSED|from=abc|to=1|action=DECLARE_FRIEND")
+        )
+        assert result is not None
+        assert result["from"] == -1
+        assert result["to"] == 1
+
+    def test_non_proposed_verb_returns_none(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO|OTHER|from=0|to=1")
+        )
+        assert result is None
+
+
+class TestParseDiploClick:
+    def test_click_with_pid(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO_CLICK|abc123|pid=0")
+        )
+        assert result is not None
+        assert result["type"] == "diplo_click"
+        assert result["proposal_id"] == "abc123"
+        assert result["pid"] == 0
+
+    def test_click_without_pid(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO_CLICK|abc123")
+        )
+        assert result is not None
+        assert result["proposal_id"] == "abc123"
+        assert "pid" not in result
+
+
+class TestParseDiploResponded:
+    def test_positive(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO_RESPONDED|abc123|POSITIVE")
+        )
+        assert result == {
+            "type": "diplo_responded",
+            "proposal_id": "abc123",
+            "response": "POSITIVE",
+        }
+
+    def test_negative(self):
+        result = _parse_mcpdeal_line(
+            _p("MCPDIPLO_RESPONDED|abc123|NEGATIVE")
+        )
+        assert result["response"] == "NEGATIVE"
+
+    def test_malformed_returns_none(self):
+        result = _parse_mcpdeal_line(_p("MCPDIPLO_RESPONDED|abc123"))
+        assert result is None
+
+
+class TestParseDiploHealth:
+    def test_health_ok(self):
+        result = _parse_mcpdeal_line(_p("DIPLOSHIM_HEALTH|true"))
+        assert result == {"type": "diplo_health", "ok": True}
+
+    def test_health_bad(self):
+        result = _parse_mcpdeal_line(_p("DIPLOSHIM_HEALTH|false"))
+        assert result == {"type": "diplo_health", "ok": False}
+
+
+# ---------------------------------------------------------------------------
 # Non-MCPDEAL lines
 # ---------------------------------------------------------------------------
 

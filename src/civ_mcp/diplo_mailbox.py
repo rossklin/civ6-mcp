@@ -16,6 +16,21 @@ local again, via the existing :func:`build_send_diplo_action` which forces a
 AI can decide.  Because the proposer opens the session, the action's direction
 (delegation/embassy belong to the proposer) is correct.
 
+The human flows use the same mailbox with different execution paths:
+
+* **Human -> agent**: the human's button click on the native leader screen is
+  intercepted *before* any session exists by the diplo shim
+  (:mod:`civ_mcp.lua` diplo_shim.lua in the DiplomacyActionView state) and
+  filed here with ``proposed_by="human"``.  The agent target answers via the
+  mailbox; an accepted proposal is executed at the start of the human's *next*
+  slot (the human is the proposer, so direction is correct), a rejected one is
+  reported to the human via chat.
+* **Agent -> human**: the agent files the proposal here; the human gets a
+  clickable notification and answers on the native leader screen (a synthetic
+  AI-initiated session).  The human's single ``POSITIVE`` response completes
+  the action in-engine, so the proposal is marked ``executed`` (not
+  ``accepted``) — the proposer's drain then only reports, never re-executes.
+
 Only the three response-able actions are routed here; one-way actions (denounce,
 war declarations) go straight to the engine.
 """
@@ -44,7 +59,11 @@ class PendingDiploProposal:
     action_name: str = ""  # DECLARE_FRIENDSHIP | DIPLOMATIC_DELEGATION | RESIDENT_EMBASSY
     turn_proposed: int = 0
     proposed_by: str = ""  # "agent" or "human"
-    status: str = "pending"  # pending | accepted | rejected
+    # pending | accepted | rejected | executed.  "executed" = the effect was
+    # already applied in-engine (agent->human proposal answered by the human
+    # on the native leader screen); the proposer's drain reports it without
+    # re-executing.
+    status: str = "pending"
 
     @property
     def key(self) -> tuple[int, int]:
@@ -111,6 +130,27 @@ class DiploMailbox:
             )
         return p
 
+    def mark_executed(self, proposal_id: str) -> PendingDiploProposal | None:
+        """Mark a proposal executed in-engine (kept for the proposer's drain).
+
+        Used when the human answers an agent->human proposal on the native
+        leader screen: the single POSITIVE response applies the effect right
+        then, so the proposer's drain must report "took effect" but never
+        re-execute.
+        """
+        p = self._pending.get(proposal_id)
+        if p:
+            p.status = "executed"
+            log.info(
+                "DiploMailbox: P%d accepted %s proposal %s from P%d "
+                "(executed in-engine via native UI)",
+                p.to_player,
+                p.action_name,
+                proposal_id,
+                p.from_player,
+            )
+        return p
+
     def remove(self, proposal_id: str) -> PendingDiploProposal | None:
         """Drop a proposal after the proposer has drained it."""
         return self._pending.pop(proposal_id, None)
@@ -136,12 +176,14 @@ class DiploMailbox:
         return [p for p in self._pending.values() if p.from_player == player_id]
 
     def get_drainable_by(self, player_id: int) -> list[PendingDiploProposal]:
-        """Proposals *player_id* filed that are accepted/rejected and ready to
-        drain (execute on accept, report on reject) on the proposer's turn."""
+        """Proposals *player_id* filed that are answered and ready to drain on
+        the proposer's turn: execute on accept (unless already executed
+        in-engine), report on reject/executed."""
         return [
             p
             for p in self._pending.values()
-            if p.from_player == player_id and p.status in ("accepted", "rejected")
+            if p.from_player == player_id
+            and p.status in ("accepted", "rejected", "executed")
         ]
 
     def has_pending(self, from_player: int, to_player: int) -> bool:

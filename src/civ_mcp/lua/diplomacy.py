@@ -50,6 +50,13 @@ DIPLO_SESSION_STRING_MAP: dict[str, str] = {
     "DECLARE_TERRITORIAL_WAR": "DECLARE_TERRITORIAL_WAR",
 }
 
+# Inverse map: session string -> action_name. The diplo shim reports the
+# session string the UI passed to RequestSession (e.g. "DECLARE_FRIEND"),
+# which maps back to the mailbox's action_name (e.g. DECLARE_FRIENDSHIP).
+SESSION_STRING_TO_ACTION: dict[str, str] = {
+    v: k for k, v in DIPLO_SESSION_STRING_MAP.items()
+}
+
 
 # Lua helper injected into queries that emit trait/unique text. Strips the raw
 # ``[ICON_*]``, ``[NEWLINE]`` and ``[COLOR]`` markup tokens that Locale.Lookup
@@ -486,6 +493,66 @@ print("{SENTINEL}")
 """
 
 
+def _diplo_action_validity_lua() -> str:
+    """Lua snippet: validate ``DIPLOACTION_<action>`` against ``target`` and
+    bail with ``ERR:INVALID|<reasons>`` when it fails.
+
+    Expects the locals ``me``, ``target``, ``action`` and ``pDiplo`` to be
+    defined in scope.  Shared by :func:`build_send_diplo_action` (pre-check
+    before opening a session) and :func:`build_check_diplo_action_validity`
+    (standalone gate for mailbox filing).
+    """
+    return f"""local fullAction = "DIPLOACTION_" .. action
+local valid, results = pDiplo:IsDiplomaticActionValid(fullAction, target, true)
+if not valid then
+    local reasons = "unknown"
+    if results and results.FailureReasons then
+        local parts = {{}}
+        for _, r in ipairs(results.FailureReasons) do
+            local s = tostring(r or "")
+            if s:find("OBSOLETE_CIVIC") or s:find("ObsoleteCivic") then
+                table.insert(parts, "obsolete (Diplomatic Service civic researched — use embassy instead)")
+            else
+                local loc = Locale.Lookup(s)
+                if loc and loc ~= "" then table.insert(parts, loc) else table.insert(parts, s) end
+            end
+        end
+        if #parts > 0 then reasons = table.concat(parts, "; ") end
+    end
+    if reasons == "unknown" and action == "DIPLOMATIC_DELEGATION" then
+        local dipSvcCivic = GameInfo.Civics["CIVIC_DIPLOMATIC_SERVICE"]
+        if dipSvcCivic then
+            local hasCivic = false
+            pcall(function() hasCivic = Players[me]:GetCulture():HasCivic(dipSvcCivic.Index) end)
+            if hasCivic then
+                reasons = "obsolete (Diplomatic Service civic researched — use embassy instead)"
+            end
+        end
+    end
+    {_bail_lua('"ERR:INVALID|" .. reasons')}
+end"""
+
+
+def build_check_diplo_action_validity(other_player_id: int, action_name: str) -> str:
+    """Pure validity check for a response-able diplo action (InGame context).
+
+    Prints ``OK|<action>`` when ``IsDiplomaticActionValid`` passes, otherwise
+    bails with ``ERR:INVALID|<reasons>``.  Does NOT open a session or change
+    any state — used to gate mailbox filing of agent→human proposals so the
+    human is never asked to answer a doomed proposal (already friends,
+    delegation obsolete after Diplomatic Service, missing capital path, ...).
+    """
+    return f"""
+local me = Game.GetLocalPlayer()
+local pDiplo = Players[me]:GetDiplomacy()
+local target = {other_player_id}
+local action = "{action_name}"
+{_diplo_action_validity_lua()}
+print("OK|" .. action)
+print("{SENTINEL}")
+"""
+
+
 def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
     """Send a proactive diplomatic action and detect acceptance/rejection.
 
@@ -528,35 +595,7 @@ local me = Game.GetLocalPlayer()
 local pDiplo = Players[me]:GetDiplomacy()
 local target = {other_player_id}
 local action = "{action_name}"
-local fullAction = "DIPLOACTION_" .. action
-local valid, results = pDiplo:IsDiplomaticActionValid(fullAction, target, true)
-if not valid then
-    local reasons = "unknown"
-    if results and results.FailureReasons then
-        local parts = {{}}
-        for _, r in ipairs(results.FailureReasons) do
-            local s = tostring(r or "")
-            if s:find("OBSOLETE_CIVIC") or s:find("ObsoleteCivic") then
-                table.insert(parts, "obsolete (Diplomatic Service civic researched — use embassy instead)")
-            else
-                local loc = Locale.Lookup(s)
-                if loc and loc ~= "" then table.insert(parts, loc) else table.insert(parts, s) end
-            end
-        end
-        if #parts > 0 then reasons = table.concat(parts, "; ") end
-    end
-    if reasons == "unknown" and action == "DIPLOMATIC_DELEGATION" then
-        local dipSvcCivic = GameInfo.Civics["CIVIC_DIPLOMATIC_SERVICE"]
-        if dipSvcCivic then
-            local hasCivic = false
-            pcall(function() hasCivic = Players[me]:GetCulture():HasCivic(dipSvcCivic.Index) end)
-            if hasCivic then
-                reasons = "obsolete (Diplomatic Service civic researched — use embassy instead)"
-            end
-        end
-    end
-    {_bail_lua('"ERR:INVALID|" .. reasons')}
-end"""
+{_diplo_action_validity_lua()}"""
 
     # War declarations leave the session open so the leader animation plays.
     # Python schedules cleanup after ~8s via build_war_diplo_cleanup().

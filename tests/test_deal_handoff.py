@@ -372,21 +372,31 @@ class TestNotificationHandlerLua:
 
     def test_extracts_proposal_id(self):
         lua = handoff.build_notification_handler_lua((1,))
-        assert 'msg:match("MCPDEAL:(.*)")' in lua
+        assert 'msg:match("MCP%a+:(.*)")' in lua
+
+    def test_matches_deal_and_diplo_markers(self):
+        lua = handoff.build_notification_handler_lua((1,))
+        assert 'msg:find("MCPDEAL:")' in lua
+        assert 'msg:find("MCPDIPLO:")' in lua
+        assert '"MCPDEAL_CLICK"' in lua
+        assert '"MCPDIPLO_CLICK"' in lua
 
     def test_dismisses_notification(self):
         lua = handoff.build_notification_handler_lua((1,))
         assert "NotificationManager.Dismiss(pid, nid)" in lua
 
-    def test_prints_mcpdeal_click(self):
+    def test_prints_click_with_verb(self):
         lua = handoff.build_notification_handler_lua((1,))
-        assert 'print("MCPDEAL_CLICK|"' in lua
+        assert 'print(verb .. "|" .. tostring(proposalId)' in lua
 
-    def test_idempotent(self):
+    def test_replaces_previous_handler(self):
+        """Always removes any previously installed handler before
+        re-installing, so an upgraded handler version (e.g. one that only
+        matched MCPDEAL:) does not linger alongside the new one."""
         lua = handoff.build_notification_handler_lua((1,))
-        assert "if __MCP_note_handler == nil then" in lua
+        assert "if __MCP_note_handler ~= nil then" in lua
+        assert "Events.NotificationActivated.Remove(__MCP_note_handler)" in lua
         assert 'print("NOTE_HANDLER|installed")' in lua
-        assert 'print("NOTE_HANDLER|present")' in lua
 
     def test_sentinel_present(self):
         lua = handoff.build_notification_handler_lua((1,))
