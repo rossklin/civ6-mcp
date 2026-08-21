@@ -546,11 +546,22 @@ async def load_game_save(conn: GameConnection, save_name: str) -> str:
 async def execute_lua(
     conn: GameConnection, code: str, context: str = "gamecore"
 ) -> str:
-    """Escape hatch: run arbitrary Lua code."""
+    """Escape hatch: run arbitrary Lua code.
+
+    ``context``: ``"ingame"`` (InGame state, command APIs), ``"gamecore"``
+    (read-only GameCore state), a digit (raw state index), or any other
+    string is treated as a **named Lua state** (e.g.
+    ``"DiplomacyActionView"``) resolved via ``execute_in_named_state`` —
+    empty output when the state does not exist.  Named states never get the
+    seat-perspective rewrite, so the target context's own globals (UI view
+    state like ``ms_ActiveSessionID``) are seen as-is.
+    """
     if context == "ingame":
         lines = await conn.execute_write(code)
     elif context.isdigit():
         lines = await conn.execute_in_state(int(context), code)
-    else:
+    elif context == "gamecore":
         lines = await conn.execute_read(code)
+    else:
+        lines = await conn.execute_in_named_state(context, code)
     return "\n".join(lines) if lines else "(no output)"
