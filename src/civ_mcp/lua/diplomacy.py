@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import SENTINEL, _bail, _bail_lua, _lua_close_diplo_session
+from civ_mcp.lua._helpers import (
+    SENTINEL,
+    _bail,
+    _bail_lua,
+    _lua_close_diplo_session,
+    load_lua_template,
+)
 from civ_mcp.lua.models import (
     AgendaInfo,
     CivInfo,
@@ -562,96 +568,25 @@ def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
     Open Borders is NOT supported here — it's a trade deal, not a diplomatic
     action. Use propose_trade with AGREEMENT/OPEN_BORDERS items instead.
 
-    Key discovery: RequestSession uses DIFFERENT action strings from DIPLOACTION_ names:
-    - DECLARE_FRIENDSHIP -> session string "DECLARE_FRIEND" (not "DECLARE_FRIENDSHIP")
-    - Others use same name as action_name
-
-    Flow: RequestSession -> 2x AddResponse(POSITIVE) -> CloseSession
-    No AddStatement needed (that crashes on mismatched session types).
+    The Lua lives in ``build_send_diplo_action.lua`` (loaded via
+    ``load_lua_template``); see its header for the RequestSession string
+    quirks and the flow notes. War declarations (DECLARE_*_WAR) leave the
+    session open so the leader animation plays — Python schedules cleanup
+    afterwards (``_cleanup_war_diplomacy`` in game_state).
     """
     # Map action_name to the correct RequestSession string
     # Game source: DiplomacyActionView.lua line 472 uses "DECLARE_FRIEND"
     is_war = action_name.endswith("_WAR") and action_name.startswith("DECLARE_")
     session_str = DIPLO_SESSION_STRING_MAP.get(action_name, action_name)
-
-    # War declarations use CanDeclareWarOn; other actions use IsDiplomaticActionValid
-    if is_war:
-        validation_block = f"""
-local me = Game.GetLocalPlayer()
-local pDiplo = Players[me]:GetDiplomacy()
-local target = {other_player_id}
-local action = "{action_name}"
-if pDiplo:IsAtWarWith(target) then
-    {_bail("ERR:ALREADY_AT_WAR|Already at war with this player")}
-end
-local canWar = false
-pcall(function() canWar = pDiplo:CanDeclareWarOn(target) end)
-if not canWar then
-    {_bail("ERR:CANNOT_DECLARE_WAR|Cannot declare war. Possible reasons: friendship/alliance active, 10-turn peace cooldown, or target is invalid.")}
-end"""
-    else:
-        validation_block = f"""
-local me = Game.GetLocalPlayer()
-local pDiplo = Players[me]:GetDiplomacy()
-local target = {other_player_id}
-local action = "{action_name}"
-{_diplo_action_validity_lua()}"""
-
-    # War declarations leave the session open so the leader animation plays.
-    # Python schedules cleanup after ~8s via build_war_diplo_cleanup().
-    close_session_lua = "" if is_war else "    DiplomacyManager.CloseSession(sid)"
-    cleanup_lua = "" if is_war else _lua_close_diplo_session()
-
-    return f"""
-{validation_block}
--- Clean stale session for THIS target only (not all session IDs).
--- Mass-closing sessions via IsSessionIDOpen loop corrupts AI diplomacy state.
-local staleSid = DiplomacyManager.FindOpenSessionID(me, target)
-if staleSid and staleSid >= 0 then
-    DiplomacyManager.CloseSession(staleSid)
-end
--- Open session with the correct action string
-DiplomacyManager.RequestSession(me, target, "{session_str}")
-local sid = DiplomacyManager.FindOpenSessionID(me, target)
-local sessionCompleted = false
-if sid and sid >= 0 then
-    DiplomacyManager.AddResponse(sid, me, "POSITIVE")
-    DiplomacyManager.AddResponse(sid, me, "POSITIVE")
-{close_session_lua}
-    sessionCompleted = true
-end
-{cleanup_lua}
--- Report result.
--- NOTE: All post-state queries (HasDelegationAt, HasEmbassyAt, IsDiplomaticActionValid,
--- GetGoldBalance, GetVisibilityOn) are STALE same-frame after CloseSession. The C++ engine
--- commits state changes on the next frame. So we cannot reliably detect acceptance by
--- comparing pre/post state. Instead: IsDiplomaticActionValid passed the pre-check (line above),
--- meaning the action was valid. If the session completed, the game accepted it.
-local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
-if action:find("_WAR") then
-    local atWar = pDiplo:IsAtWarWith(target)
-    if atWar then
-        print("OK:WAR_DECLARED|" .. action .. " on " .. name .. " — now at war")
-    else
-        print("WARN:WAR_UNCERTAIN|" .. action .. " session completed but war state not yet confirmed for " .. name .. ". Check next turn.")
-    end
-elseif action == "DIPLOMATIC_DELEGATION" then
-    if sessionCompleted then
-        print("OK:ACCEPTED|" .. name .. " accepted your delegation")
-    else
-        print("OK:ACCEPTED|Delegation sent to " .. name)
-    end
-elseif action == "RESIDENT_EMBASSY" then
-    print("OK:ACCEPTED|" .. name .. " accepted your embassy")
-elseif action == "DECLARE_FRIENDSHIP" then
-    print("OK:ACCEPTED|" .. name .. " accepted your friendship declaration")
-elseif action == "DENOUNCE" then
-    print("OK:SENT|Denounced " .. name)
-else
-    print("OK:SENT|" .. action .. " sent to " .. name)
-end
-print("{SENTINEL}")
-"""
+    return (
+        load_lua_template("build_send_diplo_action.lua")
+        .replace("__MCP_TARGET_TAG__", str(other_player_id))
+        .replace("__MCP_ACTION_TAG__", action_name)
+        .replace("__MCP_SESSION_STRING_TAG__", session_str)
+        .replace("__MCP_IS_WAR_TAG__", "true" if is_war else "false")
+        .replace("__MCP_VALIDITY_BLOCK_TAG__", _diplo_action_validity_lua())
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def build_war_close_session(other_player_id: int) -> str:
