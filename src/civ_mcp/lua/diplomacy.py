@@ -659,9 +659,9 @@ end
 local okRS, errRS = pcall(function()
     DiplomacyManager.RequestSession(from, to, "{session_str}")
 end)
-if not okRS then {_bail_lua('"ERR:REQUEST_FAILED|" .. tostring(errRS)')}
+if not okRS then {_bail_lua('"ERR:REQUEST_FAILED|" .. tostring(errRS)')} end
 local sid = DiplomacyManager.FindOpenSessionID(to, from)
-if not sid or sid < 0 then {_bail("ERR:NO_SESSION|RequestSession opened no session")}
+if not sid or sid < 0 then {_bail("ERR:NO_SESSION|RequestSession opened no session")} end
 print("OK|OPENED|" .. sid)
 print("{SENTINEL}")
 """
@@ -679,11 +679,11 @@ def build_diplo_prime_step(from_player: int, to_player: int, enum_key: str) -> s
 local from = {from_player}
 local to = {to_player}
 local sid = DiplomacyManager.FindOpenSessionID(to, from)
-if not sid or sid < 0 then {_bail("ERR:NO_SESSION|no open session to prime")}
+if not sid or sid < 0 then {_bail("ERR:NO_SESSION|no open session to prime")} end
 local okSA, resSA = pcall(function()
     return DiplomacyManager.SendAction(from, to, DiplomacyActionTypes.{enum_key}, {{}})
 end)
-if not okSA then {_bail_lua('"ERR:PRIME_FAILED|" .. tostring(resSA)')}
+if not okSA then {_bail_lua('"ERR:PRIME_FAILED|" .. tostring(resSA)')} end
 print("OK|PRIMED|" .. tostring(resSA) .. "|sid=" .. sid)
 print("{SENTINEL}")
 """
@@ -703,7 +703,7 @@ def build_diplo_response_step(sid: int, to_player: int) -> str:
 local okAR, errAR = pcall(function()
     DiplomacyManager.AddResponse({sid}, {to_player}, "POSITIVE")
 end)
-if not okAR then {_bail_lua('"ERR:RESPONSE_FAILED|" .. tostring(errAR)')}
+if not okAR then {_bail_lua('"ERR:RESPONSE_FAILED|" .. tostring(errAR)')} end
 print("OK|RESPONSE_SENT|{sid}")
 print("{SENTINEL}")
 """

@@ -231,7 +231,22 @@ pass). Two deviations from the plan text, both deliberate:
   outright with `ERR:NOT_SUPPORTED` (the plan's "or make it refuse them"
   option). One-way actions (denounce, wars) are unchanged.
 
-Live verification (§6) is still pending — it needs the handoff save.
+Live verification (§6): **item 2 (human→agent end-to-end) passed on
+2026-08-22** — shim intercept → mailbox → `respond_to_diplo_action` accept →
+full recipe through the server path; independent oracle confirmed (P0-side
+validity flipped to false, both state indices 1/DECLARED_FRIEND, no open
+session, teardown clean). Getting there caught one real bug: the new
+builders' `{_bail(...)}` sites were missing the closing `end` (`_bail`/
+`_bail_lua` never close their own `if` — every call site must append `end`),
+surfaced live as `ERR:Syntax Error`; fixed and locked in with a Lua
+block-balance test guard (strip string literals per-line BEFORE comment
+tails — the `"---END---"` sentinel contains `--`). The failed first run also
+proved the failure path: honest error surfaced, proposal dropped, no retry.
+Remaining: item 3 (agent→human via notification click — an embassy proposal
+works as the test vehicle now that friendship is consumed), item 4 (one-way
+regression), and the human-slot chat report ("Your friendship proposal took
+effect."). Note: `DiplomacyManager` is nil in the gamecore context — session
+reads must use the ingame context.
 
 - `src/civ_mcp/lua/diplo_shim.lua` — installed & live-verified
   (hook=engine; MCPDIPLO naming). The RequestSession interception works; the

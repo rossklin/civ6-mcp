@@ -31,6 +31,7 @@ Covers:
 
 import asyncio
 import json
+import re
 import types
 
 from civ_mcp import handoff, server, seats as seats_mod
@@ -1246,6 +1247,42 @@ class TestDiploShimBuilders:
 # ---------------------------------------------------------------------------
 
 
+def _lua_block_balance(lua: str) -> int:
+    """Rough Lua syntax guard: block openers minus closers, 0 when balanced.
+
+    Strips string literals then comment tails PER LINE (the sentinel literal
+    ``"---END---"`` contains ``--`` — stripping comments first would eat from
+    inside the string to end of line and swallow ``end`` tokens), then counts
+    ``function``/``if``/``do`` against ``end`` (``for``/``while`` always
+    carry exactly one ``do`` in valid Lua, so counting ``do`` covers them;
+    ``elseif``/``else`` open nothing). Not a full parser — no long
+    ``--[[ ]]`` comments or ``repeat``/``until`` support — but it catches the
+    class of bug where a ``{_bail(...)}`` expansion leaves an ``if``
+    unclosed (live-caused ``ERR:Syntax Error ... unexpected symbol near
+    'local'`` on the first recipe run).
+    """
+    stripped_lines = []
+    for line in lua.splitlines():
+        line = re.sub(r'"(?:[^"\\]|\\.)*"', " ", line)
+        line = re.sub(r"'(?:[^'\\]|\\.)*'", " ", line)
+        line = re.sub(r"--.*$", " ", line)
+        stripped_lines.append(line)
+    s = "\n".join(stripped_lines)
+    openers = (
+        len(re.findall(r"\bfunction\b", s))
+        + len(re.findall(r"\bif\b", s))
+        + len(re.findall(r"\bdo\b", s))
+    )
+    closers = len(re.findall(r"\bend\b", s))
+    return openers - closers
+
+
+def _assert_lua_balanced(lua: str) -> None:
+    assert _lua_block_balance(lua) == 0, (
+        f"Lua blocks unbalanced ({_lua_block_balance(lua)} unclosed):\n{lua}"
+    )
+
+
 class TestDiploRecipeBuilders:
     def test_enum_map_covers_exactly_the_responseable_set(self):
         assert set(diplo_lua.DIPLO_ACTION_TO_ENUM) == set(RESPONSEABLE_DIPLO_ACTIONS)
@@ -1330,3 +1367,36 @@ class TestDiploRecipeBuilders:
         lua = diplo_lua.build_send_diplo_action(2, "DENOUNCE")
         assert "ERR:NOT_SUPPORTED" not in lua
         assert 'RequestSession(me, target, "DENOUNCE")' in lua
+
+    def test_all_builder_lua_blocks_balance(self):
+        """Every generated Lua chunk must have balanced blocks — the recipe
+        builders bail with {_bail(...)} which does NOT close its own ``if``,
+        and a missing ``end`` is a runtime syntax error in the game, not a
+        test-time one (caught live the hard way)."""
+        chunks = [
+            diplo_lua.build_diplo_open_step(0, 1, "DECLARE_FRIEND"),
+            diplo_lua.build_diplo_prime_step(0, 1, "SET_DELEGATION"),
+            diplo_lua.build_diplo_response_step(7, 1),
+            diplo_lua.build_diplo_adoption_check(7),
+            diplo_lua.build_diplo_effect_check(0, 1, "DIPLOMATIC_DELEGATION"),
+            diplo_lua.build_diplo_effect_check(0, 1, "DECLARE_FRIENDSHIP"),
+            diplo_lua.build_diplo_close_step(0, 1),
+            diplo_lua.build_check_diplo_action_validity(1, "DECLARE_FRIENDSHIP"),
+            diplo_lua.build_check_diplo_action_validity(
+                1, "DECLARE_FRIENDSHIP", acting_player_id=0),
+            diplo_lua.build_check_diplo_action_validity(
+                1, "DIPLOMATIC_DELEGATION"),
+            diplo_lua.build_send_diplo_action(2, "DENOUNCE"),
+            diplo_lua.build_send_diplo_action(2, "DECLARE_SURPRISE_WAR"),
+            diplo_lua.build_send_diplo_action(2, "DECLARE_FRIENDSHIP"),
+            handoff.build_dismiss_leader_screen_lua(),
+            handoff.build_open_diplo_session_lua(1, 0, "DECLARE_FRIEND"),
+        ]
+        for chunk in chunks:
+            _assert_lua_balanced(chunk)
+
+    def test_balance_checker_catches_unclosed_bail(self):
+        """The guard itself: an ``if ... {_bail(...)}`` without ``end`` must
+        report unbalanced."""
+        broken = 'if not ok then print("ERR:X"); print("---END---"); return\nlocal y = 1\n'
+        assert _lua_block_balance(broken) == 1
