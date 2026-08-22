@@ -879,6 +879,25 @@ def build_clear_diplo_flag_lua() -> str:
     )
 
 
+def build_dismiss_leader_screen_lua() -> str:
+    """Lua (InGame state) that dismisses the diplomacy leader screen.
+
+    Used after an engine-driven diplo action executed while the human was
+    local: the session events pop DiplomacyActionView asynchronously, and the
+    same-frame teardown inside build_send_diplo_action runs before the view
+    processes them — so the dismiss must be a separate, DELAYED round-trip
+    (same idiom as the post-propose_trade dismiss in game_state).
+    """
+    return (
+        'pcall(function() ContextPtr:LookUpControl('
+        '"/InGame/DiplomacyActionView"):SetHide(true) end) '
+        "pcall(function() Events.HideLeaderScreen() end) "
+        "LuaEvents.DiplomacyActionView_ShowIngameUI() "
+        'print("DIPLO_VIEW_DISMISSED") '
+        f'print("{SENTINEL}")'
+    )
+
+
 def build_send_diplo_notification_lua(
     human_pid: int, agent_pid: int, proposal_id: str, summary: str
 ) -> str:
