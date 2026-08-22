@@ -63,6 +63,16 @@ SESSION_STRING_TO_ACTION: dict[str, str] = {
     v: k for k, v in DIPLO_SESSION_STRING_MAP.items()
 }
 
+# action_name -> DiplomacyActionTypes enum key (the InGame context's enum
+# table) used by DiplomacyManager.SendAction to prime an orphan session so
+# the DiplomacyActionView adopts it. Live-verified enum keys
+# (DIPLO_EXECUTION_PLAN.md §2): DECLARE_FRIEND / SET_DELEGATION / SET_EMBASSY.
+DIPLO_ACTION_TO_ENUM: dict[str, str] = {
+    "DECLARE_FRIENDSHIP": "DECLARE_FRIEND",
+    "DIPLOMATIC_DELEGATION": "SET_DELEGATION",
+    "RESIDENT_EMBASSY": "SET_EMBASSY",
+}
+
 
 # Lua helper injected into queries that emit trait/unique text. Strips the raw
 # ``[ICON_*]``, ``[NEWLINE]`` and ``[COLOR]`` markup tokens that Locale.Lookup
@@ -499,14 +509,18 @@ print("{SENTINEL}")
 """
 
 
-def _diplo_action_validity_lua() -> str:
+def _diplo_action_validity_lua(acting: str = "me") -> str:
     """Lua snippet: validate ``DIPLOACTION_<action>`` against ``target`` and
     bail with ``ERR:INVALID|<reasons>`` when it fails.
 
     Expects the locals ``me``, ``target``, ``action`` and ``pDiplo`` to be
-    defined in scope.  Shared by :func:`build_send_diplo_action` (pre-check
-    before opening a session) and :func:`build_check_diplo_action_validity`
-    (standalone gate for mailbox filing).
+    defined in scope.  ``acting`` is the Lua expression for the acting
+    player id — the local player by default (``me``), but the accept-time
+    recipe passes the *proposer's* id because the proposer's diplomacy
+    object owns the action's validity while the target is the local player.
+    Shared by :func:`build_send_diplo_action` (pre-check before opening a
+    session) and :func:`build_check_diplo_action_validity` (standalone gate
+    for mailbox filing).
     """
     return f"""local fullAction = "DIPLOACTION_" .. action
 local valid, results = pDiplo:IsDiplomaticActionValid(fullAction, target, true)
@@ -529,7 +543,7 @@ if not valid then
         local dipSvcCivic = GameInfo.Civics["CIVIC_DIPLOMATIC_SERVICE"]
         if dipSvcCivic then
             local hasCivic = false
-            pcall(function() hasCivic = Players[me]:GetCulture():HasCivic(dipSvcCivic.Index) end)
+            pcall(function() hasCivic = Players[{acting}]:GetCulture():HasCivic(dipSvcCivic.Index) end)
             if hasCivic then
                 reasons = "obsolete (Diplomatic Service civic researched — use embassy instead)"
             end
@@ -539,7 +553,11 @@ if not valid then
 end"""
 
 
-def build_check_diplo_action_validity(other_player_id: int, action_name: str) -> str:
+def build_check_diplo_action_validity(
+    other_player_id: int,
+    action_name: str,
+    acting_player_id: int | None = None,
+) -> str:
     """Pure validity check for a response-able diplo action (InGame context).
 
     Prints ``OK|<action>`` when ``IsDiplomaticActionValid`` passes, otherwise
@@ -547,9 +565,18 @@ def build_check_diplo_action_validity(other_player_id: int, action_name: str) ->
     any state — used to gate mailbox filing of agent→human proposals so the
     human is never asked to answer a doomed proposal (already friends,
     delegation obsolete after Diplomatic Service, missing capital path, ...).
+
+    ``acting_player_id`` overrides whose diplomacy object is queried (the
+    proposer's for the accept-time recipe, which runs while the *target* is
+    the local player); it defaults to the local player.
     """
+    me_expr = (
+        "Game.GetLocalPlayer()"
+        if acting_player_id is None
+        else str(int(acting_player_id))
+    )
     return f"""
-local me = Game.GetLocalPlayer()
+local me = {me_expr}
 local pDiplo = Players[me]:GetDiplomacy()
 local target = {other_player_id}
 local action = "{action_name}"
@@ -562,8 +589,14 @@ print("{SENTINEL}")
 def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
     """Send a proactive diplomatic action and detect acceptance/rejection.
 
-    action_name is e.g. DIPLOMATIC_DELEGATION, DECLARE_FRIENDSHIP, DENOUNCE,
-    RESIDENT_EMBASSY, DECLARE_SURPRISE_WAR, DECLARE_FORMAL_WAR, etc.
+    action_name is e.g. DENOUNCE, DECLARE_SURPRISE_WAR, DECLARE_FORMAL_WAR,
+    etc. — **one-way actions only**. The three response-able actions
+    (DECLARE_FRIENDSHIP, DIPLOMATIC_DELEGATION, RESIDENT_EMBASSY) are
+    refused outright: this builder's proposer-side ``AddResponse`` flow is
+    silently ignored by the engine (live-verified — its OK:ACCEPTED print
+    was a false positive; see DIPLO_EXECUTION_PLAN.md §1). Accepted
+    proposals to managed civs are completed target-local instead via the
+    recipe builders below, at accept time on the target's turn.
 
     Open Borders is NOT supported here — it's a trade deal, not a diplomatic
     action. Use propose_trade with AGREEMENT/OPEN_BORDERS items instead.
@@ -574,6 +607,16 @@ def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
     session open so the leader animation plays — Python schedules cleanup
     afterwards (``_cleanup_war_diplomacy`` in game_state).
     """
+    if action_name in RESPONSEABLE_DIPLO_ACTIONS:
+        return (
+            f'print("ERR:NOT_SUPPORTED|{action_name} is a response-able '
+            "action: the proposer-side AddResponse flow is silently ignored "
+            "by the engine. Accepted proposals to managed civs are executed "
+            'at accept time on the target\'s turn (respond_to_diplo_action '
+            'completes them); pure-AI targets cannot be proposed to from '
+            'this path.") '
+            f'print("{SENTINEL}")'
+        )
     # Map action_name to the correct RequestSession string
     # Game source: DiplomacyActionView.lua line 472 uses "DECLARE_FRIEND"
     is_war = action_name.endswith("_WAR") and action_name.startswith("DECLARE_")
@@ -587,6 +630,157 @@ def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
         .replace("__MCP_VALIDITY_BLOCK_TAG__", _diplo_action_validity_lua())
         .replace("__MCP_SENTINEL_TAG__", SENTINEL)
     )
+
+
+# ---------------------------------------------------------------------------
+# Accept-time execution recipe (DIPLO_EXECUTION_PLAN.md §3). The individual
+# engine steps as Lua builders; the orchestration (round-trips, delays,
+# adoption polls) lives in server._execute_diplo_agreement because the engine
+# needs real frames between steps. Runs while the TARGET is the local player.
+# ---------------------------------------------------------------------------
+
+
+def build_diplo_open_step(from_player: int, to_player: int, session_str: str) -> str:
+    """Recipe steps 2+3 (InGame ctx): bare-close a stale session for this
+    pair, then ``RequestSession(from, to, str)``.
+
+    Prints ``OK|OPENED|<sid>`` — the sid is found via
+    ``FindOpenSessionID(to, from)`` because the target is the responder —
+    or bails with ``ERR:...``.
+    """
+    return f"""
+local from = {from_player}
+local to = {to_player}
+local stale = DiplomacyManager.FindOpenSessionID(to, from)
+if stale and stale >= 0 then
+    DiplomacyManager.CloseSession(stale)
+    print("MCP_TRACE|diplo_open: closed stale session " .. tostring(stale))
+end
+local okRS, errRS = pcall(function()
+    DiplomacyManager.RequestSession(from, to, "{session_str}")
+end)
+if not okRS then {_bail_lua('"ERR:REQUEST_FAILED|" .. tostring(errRS)')}
+local sid = DiplomacyManager.FindOpenSessionID(to, from)
+if not sid or sid < 0 then {_bail("ERR:NO_SESSION|RequestSession opened no session")}
+print("OK|OPENED|" .. sid)
+print("{SENTINEL}")
+"""
+
+
+def build_diplo_prime_step(from_player: int, to_player: int, enum_key: str) -> str:
+    """Recipe step 4 (InGame ctx): ``SendAction(from, to, DiplomacyActionTypes.<enum>, {})``.
+
+    The prime applies nothing by itself (live-verified — ``TestAction``
+    returns false even for valid actions, and SendAction alone registers no
+    effect); it exists so the DiplomacyActionView adopts the session once
+    nudged. Prints ``OK|PRIMED|<ret>|sid=<sid>`` or bails with ``ERR:...``.
+    """
+    return f"""
+local from = {from_player}
+local to = {to_player}
+local sid = DiplomacyManager.FindOpenSessionID(to, from)
+if not sid or sid < 0 then {_bail("ERR:NO_SESSION|no open session to prime")}
+local okSA, resSA = pcall(function()
+    return DiplomacyManager.SendAction(from, to, DiplomacyActionTypes.{enum_key}, {{}})
+end)
+if not okSA then {_bail_lua('"ERR:PRIME_FAILED|" .. tostring(resSA)')}
+print("OK|PRIMED|" .. tostring(resSA) .. "|sid=" .. sid)
+print("{SENTINEL}")
+"""
+
+
+def build_diplo_response_step(sid: int, to_player: int) -> str:
+    """Recipe steps 5+7 (DiplomacyActionView ctx): ``AddResponse(sid, to,
+    "POSITIVE")`` from the target.
+
+    The first call is the adoption nudge — it does NOT complete the orphan
+    session (live-verified), it triggers the statement delivery the view
+    adopts. Once ``ms_ActiveSessionID == sid``, the second call completes
+    the proposal. Prints ``OK|RESPONSE_SENT|<sid>`` or
+    ``ERR:RESPONSE_FAILED|...``.
+    """
+    return f"""
+local okAR, errAR = pcall(function()
+    DiplomacyManager.AddResponse({sid}, {to_player}, "POSITIVE")
+end)
+if not okAR then {_bail_lua('"ERR:RESPONSE_FAILED|" .. tostring(errAR)')}
+print("OK|RESPONSE_SENT|{sid}")
+print("{SENTINEL}")
+"""
+
+
+def build_diplo_adoption_check(sid: int) -> str:
+    """Recipe step 6 (DiplomacyActionView ctx): has the view adopted the
+    session yet?
+
+    Prints ``ADOPTED|true``/``ADOPTED|false`` by comparing the file-scope
+    global ``ms_ActiveSessionID`` to the expected sid. ``ms_Mode`` may stay
+    nil even after adoption (observed live) — never gate on it.
+    """
+    return f"""
+print("ADOPTED|" .. tostring(ms_ActiveSessionID == {sid}))
+pcall(function()
+    print("MCP_TRACE|adoption: ms_ActiveSessionID=" .. tostring(ms_ActiveSessionID)
+        .. " ms_Mode=" .. tostring(ms_Mode))
+end)
+print("{SENTINEL}")
+"""
+
+
+def build_diplo_effect_check(from_player: int, to_player: int, action_name: str) -> str:
+    """Recipe step 8 (InGame ctx, separate round-trip — same-frame reads are
+    stale): did the effect register?
+
+    Prints ``VALID|<bool>`` (the step-1 oracle re-read: valid-before +
+    invalid-after means applied), ``HAS_DELEGATION|<bool>`` (delegations
+    only — ``Players[from]:GetDiplomacy():HasDelegationAt(to)`` is the
+    direction the action creates) and ``STATE|<idx>|<idx>`` (diagnostics:
+    both diplomatic state indices flip to 1/FRIENDS on friendship).
+    """
+    return f"""
+local from = {from_player}
+local to = {to_player}
+local action = "{action_name}"
+local valid = true
+pcall(function()
+    valid = Players[from]:GetDiplomacy():IsDiplomaticActionValid(
+        "DIPLOACTION_" .. action, to, true)
+end)
+print("VALID|" .. tostring(valid))
+if action == "DIPLOMATIC_DELEGATION" then
+    local hasDel = false
+    pcall(function()
+        hasDel = Players[from]:GetDiplomacy():HasDelegationAt(to)
+    end)
+    print("HAS_DELEGATION|" .. tostring(hasDel))
+end
+local sFrom, sTo = -1, -1
+pcall(function() sFrom = Players[from]:GetDiplomaticAI():GetDiplomaticStateIndex(to) end)
+pcall(function() sTo = Players[to]:GetDiplomaticAI():GetDiplomaticStateIndex(from) end)
+print("STATE|" .. sFrom .. "|" .. sTo)
+print("{SENTINEL}")
+"""
+
+
+def build_diplo_close_step(from_player: int, to_player: int) -> str:
+    """Recipe step 9 teardown (InGame ctx): bare ``CloseSession`` of any open
+    session for this pair — no hide events, no responses.
+
+    Closing + firing hide events in the same instant leaves the view with a
+    stale ``ms_ActiveSessionID`` that swallows the next session's statement
+    event (live-observed); the leader-screen dismiss is a separate, delayed
+    round-trip (``handoff.build_dismiss_leader_screen_lua``).
+    """
+    return f"""
+local sid = DiplomacyManager.FindOpenSessionID({to_player}, {from_player})
+if sid and sid >= 0 then
+    DiplomacyManager.CloseSession(sid)
+    print("OK|CLOSED|" .. sid)
+else
+    print("OK|NO_OPEN_SESSION")
+end
+print("{SENTINEL}")
+"""
 
 
 def build_war_close_session(other_player_id: int) -> str:

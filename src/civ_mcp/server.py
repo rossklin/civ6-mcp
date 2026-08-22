@@ -1126,6 +1126,286 @@ async def _push_chat(
         log.debug("Chat push to human failed", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# Diplo accept-time execution — the live-verified target-local completion
+# recipe (DIPLO_EXECUTION_PLAN.md §3). Engine state is stale same-frame and
+# the DiplomacyActionView adopts sessions asynchronously, so the steps need
+# real round-trips and delays between them; the timings are module-level so
+# tests can zero them out.
+# ---------------------------------------------------------------------------
+
+_DIPLO_ADOPT_POLL_INTERVAL = 0.3
+_DIPLO_ADOPT_TIMEOUT = 3.0
+_DIPLO_EFFECT_SETTLE = 0.5
+_DIPLO_TEARDOWN_SETTLE = 0.5
+
+
+def _diplo_line(lines: list[str], marker: str) -> str | None:
+    """First recipe response line starting with ``marker`` (""-safe)."""
+    return next((l for l in lines if l.startswith(marker)), None)
+
+
+def _diplo_err(lines: list[str], fallback: str) -> str:
+    """The ``ERR:`` payload of a failed recipe step, or ``fallback``."""
+    return next((l[4:] for l in lines if l.startswith("ERR:")), fallback)
+
+
+async def _diplo_action_is_valid(
+    conn: GameConnection, from_player: int, to_player: int, action_name: str
+) -> tuple[bool, str]:
+    """Recipe step 1: ``IsDiplomaticActionValid`` read as the *proposer* —
+    the proposer's diplomacy object owns the action's validity — from the
+    InGame context while the *target* is the local player."""
+    from civ_mcp.lua import diplomacy as diplo_lua
+
+    try:
+        lines = await conn.execute_write(
+            diplo_lua.build_check_diplo_action_validity(
+                to_player, action_name, acting_player_id=from_player
+            ),
+            perspective=False,
+        )
+    except Exception as e:
+        return False, f"validity check failed: {e}"
+    if any(l.startswith("OK|") for l in lines):
+        return True, ""
+    return False, f"action not valid: {_diplo_err(lines, 'no result')}"
+
+
+async def _diplo_recipe_prepare(
+    conn: GameConnection,
+    from_player: int,
+    to_player: int,
+    action_name: str,
+) -> tuple[bool, str, int]:
+    """Recipe steps 2–6: clear any stale shim flag, stale-close + open the
+    session, prime it, send the adoption nudge, then poll the view's
+    ``ms_ActiveSessionID`` until it adopts the session.
+
+    Must run while *to_player* is the local player.  Returns
+    ``(ok, reason, sid)``; ``sid`` is the session id once the open step
+    succeeded (also on later failures, so the caller can tear down), -1
+    before that.
+    """
+    from civ_mcp.lua import diplomacy as diplo_lua
+
+    enum_key = diplo_lua.DIPLO_ACTION_TO_ENUM.get(action_name)
+    if enum_key is None:
+        return False, f"{action_name} has no recipe mapping", -1
+    session_str = DIPLO_SESSION_STRING_MAP.get(action_name, action_name)
+
+    # A stale armed flag would make the shim report our own nudge (or any
+    # unrelated AddResponse) as the human's answer to an old proposal —
+    # always start clear.
+    try:
+        await conn.execute_in_named_state(
+            handoff.DIPLO_SHIM_STATE, handoff.build_clear_diplo_flag_lua()
+        )
+    except Exception:
+        log.debug("Diplo flag pre-clear failed", exc_info=True)
+
+    # Steps 2+3: stale-close + open (InGame context).
+    try:
+        lines = await conn.execute_write(
+            diplo_lua.build_diplo_open_step(from_player, to_player, session_str),
+            perspective=False,
+        )
+    except Exception as e:
+        return False, f"session open failed: {e}", -1
+    opened = _diplo_line(lines, "OK|OPENED|")
+    if opened is None:
+        return (
+            False,
+            f"session open failed: {_diplo_err(lines, 'no result')}",
+            -1,
+        )
+    sid = int(float(opened.split("|", 2)[2]))
+
+    # Step 4: prime via SendAction (applies nothing by itself — it lets the
+    # DiplomacyActionView adopt the session once nudged).
+    try:
+        lines = await conn.execute_write(
+            diplo_lua.build_diplo_prime_step(from_player, to_player, enum_key),
+            perspective=False,
+        )
+    except Exception as e:
+        return False, f"prime failed: {e}", sid
+    if _diplo_line(lines, "OK|PRIMED") is None:
+        return False, f"prime failed: {_diplo_err(lines, 'no result')}", sid
+
+    # Step 5: adoption nudge (DiplomacyActionView context). Does NOT complete
+    # the orphan session — it triggers the statement delivery the view
+    # adopts. The shim flag is clear, so this passes through unreported.
+    try:
+        lines = await conn.execute_in_named_state(
+            handoff.DIPLO_SHIM_STATE,
+            diplo_lua.build_diplo_response_step(sid, to_player),
+        )
+    except Exception as e:
+        return False, f"adoption nudge failed: {e}", sid
+    if _diplo_line(lines, "OK|RESPONSE_SENT") is None:
+        return (
+            False,
+            f"adoption nudge failed: {_diplo_err(lines, 'no result')}",
+            sid,
+        )
+
+    # Step 6: poll ms_ActiveSessionID (DAV context) until the view adopts.
+    deadline = time.monotonic() + _DIPLO_ADOPT_TIMEOUT
+    while True:
+        try:
+            lines = await conn.execute_in_named_state(
+                handoff.DIPLO_SHIM_STATE,
+                diplo_lua.build_diplo_adoption_check(sid),
+            )
+        except Exception as e:
+            return False, f"adoption poll failed: {e}", sid
+        if any(l == "ADOPTED|true" for l in lines):
+            break
+        if time.monotonic() >= deadline:
+            return (
+                False,
+                "diplomacy view did not adopt the session in time",
+                sid,
+            )
+        await asyncio.sleep(_DIPLO_ADOPT_POLL_INTERVAL)
+
+    return True, "", sid
+
+
+async def _diplo_recipe_teardown(
+    conn: GameConnection, from_player: int, to_player: int
+) -> str:
+    """Recipe step 9: bare ``CloseSession``, a pause, then dismiss the
+    leader screen — strictly separate round-trips (closing + hiding in the
+    same instant leaves a stale ``ms_ActiveSessionID`` that swallows the
+    next session's statement event; live-observed).
+
+    Best effort — returns a note describing anything that failed ("" when
+    clean), appended to the caller's result message.
+    """
+    from civ_mcp.lua import diplomacy as diplo_lua
+
+    notes: list[str] = []
+    try:
+        await conn.execute_write(
+            diplo_lua.build_diplo_close_step(from_player, to_player),
+            perspective=False,
+        )
+    except Exception:
+        notes.append("session close failed")
+    if _DIPLO_TEARDOWN_SETTLE > 0:
+        await asyncio.sleep(_DIPLO_TEARDOWN_SETTLE)
+    try:
+        await conn.execute_write(
+            handoff.build_dismiss_leader_screen_lua(), perspective=False
+        )
+    except Exception:
+        notes.append("leader screen dismiss failed")
+    return "" if not notes else f" (teardown issues: {', '.join(notes)})"
+
+
+async def _execute_diplo_agreement(
+    gs: GameState,
+    conn: GameConnection,
+    from_player: int,
+    to_player: int,
+    action_name: str,
+) -> tuple[bool, str]:
+    """Execute an accepted diplo proposal target-local (recipe steps 1–9).
+
+    Must run while *to_player* is the local player — i.e. at accept time on
+    the target's turn, the only moment the engine accepts the completing
+    response.  Returns ``(ok, message)`` where ok is decided ONLY by the
+    step-8 verification flip (validity invalid-after, plus
+    ``HasDelegationAt`` for delegations) — never by an OK print, which is
+    what masked the old proposer-side flow's silent failure.
+    """
+    from civ_mcp.lua import diplomacy as diplo_lua
+
+    if action_name not in RESPONSEABLE_DIPLO_ACTIONS:
+        return False, f"{action_name} is not a response-able action"
+
+    # Step 1: pre-validate as the proposer.
+    ok, reason = await _diplo_action_is_valid(
+        conn, from_player, to_player, action_name
+    )
+    if not ok:
+        return False, reason
+
+    # Steps 2–6: open, prime, nudge, adoption poll.
+    ok, reason, sid = await _diplo_recipe_prepare(
+        conn, from_player, to_player, action_name
+    )
+    if not ok:
+        if sid >= 0:
+            reason += await _diplo_recipe_teardown(conn, from_player, to_player)
+        return False, reason
+
+    # Step 7: the completing response (DAV context, from the target).
+    try:
+        lines = await conn.execute_in_named_state(
+            handoff.DIPLO_SHIM_STATE,
+            diplo_lua.build_diplo_response_step(sid, to_player),
+        )
+    except Exception as e:
+        return (
+            False,
+            f"completing response failed: {e}"
+            + await _diplo_recipe_teardown(conn, from_player, to_player),
+        )
+    if _diplo_line(lines, "OK|RESPONSE_SENT") is None:
+        return (
+            False,
+            f"completing response failed: {_diplo_err(lines, 'no result')}"
+            + await _diplo_recipe_teardown(conn, from_player, to_player),
+        )
+
+    # Step 8: verify in a separate round-trip after the engine settles —
+    # same-frame reads are stale.
+    if _DIPLO_EFFECT_SETTLE > 0:
+        await asyncio.sleep(_DIPLO_EFFECT_SETTLE)
+    try:
+        lines = await conn.execute_write(
+            diplo_lua.build_diplo_effect_check(
+                from_player, to_player, action_name
+            ),
+            perspective=False,
+        )
+    except Exception as e:
+        return (
+            False,
+            f"effect check failed: {e}"
+            + await _diplo_recipe_teardown(conn, from_player, to_player),
+        )
+    valid: bool | None = None
+    has_del: bool | None = None
+    state_line = ""
+    for l in lines:
+        if l.startswith("VALID|"):
+            valid = l.split("|", 1)[1] == "true"
+        elif l.startswith("HAS_DELEGATION|"):
+            has_del = l.split("|", 1)[1] == "true"
+        elif l.startswith("STATE|"):
+            state_line = l
+    applied = valid is False and (
+        action_name != "DIPLOMATIC_DELEGATION" or has_del is True
+    )
+
+    # Step 9: teardown regardless of outcome (the human's screen shows the
+    # leader dialogue during agent turns and must return to the game).
+    note = await _diplo_recipe_teardown(conn, from_player, to_player)
+
+    if applied:
+        return True, f"effect verified as applied{note}"
+    detail = f"effect did not register (validity still {valid}"
+    if action_name == "DIPLOMATIC_DELEGATION":
+        detail += f", HasDelegationAt {has_del}"
+    if state_line:
+        detail += f", {state_line}"
+    return False, detail + ")" + note
+
+
 def _handle_human_diplo_proposed(
     conn: GameConnection,
     diplo_mb: DiploMailbox,
@@ -1185,13 +1465,23 @@ async def _handle_diplo_notification_click(
 ) -> None:
     """Callback: human clicked a diplo notification in-game.
 
-    Arms the AddResponse wrapper with the proposal id, then opens a
-    synthetic AI-initiated session (``RequestSession(agent, human, str)``) so
-    the native leader screen presents the proposal with its real
-    Accept/Decline buttons — no UI surgery needed.  The human is the
-    responder, so nothing auto-resolves; the engine treats it exactly like a
-    genuine AI proposal.
+    Runs recipe steps 1–6 (DIPLO_EXECUTION_PLAN.md §4, agent→human flow):
+    validate as the proposer, then open + prime a synthetic AI-initiated
+    session and nudge the view into adopting it, so the native leader screen
+    presents the proposal with its real Accept/Decline buttons.  The human's
+    own click is the completing response (step 7): the engine applies the
+    effect natively and the shim's AddResponse wrapper reports
+    ``MCPDIPLO_RESPONDED`` — Python then marks the proposal executed/rejected
+    (``_handle_diplo_response``).
+
+    The shim flag is armed *after* adoption is confirmed, not before the
+    nudge: the wrapper consumes the flag on the first AddResponse involving
+    a managed player, so an early flag would misreport our own nudge as the
+    human's answer.  The human cannot click before the dialogue presents,
+    so there is no window where the real answer goes unreported.
     """
+    from civ_mcp.lua import diplomacy as diplo_lua
+
     proposal_id = data.get("proposal_id", "")
     proposal = diplo_mb.get(proposal_id)
     if proposal is None:
@@ -1202,12 +1492,72 @@ async def _handle_diplo_notification_click(
 
     human_pid = cfg.human_id
     agent_pid = proposal.from_player
-    session_str = DIPLO_SESSION_STRING_MAP.get(
-        proposal.action_name, proposal.action_name
-    )
+    label = _DIPLO_ACTION_LABELS.get(proposal.action_name, proposal.action_name)
 
-    # 1. Arm the response wrapper (DiplomacyActionView state) BEFORE opening
-    #    the session, so the human cannot answer before the flag is set.
+    # Step 1: pre-validate as the proposer.
+    ok, reason = await _diplo_action_is_valid(
+        conn, agent_pid, human_pid, proposal.action_name
+    )
+    if not ok:
+        # Doomed proposal (became invalid since filing — already friends,
+        # obsolete delegation, ...): drop it with a chat note instead of
+        # presenting a dialogue the human cannot meaningfully answer (and
+        # which would be re-notified every slot).
+        diplo_mb.remove(proposal_id)
+        await _push_chat(
+            conn,
+            agent_pid,
+            human_pid,
+            f"The {label} proposal from P{agent_pid} is no longer valid "
+            f"({reason}) and was withdrawn.",
+        )
+        return
+
+    # Steps 2–6: open, prime, nudge, poll for adoption.
+    ok, reason, _sid = await _diplo_recipe_prepare(
+        conn, agent_pid, human_pid, proposal.action_name
+    )
+    if not ok:
+        # Transient failure (e.g. the view did not adopt in time): tear the
+        # half-open session down and leave the proposal pending — the
+        # notification re-sends at the next human slot.
+        await _diplo_recipe_teardown(conn, agent_pid, human_pid)
+        log.warning(
+            "Diplo presentation failed for %s: %s", proposal_id, reason
+        )
+        return
+
+    # Open-risk check (plan §4): the nudge must NOT have applied the effect
+    # (live-verified not to, but if it ever auto-accepts, record the honest
+    # state instead of presenting a dead dialogue).
+    try:
+        lines = await conn.execute_write(
+            diplo_lua.build_diplo_effect_check(
+                agent_pid, human_pid, proposal.action_name
+            ),
+            perspective=False,
+        )
+    except Exception:
+        lines = []
+    valid = next(
+        (
+            l.split("|", 1)[1] == "true"
+            for l in lines
+            if l.startswith("VALID|")
+        ),
+        None,
+    )
+    if valid is False:
+        log.warning(
+            "Diplo nudge auto-applied proposal %s — marking executed",
+            proposal_id,
+        )
+        diplo_mb.mark_executed(proposal_id)
+        await _diplo_recipe_teardown(conn, agent_pid, human_pid)
+        return
+
+    # Arm the AddResponse wrapper now: the dialogue is on screen, and the
+    # next AddResponse from this state is the human's own click.
     try:
         await conn.execute_in_named_state(
             handoff.DIPLO_SHIM_STATE,
@@ -1215,27 +1565,7 @@ async def _handle_diplo_notification_click(
         )
     except Exception:
         log.warning("Diplo proposal flag arm failed", exc_info=True)
-        return
-
-    # 2. Open the synthetic session (gamecore state — the diplo shim in the
-    #    DiplomacyActionView state only sees calls made from that state).
-    try:
-        await conn.execute_write(
-            handoff.build_open_diplo_session_lua(
-                agent_pid, human_pid, session_str
-            ),
-            perspective=False,
-        )
-    except Exception:
-        log.warning("Diplo session open failed", exc_info=True)
-        # Disarm so a stale flag cannot misreport a later response.
-        try:
-            await conn.execute_in_named_state(
-                handoff.DIPLO_SHIM_STATE,
-                handoff.build_clear_diplo_flag_lua(),
-            )
-        except Exception:
-            log.debug("Diplo flag clear failed", exc_info=True)
+        await _diplo_recipe_teardown(conn, agent_pid, human_pid)
         return
 
     log.info(
@@ -1274,16 +1604,16 @@ async def _diplo_notify_loop(
 ) -> None:
     """Background loop: at the start of the human's slot, (a) re-send
     clickable notifications for still-pending agent→human diplo proposals
-    and (b) drain human-proposed proposals the target agents have answered
-    (execute accepted ones while the human is local, report rejected ones
-    via chat)."""
+    and (b) report human-proposed proposals the target agents have answered
+    (accepted ones were executed at accept time on the target's turn, so
+    this is chat-report-only)."""
     previous_local: int | None = None
     while True:
         try:
             own = await handoff.try_ownership(conn)
             if own.local_player == cfg.human_id and own.local_player != previous_local:
                 await _send_diplo_notifications(conn, diplo_mb, cfg)
-                await _drain_human_diplo_proposals(gs, conn, diplo_mb, cfg)
+                await _drain_human_diplo_proposals(conn, diplo_mb, cfg)
             previous_local = own.local_player
         except asyncio.CancelledError:
             raise
@@ -1337,41 +1667,36 @@ async def _send_diplo_notifications(
 
 
 async def _drain_human_diplo_proposals(
-    gs: GameState, conn: GameConnection, diplo_mb: DiploMailbox, cfg: HandoffConfig
+    conn: GameConnection, diplo_mb: DiploMailbox, cfg: HandoffConfig
 ) -> None:
-    """Execute/report human-proposed diplo proposals the target has answered.
+    """Report human-proposed diplo proposals the target has answered.
 
-    Runs at the start of the human's slot: the human is the proposer, and
-    delegation/embassy belong to the proposer, so execution must run while
-    the human is local (``send_diplomatic_action`` builds the session from
-    ``Game.GetLocalPlayer()`` and forces the response same-frame).  The
-    builder's own teardown closes the session and restores the UI in the
-    same chunk, so the leader screen never flashes.
+    Accepted ones were already executed at accept time on the target's turn
+    (the target is the local player then — ``_execute_diplo_agreement``), so
+    this drain is chat-report-only: no engine calls at the human's slot
+    start, just the outcome the human cannot otherwise see (their click was
+    intercepted before any AI reply dialogue existed).
     """
     human_pid = cfg.human_id
     for proposal in diplo_mb.get_drainable_by(human_pid):
         label = _DIPLO_ACTION_LABELS.get(proposal.action_name, proposal.action_name)
-        if proposal.status == "accepted":
-            try:
-                result = await gs.send_diplomatic_action(
-                    proposal.to_player, proposal.action_name
-                )
-            except Exception as e:  # pragma: no cover - defensive
-                result = f"execution failed: {e}"
-            if str(result).startswith("ERR"):
-                await _push_chat(
-                    conn,
-                    proposal.to_player,
-                    human_pid,
-                    f"Your {label} proposal could not be completed: {result}",
-                )
-            else:
-                await _push_chat(
-                    conn,
-                    proposal.to_player,
-                    human_pid,
-                    f"Your {label} proposal took effect ({result}).",
-                )
+        if proposal.status == "executed":
+            await _push_chat(
+                conn,
+                proposal.to_player,
+                human_pid,
+                f"Your {label} proposal took effect.",
+            )
+        elif proposal.status == "accepted":
+            # Accept-time execution failed or was interrupted — report
+            # honestly; it is not retried.
+            await _push_chat(
+                conn,
+                proposal.to_player,
+                human_pid,
+                f"Your {label} proposal was accepted but could not be "
+                "completed.",
+            )
         else:  # rejected
             await _push_chat(
                 conn,
@@ -1802,16 +2127,20 @@ async def get_full_game_state(ctx: Context) -> str:
                             f" (other_player_id={p.from_player}, "
                             "accept=True/False)"
                         )
+                        text += (
+                            "\n  (accepting executes the agreement "
+                            "immediately on your turn)"
+                        )
                     for p in outgoing:
                         if p.status == "pending":
                             status = "awaiting response"
                         elif p.status == "accepted":
-                            status = "accepted — takes effect next turn"
-                        elif p.status == "executed":
                             status = (
-                                "accepted by the human — took effect on the "
-                                "diplomacy screen"
+                                "accepted but execution did not complete "
+                                "(it will not be retried)"
                             )
+                        elif p.status == "executed":
+                            status = "took effect"
                         else:
                             status = "rejected"
                         text += (
@@ -2039,7 +2368,8 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                         # never asked to answer a doomed proposal (already
                         # friends, obsolete delegation, ...). Managed-agent
                         # targets skip this — parity with the existing flow,
-                        # and the drain re-validates at execution anyway.
+                        # and the accept-time recipe re-validates before
+                        # executing anyway.
                         ok, reason = await _check_diplo_action_validity(
                             gs, target, action_name
                         )
@@ -2098,15 +2428,42 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                         (p for p in pending if p.from_player == target), None
                     )
                     if proposal is not None:
+                        label = _DIPLO_ACTION_LABELS.get(
+                            proposal.action_name, proposal.action_name
+                        )
                         if accept:
-                            # Mark accepted; the proposer executes the action
-                            # on its next turn (see _drain_diplo_proposals).
+                            # Record the decision, then execute the agreed
+                            # action right here: this seat IS the target and
+                            # is on its turn, so the target-local recipe can
+                            # run immediately (DIPLO_EXECUTION_PLAN.md §4).
+                            # ok comes only from the verification flip —
+                            # never from an OK print.
                             diplo_mb.accept(proposal.proposal_id)
-                            result = (
-                                f"Accepted P{target}'s {proposal.action_name} "
-                                f"proposal — takes effect on P{target}'s next "
-                                f"turn."
-                            )
+                            try:
+                                ok, msg = await _execute_diplo_agreement(
+                                    gs,
+                                    gs.conn,
+                                    proposal.from_player,
+                                    seat.player_id,
+                                    proposal.action_name,
+                                )
+                            except Exception as e:  # pragma: no cover
+                                ok, msg = False, f"execution error: {e}"
+                            if ok:
+                                diplo_mb.mark_executed(proposal.proposal_id)
+                                result = (
+                                    f"Accepted P{target}'s {label} proposal "
+                                    f"— took effect ({msg})."
+                                )
+                            else:
+                                # Honest failure: no retry loops, the
+                                # proposer simply never hears "took effect".
+                                diplo_mb.remove(proposal.proposal_id)
+                                result = (
+                                    f"Error: accepted P{target}'s {label} "
+                                    f"proposal but it did not take effect: "
+                                    f"{msg}. The proposal was dropped."
+                                )
                         else:
                             diplo_mb.reject(proposal.proposal_id)
                             result = (
@@ -2294,9 +2651,10 @@ async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
         report = await handoff.wait_for_turn(
             seat.game, seat, app.handoff_config, timeout
         )
-        # If the turn actually started (not a timeout), drain diplo proposals
-        # this seat filed that the target has since answered. The proposer is
-        # local now, so executing them via the engine path is safe.
+        # If the turn actually started (not a timeout), report diplo
+        # proposals this seat filed that the target has since answered.
+        # Accepted ones were already executed at accept time on the target's
+        # turn, so this only surfaces outcomes.
         diplo_mb = app.diplo_mailbox
         if diplo_mb is not None and diplo_mb.pending_count:
             try:
@@ -2304,9 +2662,7 @@ async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
             except Exception:
                 own = None
             if own is not None and own.local_player == seat.player_id:
-                drain = await _drain_diplo_proposals(
-                    seat.game, diplo_mb, seat.player_id
-                )
+                drain = await _drain_diplo_proposals(diplo_mb, seat.player_id)
                 if drain:
                     report = report + "\n\n=== DIPLOMACY RESOLVED ===\n" + "\n".join(
                         drain
@@ -3212,17 +3568,18 @@ async def _mailbox_propose_diplo(
     human-type, so every other player (managed, human, or not) is AI to the
     engine and answers a freshly-opened session within seconds.
 
-    Managed-agent target: the agent records accept/reject on its own turn,
-    and the proposer executes the action on its *next* turn via
-    :func:`_drain_diplo_proposals` — reusing the engine path that forces
-    ``POSITIVE`` and closes same-frame, before the target's AI can decide.
-    Because the proposer opens the session, the action's direction
-    (delegation/embassy belong to the proposer) is correct.
+    Managed-agent target: the agent records accept/reject on its own turn;
+    an accepted proposal is executed right then, target-local
+    (``_execute_diplo_agreement`` — the accepting agent is the local player
+    at that moment), and the outcome is reported in the accepting agent's
+    tool output.  The session is opened from the proposer, so the action's
+    direction (delegation/embassy belong to the proposer) is correct.
 
-    Human target: the human is notified at their next slot start and answers
-    on the native leader screen (a synthetic AI-initiated session); a
-    POSITIVE answer applies the effect in-engine immediately and the
-    proposer's drain only reports it (status ``executed``).
+    Human target: the human is notified at their next slot start; the
+    notification click opens a primed synthetic session (recipe steps 1–6)
+    whose native dialogue the human answers — a POSITIVE answer applies the
+    effect in-engine immediately and the proposer's drain only reports it
+    (status ``executed``).
     """
     diplo_mb = app.diplo_mailbox
     if diplo_mb is None:
@@ -3242,38 +3599,32 @@ async def _mailbox_propose_diplo(
 
 
 async def _drain_diplo_proposals(
-    gs, diplo_mb: DiploMailbox, proposer_pid: int
+    diplo_mb: DiploMailbox, proposer_pid: int
 ) -> list[str]:
-    """Execute/report diplo proposals the proposer filed that have been answered.
+    """Report diplo proposals the proposer filed that have been answered.
 
-    Called at the start of the proposer's turn (the proposer is local again), so
-    :meth:`GameState.send_diplomatic_action` — which forces ``POSITIVE`` and
-    closes the session same-frame — is safe: the target pre-consented via the
-    mailbox, and the target's AI never gets a turn to decide.  Re-validation
-    inside the engine builder drops proposals that became invalid (war declared,
-    delegation obsolete, etc.); those surface as a failure line rather than a
-    crash.  Returns one message line per drained proposal.
+    Execution happens at accept time on the *target's* turn
+    (``_execute_diplo_agreement`` — the old proposer-side execution via
+    ``send_diplomatic_action`` silently failed and is gone), so this drain is
+    report-only: ``executed`` → the effect registered (recipe verification
+    flip, or the human's own click on the native leader screen);
+    ``rejected`` → declined; a lingering ``accepted`` means the accept-time
+    execution failed or the server restarted mid-accept — reported as
+    incomplete, never retried.  Returns one message line per drained
+    proposal.
     """
     lines: list[str] = []
     for proposal in diplo_mb.get_drainable_by(proposer_pid):
         if proposal.status == "executed":
-            # Agent→human proposal the human accepted on the native leader
-            # screen: the engine already applied the effect from the single
-            # response — report only, never re-execute.
             lines.append(
                 f"Your {proposal.action_name} to P{proposal.to_player} "
-                "took effect: the human accepted on the diplomacy screen."
+                "took effect."
             )
         elif proposal.status == "accepted":
-            try:
-                result = await gs.send_diplomatic_action(
-                    proposal.to_player, proposal.action_name
-                )
-            except Exception as e:  # pragma: no cover - defensive
-                result = f"execution failed: {e}"
             lines.append(
-                f"Your {proposal.action_name} to P{proposal.to_player} "
-                f"took effect: {result}"
+                f"Your {proposal.action_name} to P{proposal.to_player} was "
+                "accepted but did not complete (execution failed or was "
+                "interrupted) — it will not be retried."
             )
         else:  # rejected
             lines.append(

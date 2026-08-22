@@ -215,6 +215,24 @@ side just never hears "took effect".
 
 ## 7. Current state of the code
 
+**UPDATE (implementation landed):** steps in §5 are implemented (470 tests
+pass). Two deviations from the plan text, both deliberate:
+
+- **Flag armed after adoption, not before the nudge** (§4 agent→human flow).
+  The shim's AddResponse wrapper *consumes* `__MCP_diplo_proposal_id` on the
+  first reported AddResponse involving a managed player — so arming before
+  the nudge would make our own nudge fire a spurious
+  `MCPDIPLO_RESPONDED|<id>|POSITIVE` and mark the proposal executed before
+  the human decided. The nudge now runs with the flag clear (a stale flag is
+  also pre-cleared at recipe start), and the flag is armed only once
+  `ms_ActiveSessionID == sid` — the human cannot click before the dialogue
+  presents, so no real answer can slip through unreported.
+- **`build_send_diplo_action` refuses the three response-able actions**
+  outright with `ERR:NOT_SUPPORTED` (the plan's "or make it refuse them"
+  option). One-way actions (denounce, wars) are unchanged.
+
+Live verification (§6) is still pending — it needs the handoff save.
+
 - `src/civ_mcp/lua/diplo_shim.lua` — installed & live-verified
   (hook=engine; MCPDIPLO naming). The RequestSession interception works; the
   AddResponse reporting path is armed but not yet live-exercised end-to-end.

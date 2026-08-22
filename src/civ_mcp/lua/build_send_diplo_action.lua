@@ -1,10 +1,20 @@
--- Send a proactive diplomatic action (delegation, friendship declaration,
--- embassy, denounce, war declaration) and report the outcome.
+-- Send a proactive ONE-WAY diplomatic action (denounce, war declaration)
+-- and report the outcome.
+--
+-- The three response-able actions (DECLARE_FRIENDSHIP,
+-- DIPLOMATIC_DELEGATION, RESIDENT_EMBASSY) never reach this template:
+-- build_send_diplo_action() in diplomacy.py refuses them outright. The
+-- proposer-side AddResponse flow below is silently ignored by the engine for
+-- those actions (live-verified — the OK:ACCEPTED print was a false
+-- positive; see DIPLO_EXECUTION_PLAN.md). Accepted proposals to managed
+-- civs are instead completed target-local via the recipe builders in
+-- diplomacy.py, at accept time on the target's turn. The AddResponse calls
+-- that remain here only advance one-way statement playback (denounce).
 --
 -- This file is a TEMPLATE loaded by build_send_diplo_action() in diplomacy.py.
 -- Tags substituted before the Lua is sent to the game:
 --   __MCP_TARGET_TAG__         -> target player id
---   __MCP_ACTION_TAG__         -> action name (e.g. DIPLOMATIC_DELEGATION)
+--   __MCP_ACTION_TAG__         -> action name (e.g. DENOUNCE)
 --   __MCP_SESSION_STRING_TAG__ -> DiplomacyManager.RequestSession session string
 --   __MCP_IS_WAR_TAG__         -> true/false (Lua boolean literal)
 --   __MCP_SENTINEL_TAG__       -> the response sentinel (see _helpers.SENTINEL)
@@ -16,8 +26,7 @@
 -- Key discovery: RequestSession uses DIFFERENT action strings from DIPLOACTION_
 -- names: DECLARE_FRIENDSHIP -> session string "DECLARE_FRIEND" (not
 -- "DECLARE_FRIENDSHIP"); others use the same name as the action name. The
--- mapping lives in diplomacy.py (DIPLO_SESSION_STRING_MAP) so the diplo
--- mailbox opens the same session type when executing an accepted proposal.
+-- mapping lives in diplomacy.py (DIPLO_SESSION_STRING_MAP).
 -- Flow: RequestSession -> 2x AddResponse(POSITIVE) -> CloseSession.
 -- No AddStatement needed (that crashes on mismatched session types).
 --

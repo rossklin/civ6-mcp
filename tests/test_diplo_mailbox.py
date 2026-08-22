@@ -5,23 +5,28 @@ Covers:
   - ``PendingDiploProposal`` defaults and the ``key`` property.
   - ``DiploMailbox`` lifecycle: unlike ``DealMailbox``, ``accept``/``reject``
     *keep* the proposal so the proposer can drain it next turn;
-    ``mark_executed`` marks agent→human proposals the engine already applied.
+    ``mark_executed`` marks proposals whose effect registered in-engine.
   - ``DiploMailbox`` queries: ``get_pending_for``, ``get_sent_by``,
     ``get_drainable_by`` (includes ``executed``), ``has_pending``.
   - ``execute_commands`` routing: response-able actions to managed civs (and
     the human) go to the mailbox; agent→human proposals are validity-gated;
     one-way actions and non-managed targets fall through to the engine.
-  - ``respond_to_diplo_action`` accept/reject marking, string coercion, and
-    fall-through when no mailbox proposal matches.
-  - ``_drain_diplo_proposals``: accepted → executes via the engine path and is
-    removed; executed → reported without an engine call; rejected → reported
-    and removed; pending → left alone.
+  - ``respond_to_diplo_action``: accept executes the agreement at accept time
+    (target-local recipe) — success marks ``executed``, failure removes the
+    proposal and surfaces the error; reject marks rejected; fall-through when
+    no mailbox proposal matches.
+  - ``_execute_diplo_agreement``: recipe step ordering (InGame open+prime,
+    DAV nudge, adoption poll, DAV complete, verify, teardown), and the
+    failure paths (invalid, no adoption, no verification flip, delegation
+    direction).
+  - ``_drain_diplo_proposals`` / ``_drain_human_diplo_proposals``:
+    report-only (execution happens at accept time on the target's turn).
   - ``_mailbox_propose_diplo`` filing + the None-mailbox guard.
   - Human-side handlers: ``_handle_human_diplo_proposed`` (shim interception
-    → mailbox + chat echo), ``_handle_diplo_notification_click`` (flag armed
-    before the synthetic session opens), ``_handle_diplo_response``, and
-    ``_drain_human_diplo_proposals`` (human slot-start execution).
-  - Diplo shim builders in :mod:`civ_mcp.handoff`.
+    → mailbox + chat echo), ``_handle_diplo_notification_click`` (recipe
+    steps 1–6, flag armed only after adoption), ``_handle_diplo_response``.
+  - Diplo shim builders in :mod:`civ_mcp.handoff` and the recipe step
+    builders + response-able refusal in :mod:`civ_mcp.lua.diplomacy`.
 """
 
 import asyncio
@@ -31,6 +36,7 @@ import types
 from civ_mcp import handoff, server, seats as seats_mod
 from civ_mcp.diplo_mailbox import DiploMailbox, PendingDiploProposal
 from civ_mcp.handoff import HandoffConfig
+from civ_mcp.lua import diplomacy as diplo_lua
 from civ_mcp.lua.diplomacy import RESPONSEABLE_DIPLO_ACTIONS
 from civ_mcp.seats import Seat, SeatRegistry
 
@@ -256,24 +262,30 @@ def _make_ctx(agent_id=1, human_id=0, agent_ids=(1,)):
     return ctx, app
 
 
-def _patch_engine(monkeypatch, validity=(True, "")):
-    """Patch _logged (turn-gating), the engine executor, and the agent→human
-    validity pre-check. Returns the list of forwarded command batches the
-    fake executor captured.  ``validity`` seeds the pre-check result for
-    tests that exercise the gating itself."""
-    executed = []
+def _patch_engine(monkeypatch, validity=(True, ""), diplo_result=(True, "effect verified as applied")):
+    """Patch _logged (turn-gating), the engine executor, the agent→human
+    validity pre-check, and the accept-time recipe executor.  Returns a
+    record namespace: ``engine`` holds forwarded command batches, ``diplo``
+    holds ``(from_player, to_player, action_name)`` tuples for recipe
+    executions.  ``validity``/``diplo_result`` seed the respective fakes."""
+    rec = types.SimpleNamespace(engine=[], diplo=[])
 
     async def fake_exec(gs, js):
-        executed.append(js)
+        rec.engine.append(js)
         return "engine-ok"
 
     async def fake_validity(gs, target, action_name):
         return validity
 
+    async def fake_diplo(gs, conn, from_player, to_player, action_name):
+        rec.diplo.append((from_player, to_player, action_name))
+        return diplo_result
+
     monkeypatch.setattr(server, "_logged", _passthrough_logged)
     monkeypatch.setattr(server, "_execute_commands", fake_exec)
     monkeypatch.setattr(server, "_check_diplo_action_validity", fake_validity)
-    return executed
+    monkeypatch.setattr(server, "_execute_diplo_agreement", fake_diplo)
+    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -284,13 +296,13 @@ def _patch_engine(monkeypatch, validity=(True, "")):
 class TestSendDiplomaticActionRouting:
     def test_friendship_to_managed_routes_to_mailbox(self, monkeypatch):
         ctx, app = _make_ctx()  # managed_ids = (0, 1); agent is P1
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         cmds = [{"action": "send_diplomatic_action",
                  "params": {"other_player_id": 0, "action_name": "DECLARE_FRIENDSHIP"}}]
 
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
-        assert executed == []  # never reached the engine
+        assert rec.engine == []  # never reached the engine
         proposals = app.diplo_mailbox.all_pending()
         assert len(proposals) == 1
         p = proposals[0]
@@ -325,17 +337,19 @@ class TestSendDiplomaticActionRouting:
 
     def test_responseable_to_unmanaged_falls_through(self, monkeypatch):
         """A friendship proposal to a built-in AI civ (P2, unmanaged) goes
-        straight to the engine — the AI responding is the correct behaviour."""
+        straight to the engine — the AI responding is the correct behaviour.
+        (The Lua builder itself then refuses it with a clear ERR: the
+        proposer-side flow silently fails — see the builder tests.)"""
         ctx, app = _make_ctx()
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         cmds = [{"action": "send_diplomatic_action",
                  "params": {"other_player_id": 2, "action_name": "DECLARE_FRIENDSHIP"}}]
 
         asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
         assert app.diplo_mailbox.pending_count == 0
-        assert len(executed) == 1
-        forwarded = json.loads(executed[0])
+        assert len(rec.engine) == 1
+        forwarded = json.loads(rec.engine[0])
         assert forwarded[0]["action"] == "send_diplomatic_action"
         assert forwarded[0]["params"]["other_player_id"] == 2
 
@@ -343,19 +357,19 @@ class TestSendDiplomaticActionRouting:
         """Denounce is one-way (no target response) — always the engine path,
         even toward a managed civ."""
         ctx, app = _make_ctx()
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         cmds = [{"action": "send_diplomatic_action",
                  "params": {"other_player_id": 0, "action_name": "DENOUNCE"}}]
 
         asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
         assert app.diplo_mailbox.pending_count == 0
-        assert len(executed) == 1
-        assert json.loads(executed[0])[0]["params"]["action_name"] == "DENOUNCE"
+        assert len(rec.engine) == 1
+        assert json.loads(rec.engine[0])[0]["params"]["action_name"] == "DENOUNCE"
 
     def test_war_declaration_to_managed_falls_through(self, monkeypatch):
         ctx, app = _make_ctx()
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         cmds = [{"action": "send_diplomatic_action",
                  "params": {"other_player_id": 0,
                             "action_name": "DECLARE_SURPRISE_WAR"}}]
@@ -363,13 +377,13 @@ class TestSendDiplomaticActionRouting:
         asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
         assert app.diplo_mailbox.pending_count == 0
-        assert len(executed) == 1
+        assert len(rec.engine) == 1
 
     def test_mixed_batch_mailbox_and_engine(self, monkeypatch):
         """A mailbox-routed diplo action and a unit move in one batch: the
         diplo goes to the mailbox, the move goes to the executor."""
         ctx, app = _make_ctx()
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         cmds = [
             {"action": "send_diplomatic_action",
              "params": {"other_player_id": 0, "action_name": "DECLARE_FRIENDSHIP"}},
@@ -379,8 +393,8 @@ class TestSendDiplomaticActionRouting:
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
         assert app.diplo_mailbox.pending_count == 1
-        assert len(executed) == 1
-        forwarded = json.loads(executed[0])
+        assert len(rec.engine) == 1
+        forwarded = json.loads(rec.engine[0])
         assert forwarded[0]["action"] == "fortify_unit"
         assert "awaiting response" in result
         assert "engine-ok" in result
@@ -398,23 +412,46 @@ class TestRespondToDiploAction:
             from_player=from_player, to_player=to_player, action_name=action,
         ))
 
-    def test_accept_marks_accepted_and_keeps(self, monkeypatch):
+    def test_accept_executes_at_accept_time(self, monkeypatch):
+        """Accept runs the target-local recipe immediately (this seat IS the
+        target and is on its turn): success flips the status to executed —
+        kept for the proposer's report drain — with (from=proposer, to=seat)."""
         ctx, app = _make_ctx()  # agent is P1
-        _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         pid = self._file_incoming(app, from_player=0, to_player=1)
 
         cmds = [{"action": "respond_to_diplo_action",
                  "params": {"other_player_id": 0, "accept": True}}]
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
+        assert rec.diplo == [(0, 1, "DECLARE_FRIENDSHIP")]
         p = app.diplo_mailbox.get(pid)
-        assert p.status == "accepted"
+        assert p.status == "executed"
         assert app.diplo_mailbox.pending_count == 1  # kept for the proposer's drain
-        assert "takes effect on P0's next turn" in result
+        assert "took effect" in result
+        assert rec.engine == []  # nothing fell through to the executor
+
+    def test_accept_execution_failure_drops_proposal(self, monkeypatch):
+        """A failed recipe reports the honest error and removes the proposal
+        (no retry loops) — the proposer simply never hears 'took effect'."""
+        ctx, app = _make_ctx()
+        rec = _patch_engine(
+            monkeypatch,
+            diplo_result=(False, "effect did not register (validity still true)"),
+        )
+        pid = self._file_incoming(app, from_player=0, to_player=1)
+
+        cmds = [{"action": "respond_to_diplo_action",
+                 "params": {"other_player_id": 0, "accept": True}}]
+        result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
+
+        assert app.diplo_mailbox.get(pid) is None  # dropped
+        assert "did not take effect" in result
+        assert "validity still true" in result
 
     def test_reject_marks_rejected(self, monkeypatch):
         ctx, app = _make_ctx()
-        _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         pid = self._file_incoming(app, from_player=0, to_player=1)
 
         cmds = [{"action": "respond_to_diplo_action",
@@ -424,6 +461,7 @@ class TestRespondToDiploAction:
         p = app.diplo_mailbox.get(pid)
         assert p.status == "rejected"
         assert "Rejected" in result
+        assert rec.diplo == []  # no engine execution on reject
 
     def test_accept_string_coercion(self, monkeypatch):
         """accept may arrive as a string from the MCP tool boundary."""
@@ -435,27 +473,27 @@ class TestRespondToDiploAction:
                  "params": {"other_player_id": 0, "accept": "true"}}]
         asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
-        assert app.diplo_mailbox.get(pid).status == "accepted"
+        assert app.diplo_mailbox.get(pid).status == "executed"
 
     def test_no_match_falls_through_to_engine(self, monkeypatch):
         """No pending mailbox proposal → fall through to engine
         respond_to_diplomacy (e.g. a real AI-opened session)."""
         ctx, _ = _make_ctx()
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         cmds = [{"action": "respond_to_diplo_action",
                  "params": {"other_player_id": 0, "accept": True}}]
 
         asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
-        assert len(executed) == 1
-        forwarded = json.loads(executed[0])
+        assert len(rec.engine) == 1
+        forwarded = json.loads(rec.engine[0])
         assert forwarded[0]["action"] == "respond_to_diplo_action"
 
     def test_only_matches_proposal_from_target(self, monkeypatch):
         """respond_to_diplo_action(other_player_id=X) must match a proposal
         FROM X — not a proposal from some other player also pending."""
         ctx, app = _make_ctx()  # agent is P1
-        executed = _patch_engine(monkeypatch)
+        rec = _patch_engine(monkeypatch)
         # Pending proposal from P2 to the agent, but we respond to P0.
         self._file_incoming(app, from_player=2, to_player=1)
 
@@ -464,73 +502,241 @@ class TestRespondToDiploAction:
         asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
 
         # No match for P0 → fall through to engine; P2's proposal untouched.
-        assert len(executed) == 1
+        assert len(rec.engine) == 1
         assert app.diplo_mailbox.all_pending()[0].from_player == 2
         assert app.diplo_mailbox.all_pending()[0].status == "pending"
 
 
 # ---------------------------------------------------------------------------
-# _drain_diplo_proposals
+# _execute_diplo_agreement — the target-local recipe
 # ---------------------------------------------------------------------------
 
 
-class _FakeGameState:
-    """Records send_diplomatic_action calls; returns a canned result string."""
+class _RecipeConn:
+    """Scripted conn for the recipe: routes execute_write (InGame steps)
+    vs execute_in_named_state (DiplomacyActionView / chat steps) and pops
+    scripted line-lists per call in order. Records every call's Lua."""
 
-    def __init__(self, result="OK:ACCEPTED"):
-        self.calls = []
-        self._result = result
+    def __init__(self, writes=(), named=()):
+        self.write_scripts = [list(w) for w in writes]
+        self.named_scripts = [list(w) for w in named]
+        self.write_calls: list[str] = []
+        self.named_calls: list[tuple[str, str]] = []
 
-    async def send_diplomatic_action(self, other_player_id, action):
-        self.calls.append((other_player_id, action))
-        return self._result
+    async def execute_write(self, lua, perspective=True, timeout=5.0):
+        self.write_calls.append(lua)
+        return self.write_scripts.pop(0) if self.write_scripts else []
+
+    async def execute_in_named_state(self, state, lua, timeout=5.0):
+        self.named_calls.append((state, lua))
+        return self.named_scripts.pop(0) if self.named_scripts else []
+
+
+def _zero_diplo_timings(monkeypatch):
+    """Collapse the recipe's inter-step delays so tests run instantly."""
+    monkeypatch.setattr(server, "_DIPLO_ADOPT_POLL_INTERVAL", 0.0)
+    monkeypatch.setattr(server, "_DIPLO_ADOPT_TIMEOUT", 0.0)
+    monkeypatch.setattr(server, "_DIPLO_EFFECT_SETTLE", 0.0)
+    monkeypatch.setattr(server, "_DIPLO_TEARDOWN_SETTLE", 0.0)
+
+
+def _happy_scripts(action="DECLARE_FRIENDSHIP", sid=7):
+    """Line scripts for a full happy-path recipe run, (writes, named).
+
+    writes: validity, open, prime, effect check, teardown close, dismiss.
+    named: flag pre-clear, nudge, adoption poll, completing response."""
+    effect = ["VALID|false", f"STATE|1|1"]
+    if action == "DIPLOMATIC_DELEGATION":
+        effect = ["VALID|false", "HAS_DELEGATION|true", "STATE|3|3"]
+    writes = (
+        [f"OK|{action}"],
+        [f"OK|OPENED|{sid}"],
+        [f"OK|PRIMED|true|sid={sid}"],
+        effect,
+        [f"OK|CLOSED|{sid}"],
+        ["DIPLO_VIEW_DISMISSED"],
+    )
+    named = (
+        ["DIPLO_FLAG_CLEARED"],
+        [f"OK|RESPONSE_SENT|{sid}"],
+        ["ADOPTED|true"],
+        [f"OK|RESPONSE_SENT|{sid}"],
+    )
+    return writes, named
+
+
+class TestExecuteDiploAgreement:
+    def _run(self, conn):
+        return asyncio.run(server._execute_diplo_agreement(
+            None, conn, from_player=0, to_player=1,
+            action_name="DECLARE_FRIENDSHIP",
+        ))
+
+    def test_happy_path_ordering_and_verdict(self, monkeypatch):
+        """InGame open+prime → DAV nudge → adoption poll → DAV complete →
+        verify → teardown; ok comes from the verification flip only."""
+        _zero_diplo_timings(monkeypatch)
+        writes, named = _happy_scripts()
+        conn = _RecipeConn(writes=writes, named=named)
+
+        ok, msg = self._run(conn)
+
+        assert ok is True
+        assert "verified as applied" in msg
+        # InGame steps in order: validity, open, prime, effect, close, dismiss.
+        assert "IsDiplomaticActionValid" in conn.write_calls[0]
+        assert "local me = 0" in conn.write_calls[0]  # acting = proposer
+        assert 'RequestSession(from, to, "DECLARE_FRIEND")' in conn.write_calls[1]
+        assert "DiplomacyActionTypes.DECLARE_FRIEND" in conn.write_calls[2]
+        assert "VALID|" in conn.write_calls[3]  # effect check reads validity
+        assert "CloseSession" in conn.write_calls[4]
+        assert "HideLeaderScreen" in conn.write_calls[5]
+        # DAV steps in order: flag clear, nudge, adoption poll, complete.
+        states = [s for s, _ in conn.named_calls]
+        assert states == [handoff.DIPLO_SHIM_STATE] * 4
+        assert "__MCP_diplo_proposal_id = nil" in conn.named_calls[0][1]
+        assert 'AddResponse(7, 1, "POSITIVE")' in conn.named_calls[1][1]
+        assert "ms_ActiveSessionID == 7" in conn.named_calls[2][1]
+        assert 'AddResponse(7, 1, "POSITIVE")' in conn.named_calls[3][1]
+
+    def test_delegation_requires_has_delegation_at(self, monkeypatch):
+        """Delegations verify validity flip AND HasDelegationAt(from→to) —
+        the direction the action creates."""
+        _zero_diplo_timings(monkeypatch)
+        writes, named = _happy_scripts(action="DIPLOMATIC_DELEGATION")
+        conn = _RecipeConn(writes=writes, named=named)
+
+        ok, _ = asyncio.run(server._execute_diplo_agreement(
+            None, conn, 0, 1, "DIPLOMATIC_DELEGATION"))
+
+        assert ok is True
+        assert "DiplomacyActionTypes.SET_DELEGATION" in conn.write_calls[2]
+
+    def test_delegation_without_direction_flag_fails(self, monkeypatch):
+        """Validity flipped but HasDelegationAt is false → not applied."""
+        _zero_diplo_timings(monkeypatch)
+        writes, named = _happy_scripts(action="DIPLOMATIC_DELEGATION")
+        writes = list(writes)
+        writes[3] = ["VALID|false", "HAS_DELEGATION|false", "STATE|3|3"]
+        conn = _RecipeConn(writes=writes, named=named)
+
+        ok, msg = asyncio.run(server._execute_diplo_agreement(
+            None, conn, 0, 1, "DIPLOMATIC_DELEGATION"))
+
+        assert ok is False
+        assert "did not register" in msg
+        assert "HasDelegationAt False" in msg
+
+    def test_invalid_action_short_circuits_before_opening(self, monkeypatch):
+        _zero_diplo_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=[["ERR:INVALID|Already friends with this player"]])
+
+        ok, msg = self._run(conn)
+
+        assert ok is False
+        assert "not valid" in msg
+        assert "Already friends" in msg
+        assert len(conn.write_calls) == 1  # nothing opened, no teardown
+        assert conn.named_calls == []
+
+    def test_adoption_timeout_fails_with_teardown(self, monkeypatch):
+        """The view never adopts: honest failure + bare teardown of the
+        half-open session."""
+        _zero_diplo_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
+                    ["OK|PRIMED|true|sid=7"], ["OK|CLOSED|7"],
+                    ["DIPLO_VIEW_DISMISSED"]],
+            named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
+                   ["ADOPTED|false"]],
+        )
+
+        ok, msg = self._run(conn)
+
+        assert ok is False
+        assert "did not adopt" in msg
+        # Teardown ran: close + dismiss after the 3 setup writes.
+        assert len(conn.write_calls) == 5
+        assert "CloseSession" in conn.write_calls[3]
+
+    def test_no_verification_flip_fails(self, monkeypatch):
+        """The completing response was sent but validity stayed true — the
+        effect did not register, so ok is False despite all OK prints."""
+        _zero_diplo_timings(monkeypatch)
+        writes, named = _happy_scripts()
+        writes = list(writes)
+        writes[3] = ["VALID|true", "STATE|2|2"]
+        conn = _RecipeConn(writes=writes, named=named)
+
+        ok, msg = self._run(conn)
+
+        assert ok is False
+        assert "did not register" in msg
+        assert "STATE|2|2" in msg  # diagnostics surfaced
+
+    def test_completing_response_error_fails(self, monkeypatch):
+        _zero_diplo_timings(monkeypatch)
+        writes, named = _happy_scripts()
+        named = list(named)
+        named[3] = ["ERR:RESPONSE_FAILED|boom"]
+        conn = _RecipeConn(writes=writes, named=named)
+
+        ok, msg = self._run(conn)
+
+        assert ok is False
+        assert "completing response failed" in msg
+        assert "boom" in msg
+
+    def test_non_responseable_action_refused(self):
+        conn = _RecipeConn()
+        ok, msg = asyncio.run(server._execute_diplo_agreement(
+            None, conn, 0, 1, "DENOUNCE"))
+        assert ok is False
+        assert "not a response-able action" in msg
+        assert conn.write_calls == [] and conn.named_calls == []
+
+
+# ---------------------------------------------------------------------------
+# _drain_diplo_proposals (report-only — execution happens at accept time)
+# ---------------------------------------------------------------------------
 
 
 class TestDrainDiploProposals:
-    def test_accepted_executes_and_removes(self):
+    def test_executed_reports_took_effect_without_engine(self):
         mb = DiploMailbox()
-        p = PendingDiploProposal(
-            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP",
-        )
-        pid = mb.propose(p)
-        mb.accept(pid)
-        gs = _FakeGameState()
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+        mb.mark_executed(pid)
 
-        lines = asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+        lines = asyncio.run(server._drain_diplo_proposals(mb, proposer_pid=1))
 
-        assert gs.calls == [(0, "DECLARE_FRIENDSHIP")]
-        assert mb.get(pid) is None  # drained → removed
+        assert mb.get(pid) is None
         assert len(lines) == 1
         assert "took effect" in lines[0]
 
-    def test_directionality_preserved(self):
-        """The proposer (from_player) executes; the action targets to_player.
-        For a delegation this is what places the PROPOSER's delegation at the
-        target — not the reverse."""
+    def test_lingering_accepted_reported_incomplete_and_removed(self):
+        """'accepted' persisting means the accept-time execution failed or
+        the server died mid-accept: honest line, no retry."""
         mb = DiploMailbox()
-        p = PendingDiploProposal(
-            from_player=1, to_player=0, action_name="DIPLOMATIC_DELEGATION",
-        )
-        pid = mb.propose(p)
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DIPLOMATIC_DELEGATION"))
         mb.accept(pid)
-        gs = _FakeGameState()
 
-        asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+        lines = asyncio.run(server._drain_diplo_proposals(mb, proposer_pid=1))
 
-        assert gs.calls == [(0, "DIPLOMATIC_DELEGATION")]
+        assert mb.get(pid) is None
+        assert len(lines) == 1
+        assert "did not complete" in lines[0]
 
-    def test_rejected_reports_and_removes_without_executing(self):
+    def test_rejected_reports_and_removes(self):
         mb = DiploMailbox()
-        p = PendingDiploProposal(
-            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP",
-        )
-        pid = mb.propose(p)
+        pid = mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
         mb.reject(pid)
-        gs = _FakeGameState()
 
-        lines = asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+        lines = asyncio.run(server._drain_diplo_proposals(mb, proposer_pid=1))
 
-        assert gs.calls == []  # never executed
         assert mb.get(pid) is None
         assert len(lines) == 1
         assert "rejected" in lines[0]
@@ -540,70 +746,45 @@ class TestDrainDiploProposals:
         pid = mb.propose(PendingDiploProposal(
             from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP",
         ))  # still pending — target hasn't answered
-        gs = _FakeGameState()
 
-        lines = asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+        lines = asyncio.run(server._drain_diplo_proposals(mb, proposer_pid=1))
 
-        assert gs.calls == []
         assert lines == []
         assert mb.get(pid) is not None  # left in place
 
     def test_empty_when_nothing_drainable(self):
         mb = DiploMailbox()
-        gs = _FakeGameState()
-        assert asyncio.run(server._drain_diplo_proposals(gs, mb, 1)) == []
+        assert asyncio.run(server._drain_diplo_proposals(mb, 1)) == []
 
     def test_only_drains_this_proposers_proposals(self):
         mb = DiploMailbox()
-        # P1's accepted proposal and P2's accepted proposal.
         a1 = mb.propose(PendingDiploProposal(
             from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
         a2 = mb.propose(PendingDiploProposal(
             from_player=2, to_player=0, action_name="RESIDENT_EMBASSY"))
-        mb.accept(a1)
-        mb.accept(a2)
-        gs = _FakeGameState()
+        mb.mark_executed(a1)
+        mb.mark_executed(a2)
 
-        asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+        asyncio.run(server._drain_diplo_proposals(mb, proposer_pid=1))
 
-        assert gs.calls == [(0, "DECLARE_FRIENDSHIP")]
         assert mb.get(a1) is None      # P1's drained
         assert mb.get(a2) is not None  # P2's left for P2's turn
 
-    def test_accepted_and_rejected_drained_together(self):
+    def test_executed_and_rejected_drained_together(self):
         mb = DiploMailbox()
-        acc = mb.propose(PendingDiploProposal(
+        exe = mb.propose(PendingDiploProposal(
             from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
         rej = mb.propose(PendingDiploProposal(
             from_player=1, to_player=2, action_name="RESIDENT_EMBASSY"))
-        mb.accept(acc)
+        mb.mark_executed(exe)
         mb.reject(rej)
-        gs = _FakeGameState()
 
-        lines = asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
+        lines = asyncio.run(server._drain_diplo_proposals(mb, proposer_pid=1))
 
-        assert gs.calls == [(0, "DECLARE_FRIENDSHIP")]  # only the accepted one
         assert mb.pending_count == 0
         assert len(lines) == 2
-
-    def test_execution_failure_surfaces_instead_of_crashing(self):
-        mb = DiploMailbox()
-        p = PendingDiploProposal(
-            from_player=1, to_player=0, action_name="DIPLOMATIC_DELEGATION",
-        )
-        pid = mb.propose(p)
-        mb.accept(pid)
-
-        class _BoomGS:
-            async def send_diplomatic_action(self, other, action):
-                raise RuntimeError("tuner gone")
-
-        lines = asyncio.run(
-            server._drain_diplo_proposals(_BoomGS(), mb, proposer_pid=1)
-        )
-        assert mb.get(pid) is None  # still removed (no retry)
-        assert len(lines) == 1
-        assert "execution failed" in lines[0]
+        assert "took effect" in lines[0]
+        assert "rejected" in lines[1]
 
 
 # ---------------------------------------------------------------------------
@@ -687,26 +868,6 @@ class TestMarkExecuted:
             from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
         mb.mark_executed(pid)
         assert mb.get_pending_for(0) == []
-
-
-class TestDrainDiploProposalsExecuted:
-    def test_executed_reports_without_engine_call(self):
-        """Agent→human proposal the human accepted on the native leader
-        screen: the engine already applied the effect, so the drain only
-        reports — never re-executes."""
-        mb = DiploMailbox()
-        pid = mb.propose(PendingDiploProposal(
-            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
-        mb.mark_executed(pid)
-        gs = _FakeGameState()
-
-        lines = asyncio.run(server._drain_diplo_proposals(gs, mb, proposer_pid=1))
-
-        assert gs.calls == []  # never re-executed
-        assert mb.get(pid) is None
-        assert len(lines) == 1
-        assert "took effect" in lines[0]
-        assert "diplomacy screen" in lines[0]
 
 
 # ---------------------------------------------------------------------------
@@ -858,33 +1019,115 @@ class TestHandleDiploResponse:
 
 
 class TestHandleDiploNotificationClick:
-    def test_arms_flag_then_opens_session(self):
-        conn, mb = _FakeConn(), DiploMailbox()
-        pid = mb.propose(PendingDiploProposal(
-            from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
+    def _file(self, mb, action="DECLARE_FRIENDSHIP"):
+        return mb.propose(PendingDiploProposal(
+            from_player=1, to_player=0, action_name=action))
 
+    def _run(self, conn, mb, pid, cfg=None):
         asyncio.run(server._handle_diplo_notification_click(
-            conn, mb, {"proposal_id": pid}, _make_cfg(), None))
+            conn, mb, {"proposal_id": pid}, cfg or _make_cfg(), None))
 
-        # 1. Flag armed in the DiplomacyActionView state...
-        assert conn.named[0][0] == handoff.DIPLO_SHIM_STATE
-        assert pid in conn.named[0][1]
-        # 2. ...BEFORE the synthetic session opens in the gamecore state.
-        assert len(conn.writes) == 1
-        assert 'DiplomacyManager.RequestSession(1, 0, "DECLARE_FRIEND")' \
-            in conn.writes[0]
+    def test_runs_recipe_then_arms_flag_after_adoption(self, monkeypatch):
+        """Validate → open+prime → nudge → poll adoption → assert not
+        applied → arm. The flag is armed only AFTER adoption: the shim
+        consumes it on the first reported AddResponse involving a managed
+        player, so arming earlier would misreport our own nudge."""
+        _zero_diplo_timings(monkeypatch)
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        conn = _RecipeConn(
+            writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
+                    ["OK|PRIMED|true|sid=7"], ["VALID|true", "STATE|2|2"]],
+            named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
+                   ["ADOPTED|true"], ["DIPLO_FLAG_SET"]],
+        )
+
+        self._run(conn, mb, pid)
+
+        # InGame: validity, open, prime, not-yet-applied check.
+        assert "local me = 1" in conn.write_calls[0]  # acting = agent P1
+        assert 'RequestSession(from, to, "DECLARE_FRIEND")' in conn.write_calls[1]
+        assert "DiplomacyActionTypes.DECLARE_FRIEND" in conn.write_calls[2]
+        assert "VALID|" in conn.write_calls[3]
+        # DAV: flag clear, nudge (flag NOT armed — no pid in the lua),
+        # adoption poll, then the arm carrying the proposal id.
+        assert "__MCP_diplo_proposal_id = nil" in conn.named_calls[0][1]
+        nudge = conn.named_calls[1][1]
+        assert 'AddResponse(7, 0, "POSITIVE")' in nudge  # to = human P0
+        assert pid not in nudge
+        assert "ms_ActiveSessionID == 7" in conn.named_calls[2][1]
+        arm = conn.named_calls[3]
+        assert arm[0] == handoff.DIPLO_SHIM_STATE
+        assert f'__MCP_diplo_proposal_id = "{pid}"' in arm[1]
+        # The arm is the LAST call — nothing executes past it (the human's
+        # click completes the proposal natively).
+        assert len(conn.named_calls) == 4 and len(conn.write_calls) == 4
+        assert mb.get(pid).status == "pending"  # answered by the human later
+
+    def test_invalid_proposal_withdrawn_with_chat_note(self, monkeypatch):
+        _zero_diplo_timings(monkeypatch)
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        conn = _RecipeConn(writes=[["ERR:INVALID|Already friends"]])
+
+        self._run(conn, mb, pid)
+
+        assert mb.get(pid) is None  # withdrawn — no doomed-dialogue loop
+        chat = conn.named_calls[0]
+        assert chat[0] == handoff.CHAT_SHIM_STATE
+        assert "no longer valid" in chat[1]
+
+    def test_nudge_auto_applied_marks_executed(self, monkeypatch):
+        """Open-risk guard: if the nudge ever applies the effect before the
+        human decides, record the honest state instead of arming."""
+        _zero_diplo_timings(monkeypatch)
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        conn = _RecipeConn(
+            writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
+                    ["OK|PRIMED|true|sid=7"], ["VALID|false", "STATE|1|1"],
+                    ["OK|CLOSED|7"], ["DIPLO_VIEW_DISMISSED"]],
+            named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
+                   ["ADOPTED|true"]],
+        )
+
+        self._run(conn, mb, pid)
+
+        assert mb.get(pid).status == "executed"
+        # No arm happened (nothing left for the human to answer).
+        assert all('__MCP_diplo_proposal_id = "' not in lua
+                   for _, lua in conn.named_calls)
+
+    def test_adoption_timeout_leaves_proposal_pending(self, monkeypatch):
+        """Transient presentation failure: tear the half-open session down,
+        keep the proposal — the notification re-sends at the next slot."""
+        _zero_diplo_timings(monkeypatch)
+        mb = DiploMailbox()
+        pid = self._file(mb)
+        conn = _RecipeConn(
+            writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
+                    ["OK|PRIMED|true|sid=7"], ["OK|CLOSED|7"],
+                    ["DIPLO_VIEW_DISMISSED"]],
+            named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
+                   ["ADOPTED|false"]],
+        )
+
+        self._run(conn, mb, pid)
+
+        assert mb.get(pid).status == "pending"
+        assert "CloseSession" in conn.write_calls[3]  # teardown ran
+        assert len(conn.write_calls) == 5  # close + dismiss, no arm
 
     def test_unknown_proposal_makes_no_calls(self):
-        conn, mb = _FakeConn(), DiploMailbox()
+        conn, mb = _RecipeConn(), DiploMailbox()
 
-        asyncio.run(server._handle_diplo_notification_click(
-            conn, mb, {"proposal_id": "nope"}, _make_cfg(), None))
+        self._run(conn, mb, "nope")
 
-        assert conn.named == [] and conn.writes == []
+        assert conn.named_calls == [] and conn.write_calls == []
 
 
 # ---------------------------------------------------------------------------
-# _drain_human_diplo_proposals (executed at the human's slot start)
+# _drain_human_diplo_proposals (report-only chat at the human's slot start)
 # ---------------------------------------------------------------------------
 
 
@@ -892,48 +1135,47 @@ class TestDrainHumanDiploProposals:
     def _file_human_proposal(self, mb, status, action="DIPLOMATIC_DELEGATION"):
         pid = mb.propose(PendingDiploProposal(
             from_player=0, to_player=1, action_name=action))
-        if status == "accepted":
+        if status == "executed":
+            mb.mark_executed(pid)
+        elif status == "accepted":
             mb.accept(pid)
         elif status == "rejected":
             mb.reject(pid)
         return pid
 
-    def test_accepted_executes_as_human_and_notifies(self):
+    def test_executed_chats_took_effect_without_engine(self):
         mb = DiploMailbox()
-        pid = self._file_human_proposal(mb, "accepted")
-        conn, gs = _FakeConn(), _FakeGameState()
+        pid = self._file_human_proposal(mb, "executed")
+        conn = _RecipeConn()
 
-        asyncio.run(server._drain_human_diplo_proposals(
-            gs, conn, mb, _make_cfg()))
+        asyncio.run(server._drain_human_diplo_proposals(conn, mb, _make_cfg()))
 
-        assert gs.calls == [(1, "DIPLOMATIC_DELEGATION")]
         assert mb.get(pid) is None
-        chat = conn.named[0]
+        assert len(conn.write_calls) == 0  # report-only: no engine calls
+        chat = conn.named_calls[0]
         assert chat[0] == handoff.CHAT_SHIM_STATE
         assert "took effect" in chat[1]
 
-    def test_rejected_reports_decline_without_executing(self):
+    def test_rejected_chats_decline(self):
         mb = DiploMailbox()
         pid = self._file_human_proposal(mb, "rejected")
-        conn, gs = _FakeConn(), _FakeGameState()
+        conn = _RecipeConn()
 
-        asyncio.run(server._drain_human_diplo_proposals(
-            gs, conn, mb, _make_cfg()))
+        asyncio.run(server._drain_human_diplo_proposals(conn, mb, _make_cfg()))
 
-        assert gs.calls == []
         assert mb.get(pid) is None
-        assert "declined" in conn.named[0][1]
+        assert len(conn.write_calls) == 0
+        assert "declined" in conn.named_calls[0][1]
 
-    def test_engine_error_surfaces_in_chat(self):
+    def test_lingering_accepted_chats_incomplete(self):
         mb = DiploMailbox()
         self._file_human_proposal(mb, "accepted")
-        conn = _FakeConn()
-        gs = _FakeGameState(result="ERR:INVALID|Not enough gold")
+        conn = _RecipeConn()
 
-        asyncio.run(server._drain_human_diplo_proposals(
-            gs, conn, mb, _make_cfg()))
+        asyncio.run(server._drain_human_diplo_proposals(conn, mb, _make_cfg()))
 
-        assert "could not be completed" in conn.named[0][1]
+        assert len(conn.write_calls) == 0
+        assert "could not be completed" in conn.named_calls[0][1]
 
     def test_agent_proposals_not_drained_here(self):
         """Proposals FROM agents drain on the agent's own turn
@@ -941,13 +1183,12 @@ class TestDrainHumanDiploProposals:
         mb = DiploMailbox()
         pid = mb.propose(PendingDiploProposal(
             from_player=1, to_player=0, action_name="DECLARE_FRIENDSHIP"))
-        mb.accept(pid)
-        conn, gs = _FakeConn(), _FakeGameState()
+        mb.mark_executed(pid)
+        conn = _RecipeConn()
 
-        asyncio.run(server._drain_human_diplo_proposals(
-            gs, conn, mb, _make_cfg()))
+        asyncio.run(server._drain_human_diplo_proposals(conn, mb, _make_cfg()))
 
-        assert gs.calls == []
+        assert conn.named_calls == []
         assert mb.get(pid) is not None
 
 
@@ -998,3 +1239,94 @@ class TestDiploShimBuilders:
             0, 1, "abc123", "Cleopatra proposes friendship.")
         assert "'MCPDIPLO:abc123'" in lua
         assert "Cleopatra proposes friendship." in lua
+
+
+# ---------------------------------------------------------------------------
+# Recipe step builders + response-able refusal (lua/diplomacy.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDiploRecipeBuilders:
+    def test_enum_map_covers_exactly_the_responseable_set(self):
+        assert set(diplo_lua.DIPLO_ACTION_TO_ENUM) == set(RESPONSEABLE_DIPLO_ACTIONS)
+        assert diplo_lua.DIPLO_ACTION_TO_ENUM == {
+            "DECLARE_FRIENDSHIP": "DECLARE_FRIEND",
+            "DIPLOMATIC_DELEGATION": "SET_DELEGATION",
+            "RESIDENT_EMBASSY": "SET_EMBASSY",
+        }
+
+    def test_open_step_stale_close_then_request_with_session_string(self):
+        lua = diplo_lua.build_diplo_open_step(0, 1, "DECLARE_FRIEND")
+        # Stale close keyed on the responder-side pair (to, from)...
+        assert "FindOpenSessionID(to, from)" in lua
+        assert "DiplomacyManager.CloseSession(stale)" in lua
+        # ...then the open with the remapped session string, sid printed.
+        assert 'RequestSession(from, to, "DECLARE_FRIEND")' in lua
+        assert 'print("OK|OPENED|" .. sid)' in lua
+        assert "---END---" in lua
+
+    def test_prime_step_uses_enum_key_and_empty_params(self):
+        lua = diplo_lua.build_diplo_prime_step(0, 1, "SET_DELEGATION")
+        assert "DiplomacyActionTypes.SET_DELEGATION, {})" in lua
+        assert 'print("OK|PRIMED|"' in lua
+
+    def test_response_step_threads_sid_and_target(self):
+        lua = diplo_lua.build_diplo_response_step(7, 1)
+        assert 'DiplomacyManager.AddResponse(7, 1, "POSITIVE")' in lua
+        assert 'print("OK|RESPONSE_SENT|7")' in lua
+
+    def test_adoption_check_compares_ms_active_session_id(self):
+        lua = diplo_lua.build_diplo_adoption_check(7)
+        assert "ms_ActiveSessionID == 7" in lua
+        assert 'print("ADOPTED|" .. tostring' in lua
+        # ms_Mode is traced but never gated on (may stay nil after adoption).
+        assert "ms_Mode" in lua
+
+    def test_effect_check_direction_and_delegation_flag(self):
+        lua = diplo_lua.build_diplo_effect_check(0, 1, "DIPLOMATIC_DELEGATION")
+        assert 'Players[from]:GetDiplomacy():IsDiplomaticActionValid(' in lua
+        assert "Players[from]:GetDiplomacy():HasDelegationAt(to)" in lua
+        assert 'print("HAS_DELEGATION|" .. tostring(hasDel))' in lua
+        assert 'print("VALID|" .. tostring(valid))' in lua
+        assert 'print("STATE|"' in lua
+
+    def test_effect_check_gates_delegation_line_on_action(self):
+        """The HasDelegationAt read is emitted for every action but gated in
+        Lua on DIPLOMATIC_DELEGATION, so friendship runs validity + state
+        only."""
+        lua = diplo_lua.build_diplo_effect_check(0, 1, "DECLARE_FRIENDSHIP")
+        assert 'if action == "DIPLOMATIC_DELEGATION" then' in lua
+
+    def test_close_step_is_bare_close_without_hide_events(self):
+        lua = diplo_lua.build_diplo_close_step(0, 1)
+        assert "DiplomacyManager.FindOpenSessionID(1, 0)" in lua
+        assert "DiplomacyManager.CloseSession(sid)" in lua
+        # Bare close only — hide events in the same instant leave a stale
+        # ms_ActiveSessionID that swallows the next session's statement.
+        assert "HideLeaderScreen" not in lua
+        assert "ShowIngameUI" not in lua
+
+    def test_validity_check_defaults_to_local_player(self):
+        lua = diplo_lua.build_check_diplo_action_validity(1, "DECLARE_FRIENDSHIP")
+        assert "local me = Game.GetLocalPlayer()" in lua
+
+    def test_validity_check_accepts_acting_player(self):
+        lua = diplo_lua.build_check_diplo_action_validity(
+            1, "DECLARE_FRIENDSHIP", acting_player_id=0)
+        assert "local me = 0" in lua
+        assert "Players[me]:GetDiplomacy()" in lua
+
+    def test_send_diplo_action_refuses_responseable_actions(self):
+        for action in RESPONSEABLE_DIPLO_ACTIONS:
+            lua = diplo_lua.build_send_diplo_action(2, action)
+            assert 'print("ERR:NOT_SUPPORTED|' in lua
+            assert "---END---" in lua
+            # The broken proposer-side flow never loads (the refusal message
+            # mentions AddResponse, but no engine call is ever emitted).
+            assert "DiplomacyManager.AddResponse" not in lua
+            assert "RequestSession(me, target" not in lua
+
+    def test_send_diplo_action_keeps_one_way_actions(self):
+        lua = diplo_lua.build_send_diplo_action(2, "DENOUNCE")
+        assert "ERR:NOT_SUPPORTED" not in lua
+        assert 'RequestSession(me, target, "DENOUNCE")' in lua
