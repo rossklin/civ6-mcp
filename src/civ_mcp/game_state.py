@@ -797,12 +797,60 @@ class GameState:
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
 
-        if is_war and not result.startswith("ERR:"):
-            # War session left open for ~8s so the leader animation plays.
-            # Background task will close session + dismiss DiplomacyActionView.
-            asyncio.create_task(self._cleanup_war_diplomacy(other_player_id))
+        if not result.startswith("Error"):
+            # _action_result renders Lua ERR: lines as "Error: ..." — never
+            # compare against the raw "ERR:" prefix.
+            if is_war:
+                # War session left open for ~8s so the leader animation
+                # plays. Background task will close session + dismiss
+                # DiplomacyActionView.
+                asyncio.create_task(
+                    self._cleanup_war_diplomacy(other_player_id)
+                )
+            else:
+                # One-way statement (denounce): the builder closes the
+                # session and restores the UI in the same chunk, but the
+                # statement events pop DiplomacyActionView asynchronously —
+                # the same-frame hide runs before the view processes them,
+                # leaving the leader screen up. Dismiss in a separate,
+                # delayed round-trip.
+                asyncio.create_task(self._cleanup_diplo_screen())
 
         return result
+
+    async def _cleanup_diplo_screen(self) -> None:
+        """Background: dismiss the leader screen after a one-way statement.
+
+        Same idiom as :meth:`_cleanup_war_diplomacy` and the diplo recipe
+        teardown (DIPLO_EXECUTION_PLAN.md §2): engine-driven session events
+        reach the view on later frames, so the dismiss must be its own
+        delayed round-trip, never same-frame with the statement. It must
+        run in the DiplomacyActionView context so it goes through the
+        view's own ``Close()`` — raw hide events skip the teardown and
+        froze the UI live (unbalanced bulk-hide bookkeeping).
+        """
+        await asyncio.sleep(2)
+        try:
+            from civ_mcp import handoff
+
+            lines = await self.conn.execute_in_named_state(
+                handoff.DIPLO_SHIM_STATE,
+                handoff.build_dismiss_leader_screen_lua(),
+            )
+            if not any(l.startswith("DIPLO_VIEW_DISMISSED") for l in lines):
+                # Close() failed — the screen is left open on purpose (raw
+                # hide events would risk freezing the UI); the human can
+                # close it manually.
+                err = next(
+                    (l[4:] for l in lines if l.startswith("ERR:")), "no result"
+                )
+                log.warning(
+                    "Diplo screen dismiss failed (left open for manual "
+                    "close): %s",
+                    err,
+                )
+        except Exception as e:
+            log.warning("Diplo screen cleanup failed: %s", e)
 
     async def _cleanup_war_diplomacy(self, other_player_id: int) -> None:
         """Background: dismiss war declaration diplomacy view after animation.

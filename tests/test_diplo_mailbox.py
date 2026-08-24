@@ -544,8 +544,9 @@ def _zero_diplo_timings(monkeypatch):
 def _happy_scripts(action="DECLARE_FRIENDSHIP", sid=7):
     """Line scripts for a full happy-path recipe run, (writes, named).
 
-    writes: validity, open, prime, effect check, teardown close, dismiss.
-    named: flag pre-clear, nudge, adoption poll, completing response."""
+    writes: validity, open, prime, effect check, teardown close.
+    named: flag pre-clear, nudge, adoption poll, completing response,
+    teardown dismiss (DAV context — the view's own Close())."""
     effect = ["VALID|false", f"STATE|1|1"]
     if action == "DIPLOMATIC_DELEGATION":
         effect = ["VALID|false", "HAS_DELEGATION|true", "STATE|3|3"]
@@ -555,13 +556,13 @@ def _happy_scripts(action="DECLARE_FRIENDSHIP", sid=7):
         [f"OK|PRIMED|true|sid={sid}"],
         effect,
         [f"OK|CLOSED|{sid}"],
-        ["DIPLO_VIEW_DISMISSED"],
     )
     named = (
         ["DIPLO_FLAG_CLEARED"],
         [f"OK|RESPONSE_SENT|{sid}"],
         ["ADOPTED|true"],
         [f"OK|RESPONSE_SENT|{sid}"],
+        ["DIPLO_VIEW_DISMISSED"],
     )
     return writes, named
 
@@ -584,21 +585,22 @@ class TestExecuteDiploAgreement:
 
         assert ok is True
         assert "verified as applied" in msg
-        # InGame steps in order: validity, open, prime, effect, close, dismiss.
+        # InGame steps in order: validity, open, prime, effect, close.
         assert "IsDiplomaticActionValid" in conn.write_calls[0]
         assert "local me = 0" in conn.write_calls[0]  # acting = proposer
         assert 'RequestSession(from, to, "DECLARE_FRIEND")' in conn.write_calls[1]
         assert "DiplomacyActionTypes.DECLARE_FRIEND" in conn.write_calls[2]
         assert "VALID|" in conn.write_calls[3]  # effect check reads validity
         assert "CloseSession" in conn.write_calls[4]
-        assert "HideLeaderScreen" in conn.write_calls[5]
-        # DAV steps in order: flag clear, nudge, adoption poll, complete.
+        # DAV steps in order: flag clear, nudge, adoption poll, complete,
+        # dismiss (through the view's own Close()).
         states = [s for s, _ in conn.named_calls]
-        assert states == [handoff.DIPLO_SHIM_STATE] * 4
+        assert states == [handoff.DIPLO_SHIM_STATE] * 5
         assert "__MCP_diplo_proposal_id = nil" in conn.named_calls[0][1]
         assert 'AddResponse(7, 1, "POSITIVE")' in conn.named_calls[1][1]
         assert "ms_ActiveSessionID == 7" in conn.named_calls[2][1]
         assert 'AddResponse(7, 1, "POSITIVE")' in conn.named_calls[3][1]
+        assert "pcall(Close)" in conn.named_calls[4][1]
 
     def test_delegation_requires_has_delegation_at(self, monkeypatch):
         """Delegations verify validity flip AND HasDelegationAt(from→to) —
@@ -647,19 +649,19 @@ class TestExecuteDiploAgreement:
         _zero_diplo_timings(monkeypatch)
         conn = _RecipeConn(
             writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
-                    ["OK|PRIMED|true|sid=7"], ["OK|CLOSED|7"],
-                    ["DIPLO_VIEW_DISMISSED"]],
+                    ["OK|PRIMED|true|sid=7"], ["OK|CLOSED|7"]],
             named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
-                   ["ADOPTED|false"]],
+                   ["ADOPTED|false"], ["DIPLO_VIEW_DISMISSED"]],
         )
 
         ok, msg = self._run(conn)
 
         assert ok is False
         assert "did not adopt" in msg
-        # Teardown ran: close + dismiss after the 3 setup writes.
-        assert len(conn.write_calls) == 5
+        # Teardown ran: InGame close after the 3 setup writes, DAV dismiss.
+        assert len(conn.write_calls) == 4
         assert "CloseSession" in conn.write_calls[3]
+        assert "pcall(Close)" in conn.named_calls[3][1]
 
     def test_no_verification_flip_fails(self, monkeypatch):
         """The completing response was sent but validity stayed true — the
@@ -688,6 +690,23 @@ class TestExecuteDiploAgreement:
         assert ok is False
         assert "completing response failed" in msg
         assert "boom" in msg
+
+    def test_dismiss_failure_noted_but_verdict_preserved(self, monkeypatch):
+        """If the DAV Close() fails, the screen is left open and the
+        teardown notes the failure — but the already-verified effect still
+        reports ok."""
+        _zero_diplo_timings(monkeypatch)
+        writes, named = _happy_scripts()
+        named = list(named)
+        named[4] = ["ERR:DISMISS_FAILED|attempt to call a nil value"]
+        conn = _RecipeConn(writes=writes, named=named)
+
+        ok, msg = self._run(conn)
+
+        assert ok is True
+        assert "verified as applied" in msg
+        assert "leader screen dismiss failed" in msg
+        assert "nil value" in msg
 
     def test_non_responseable_action_refused(self):
         conn = _RecipeConn()
@@ -1087,9 +1106,9 @@ class TestHandleDiploNotificationClick:
         conn = _RecipeConn(
             writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
                     ["OK|PRIMED|true|sid=7"], ["VALID|false", "STATE|1|1"],
-                    ["OK|CLOSED|7"], ["DIPLO_VIEW_DISMISSED"]],
+                    ["OK|CLOSED|7"]],
             named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
-                   ["ADOPTED|true"]],
+                   ["ADOPTED|true"], ["DIPLO_VIEW_DISMISSED"]],
         )
 
         self._run(conn, mb, pid)
@@ -1107,17 +1126,17 @@ class TestHandleDiploNotificationClick:
         pid = self._file(mb)
         conn = _RecipeConn(
             writes=[["OK|DECLARE_FRIENDSHIP"], ["OK|OPENED|7"],
-                    ["OK|PRIMED|true|sid=7"], ["OK|CLOSED|7"],
-                    ["DIPLO_VIEW_DISMISSED"]],
+                    ["OK|PRIMED|true|sid=7"], ["OK|CLOSED|7"]],
             named=[["DIPLO_FLAG_CLEARED"], ["OK|RESPONSE_SENT|7"],
-                   ["ADOPTED|false"]],
+                   ["ADOPTED|false"], ["DIPLO_VIEW_DISMISSED"]],
         )
 
         self._run(conn, mb, pid)
 
         assert mb.get(pid).status == "pending"
         assert "CloseSession" in conn.write_calls[3]  # teardown ran
-        assert len(conn.write_calls) == 5  # close + dismiss, no arm
+        assert "pcall(Close)" in conn.named_calls[3][1]  # DAV dismiss
+        assert len(conn.write_calls) == 4  # close only — no arm, no more
 
     def test_unknown_proposal_makes_no_calls(self):
         conn, mb = _RecipeConn(), DiploMailbox()
@@ -1394,6 +1413,17 @@ class TestDiploRecipeBuilders:
         ]
         for chunk in chunks:
             _assert_lua_balanced(chunk)
+
+    def test_dismiss_builder_close_only_no_raw_hide_fallback(self):
+        """The dismiss goes through the view's Close() only. On failure the
+        screen is left open (raw hide events froze the UI live) and an ERR
+        marker reports why — never a false success print."""
+        lua = handoff.build_dismiss_leader_screen_lua()
+        assert "pcall(Close)" in lua
+        assert "HideLeaderScreen" not in lua
+        assert "ShowIngameUI" not in lua
+        assert "ERR:DISMISS_FAILED" in lua
+        assert 'print("DIPLO_VIEW_DISMISSED")' in lua
 
     def test_balance_checker_catches_unclosed_bail(self):
         """The guard itself: an ``if ... {_bail(...)}`` without ``end`` must

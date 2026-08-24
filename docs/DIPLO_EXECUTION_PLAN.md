@@ -231,22 +231,60 @@ pass). Two deviations from the plan text, both deliberate:
   outright with `ERR:NOT_SUPPORTED` (the plan's "or make it refuse them"
   option). One-way actions (denounce, wars) are unchanged.
 
-Live verification (§6): **item 2 (human→agent end-to-end) passed on
-2026-08-22** — shim intercept → mailbox → `respond_to_diplo_action` accept →
-full recipe through the server path; independent oracle confirmed (P0-side
-validity flipped to false, both state indices 1/DECLARED_FRIEND, no open
-session, teardown clean). Getting there caught one real bug: the new
-builders' `{_bail(...)}` sites were missing the closing `end` (`_bail`/
-`_bail_lua` never close their own `if` — every call site must append `end`),
-surfaced live as `ERR:Syntax Error`; fixed and locked in with a Lua
-block-balance test guard (strip string literals per-line BEFORE comment
-tails — the `"---END---"` sentinel contains `--`). The failed first run also
-proved the failure path: honest error surfaced, proposal dropped, no retry.
-Remaining: item 3 (agent→human via notification click — an embassy proposal
-works as the test vehicle now that friendship is consumed), item 4 (one-way
-regression), and the human-slot chat report ("Your friendship proposal took
-effect."). Note: `DiplomacyManager` is nil in the gamecore context — session
-reads must use the ingame context.
+Live verification (§6): **items 2 and 3 both passed on 2026-08-22.**
+- **Item 2 (human→agent friendship)**: shim intercept → mailbox →
+  `respond_to_diplo_action` accept → full recipe through the server path;
+  independent oracle confirmed (P0-side validity flipped to false, both
+  state indices 1/DECLARED_FRIEND, no open session, teardown clean).
+- **Item 3 (agent→human delegation, after accepting the human's peace
+  proposal via the deal mailbox)**: `send_diplomatic_action` filed to the
+  mailbox (validity-gated), notification at the human's slot start, click
+  ran recipe steps 1–6, the human's native Accept completed it
+  (`MCPDIPLO_RESPONDED` → executed), and the proposer's drain reported
+  "took effect". Oracle: `HasDelegationAt(P1→P0)` true, validity flipped,
+  25g charged to the proposer at effect time, no open session.
+
+Getting there caught one real bug: the new builders' `{_bail(...)}` sites
+were missing the closing `end` (`_bail`/`_bail_lua` never close their own
+`if` — every call site must append `end`), surfaced live as
+`ERR:Syntax Error`; fixed and locked in with a Lua block-balance test guard
+(strip string literals per-line BEFORE comment tails — the `"---END---"`
+sentinel contains `--`). The failed first run also proved the failure path:
+honest error surfaced, proposal dropped, no retry.
+- **Item 4 (one-way regression) also passed**: DENOUNCE went straight
+  through the untouched engine path (`SENT|Denounced Cree`), both state
+  indices flipped to DENOUNCED, no orphan session. Quirk found: the engine
+  executor takes the kwarg `action`, not `action_name` (the mailbox routing
+  reads `action_name`; the raw engine path forwards params verbatim).
+- Server-log confirmation of the agent→human flow: "Presented diplo
+  proposal … to human on native leader screen" (post-adoption arm), then
+  "P0 accepted … (executed in-engine via native UI)" from the human's click
+  — and no "nudge auto-applied" warning, so the open risk did not
+  materialize. No turn-processing hangs observed across any test.
+Note: `DiplomacyManager` is nil in the gamecore context — session reads
+must use the ingame context. **All verification items are complete.**
+
+**Post-check addendum (leader-screen dismiss, live-learned):** the
+denounce left the leader screen open — the builder's same-frame UI restore
+runs before the view processes the statement events. Dismissing it with
+raw hide events from the InGame context (SetHide + HideLeaderScreen +
+ShowIngameUI) hid the view but **froze the UI** (nothing clickable; the
+engine's bulk-hide bookkeeping went negative, `Show on 0 = -1`), and the
+NaturalWonderPopup trick did not release it. Only the
+DiplomacyActionView context's own `Close()` global — what the Goodbye
+button funnels into — released the input block (log: "Closing Diplomacy
+Action View. m_eventID: ..."). Consequently
+`handoff.build_dismiss_leader_screen_lua()` now calls `Close()` **only**
+— no raw-hide fallback: on failure the screen is deliberately left open
+for the human to close manually, and the chunk prints
+`ERR:DISMISS_FAILED|...` instead of a false success marker (callers check
+the `DIPLO_VIEW_DISMISSED` marker and surface the failure). It MUST run
+via `execute_in_named_state(DIPLO_SHIM_STATE, ...)`; both the diplo
+recipe teardown and the new one-way-statement cleanup
+(`game_state._cleanup_diplo_screen`, scheduled 2s after a denounce,
+mirroring `_cleanup_war_diplomacy`) use that channel — verified live: a
+post-restart denounce of an unmanaged civ closed its own leader screen
+via the cleanup task.
 
 - `src/civ_mcp/lua/diplo_shim.lua` — installed & live-verified
   (hook=engine; MCPDIPLO naming). The RequestSession interception works; the

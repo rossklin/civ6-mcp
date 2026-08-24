@@ -880,20 +880,29 @@ def build_clear_diplo_flag_lua() -> str:
 
 
 def build_dismiss_leader_screen_lua() -> str:
-    """Lua (InGame state) that dismisses the diplomacy leader screen.
+    """Lua (DiplomacyActionView state) that closes the diplomacy leader
+    screen through the view's own ``Close()`` — the same teardown path as
+    the Goodbye button.
 
-    Used after an engine-driven diplo action executed while the human was
-    local: the session events pop DiplomacyActionView asynchronously, and the
-    same-frame teardown inside build_send_diplo_action runs before the view
-    processes them — so the dismiss must be a separate, DELAYED round-trip
-    (same idiom as the post-propose_trade dismiss in game_state).
+    MUST run in the DiplomacyActionView context
+    (``conn.execute_in_named_state(DIPLO_SHIM_STATE, ...)``): ``Close`` is
+    a file-scope global of that state, absent elsewhere.
+
+    No raw-hide fallback on failure, deliberately: SetHide/HideLeaderScreen
+    skip the view's teardown and unbalance the engine's bulk-hide
+    bookkeeping — live-observed as a fully input-blocked (frozen) UI,
+    released only by this ``Close()``. If ``Close()`` fails, the screen is
+    left visible for the human to close manually, and the chunk reports
+    ``ERR:DISMISS_FAILED|...`` instead of a success marker so callers can
+    surface it.
     """
     return (
-        'pcall(function() ContextPtr:LookUpControl('
-        '"/InGame/DiplomacyActionView"):SetHide(true) end) '
-        "pcall(function() Events.HideLeaderScreen() end) "
-        "LuaEvents.DiplomacyActionView_ShowIngameUI() "
-        'print("DIPLO_VIEW_DISMISSED") '
+        "local okD, errD = pcall(Close) "
+        "if okD then "
+        '  print("DIPLO_VIEW_DISMISSED") '
+        "else "
+        '  print("ERR:DISMISS_FAILED|" .. tostring(errD)) '
+        "end "
         f'print("{SENTINEL}")'
     )
 

@@ -1297,9 +1297,19 @@ async def _diplo_recipe_teardown(
     if _DIPLO_TEARDOWN_SETTLE > 0:
         await asyncio.sleep(_DIPLO_TEARDOWN_SETTLE)
     try:
-        await conn.execute_write(
-            handoff.build_dismiss_leader_screen_lua(), perspective=False
+        # DAV context on purpose: the dismiss must go through the view's own
+        # Close() — raw hide events from the InGame context skip the
+        # teardown and froze the UI live (unbalanced bulk-hide bookkeeping).
+        lines = await conn.execute_in_named_state(
+            handoff.DIPLO_SHIM_STATE,
+            handoff.build_dismiss_leader_screen_lua(),
         )
+        if _diplo_line(lines, "DIPLO_VIEW_DISMISSED") is None:
+            # Close() failed — the screen is deliberately left open for the
+            # human to close manually rather than risk the freeze.
+            notes.append(
+                f"leader screen dismiss failed: {_diplo_err(lines, 'no result')}"
+            )
     except Exception:
         notes.append("leader screen dismiss failed")
     return "" if not notes else f" (teardown issues: {', '.join(notes)})"
