@@ -482,7 +482,12 @@ class TestExecuteDealLua:
         # _lua_close_diplo_session() should be included
         assert "FindOpenSessionID" in lua
         assert "CloseSession" in lua
-        assert "DiplomacyActionView_ShowIngameUI" in lua
+        # ...and deliberately NO raw hide events: they skip the
+        # DiplomacyActionView teardown and can freeze the UI (live-observed).
+        # View dismissal is the delayed DAV-context Close() (see
+        # GameState._cleanup_diplo_screen), never part of the builder.
+        assert "DiplomacyActionView_ShowIngameUI" not in lua
+        assert "HideLeaderScreen" not in lua
 
     def test_confirmation_output(self):
         proposal = _simple_proposal()

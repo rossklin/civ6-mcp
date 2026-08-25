@@ -470,6 +470,13 @@ def build_diplomacy_respond(other_player_id: int, response: str) -> str:
     The C++ engine handles session lifecycle through its own callbacks.
     Caller must check session state in a SEPARATE call to allow the engine
     time to process the response (same-frame checks see stale state).
+
+    View dismissal is deliberately NOT part of this builder: raw hide
+    events (ShowIngameUI/HideLeaderScreen) skip the DiplomacyActionView's
+    teardown and unbalance the engine's bulk-hide bookkeeping (live-observed
+    frozen UI).  If the session popped the leader screen, the caller
+    schedules the delayed DAV-context Close() instead (see
+    GameState._cleanup_diplo_screen).
     """
     return f"""
 local me = Game.GetLocalPlayer()
@@ -477,34 +484,11 @@ local sid = DiplomacyManager.FindOpenSessionID(me, {other_player_id})
 if sid == nil or sid < 0 then {_bail("ERR:NO_SESSION")} end
 if "{response}" == "EXIT" then
     DiplomacyManager.CloseSession(sid)
-    LuaEvents.DiplomacyActionView_ShowIngameUI()
-    pcall(function() Events.HideLeaderScreen() end)
     print("OK:SESSION_CLOSED")
     print("{SENTINEL}"); return
 end
 DiplomacyManager.AddResponse(sid, me, "{response}")
 print("OK:RESPONSE_SENT|{response}")
-print("{SENTINEL}")
-"""
-
-
-def build_check_diplomacy_session_state(other_player_id: int) -> str:
-    """Check if a diplomacy session is still open after AddResponse.
-
-    Must be called in a SEPARATE TCP round-trip from AddResponse to give
-    the C++ engine time to process the response and transition/close
-    the session naturally.  Returns SESSION_OPEN or SESSION_CLOSED.
-    """
-    return f"""
-local me = Game.GetLocalPlayer()
-local sid = DiplomacyManager.FindOpenSessionID(me, {other_player_id})
-if sid and sid >= 0 then
-    print("SESSION_OPEN|" .. sid)
-else
-    pcall(function() LuaEvents.DiplomacyActionView_ShowIngameUI() end)
-    pcall(function() Events.HideLeaderScreen() end)
-    print("SESSION_CLOSED")
-end
 print("{SENTINEL}")
 """
 
@@ -787,7 +771,9 @@ def build_war_close_session(other_player_id: int) -> str:
     """Phase 1: close the war diplomacy session (InGame context).
 
     After this, DiplomacyActionView transitions to OVERVIEW_MODE (intel screen).
-    Must wait ~1s for the engine event to process before phase 2.
+    Must wait ~1s for the engine event to process before phase 2 — which is
+    now the DAV-context Close() (``handoff.build_dismiss_leader_screen_lua``);
+    the old NaturalWonderPopup trick could not release a frozen view.
     """
     sentinel = SENTINEL
     return f"""
@@ -800,27 +786,6 @@ end
 print("OK:SESSION_CLOSED")
 print("{sentinel}")
 """
-
-
-def build_war_dismiss_view() -> str:
-    """Phase 2: force-dismiss DiplomacyActionView from OVERVIEW_MODE (InGame context).
-
-    NaturalWonderPopup_Shown triggers OnBlockingPopupShown → OnForceClose →
-    CloseFocusedState(true) → Close() which calls UninitializeView + ShowIngameUI
-    (balancing InitializeView's HideIngameUI).  NaturalWonderPopup_Closed then
-    balances NW's own BulkHide(true) entry.
-
-    Must be called in a SEPARATE Lua execution from CloseSession — the engine
-    fires OnDiplomacySessionClosed asynchronously, so the view needs a frame to
-    transition from CONVERSATION_MODE to OVERVIEW_MODE first.
-    """
-    return """
-LuaEvents.NaturalWonderPopup_Shown()
-LuaEvents.NaturalWonderPopup_Closed()
-pcall(function() Events.HideLeaderScreen() end)
-print("OK:VIEW_DISMISSED")
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
 
 
 def build_deal_options_query(other_player_id: int) -> str:

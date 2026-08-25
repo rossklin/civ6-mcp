@@ -55,13 +55,15 @@ local MCP_PROPOSAL_TYPES = {
 
 -- Close the leader screen after a suppressed proposal: the click has been
 -- "handled" (filed to the mailbox), and the screen would otherwise sit in
--- overview mode waiting for a statement result that never arrives. Prefer
--- the view's own Close(); fall back to the raw hide events (same idiom as
--- build_diplomacy_respond's EXIT path) in case Close is not global here.
+-- overview mode waiting for a statement result that never arrives.  Uses
+-- the view's own Close() only — NO raw-hide fallback, deliberately:
+-- SetHide/HideLeaderScreen skip the view's teardown and unbalance the
+-- engine's bulk-hide bookkeeping (live-observed as a frozen, input-blocked
+-- UI — see build_dismiss_leader_screen_lua in handoff.py).  If Close()
+-- fails the screen stays up for the human to close manually.
 local function mcp_close_leader_screen()
     if not pcall(Close) then
-        pcall(function() LuaEvents.DiplomacyActionView_ShowIngameUI() end)
-        pcall(function() Events.HideLeaderScreen() end)
+        print("MCP_TRACE|DAV|close_failed_after_suppressed_proposal")
     end
 end
 

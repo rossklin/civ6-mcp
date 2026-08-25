@@ -43,15 +43,11 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
         parts.append("\n## Known Civilizations\n")
         parts.append(nr.narrate_diplomacy(state.diplomacy, managed_ids))
 
-    # ── Pending Diplomacy Sessions ─────────────────────────────────
-    if state.diplomacy_sessions:
-        parts.append("\n## Pending Diplomacy\n")
-        parts.append(nr.narrate_diplomacy_sessions(state.diplomacy_sessions))
-
-    # ── Pending Trade Deals ────────────────────────────────────────
-    if state.pending_deals:
-        parts.append("\n## Pending Trades\n")
-        parts.append(nr.narrate_pending_deals(state.pending_deals))
+    # NOTE: no "Pending Diplomacy"/"Pending Trades" sections — AI-initiated
+    # diplomacy toward the agent is auto-resolved by end_turn (silently
+    # declined/dismissed; wars reported in the turn report), and surfacing
+    # pending items here would invite the agent to hunt for an interaction
+    # path that does not exist.
 
     # ── Trade Routes ───────────────────────────────────────────────
     if state.trade_routes is not None:

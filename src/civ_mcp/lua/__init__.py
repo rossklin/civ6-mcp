@@ -35,7 +35,6 @@ from civ_mcp.lua.cities import (  # noqa: F401
     build_verify_production,
 )
 from civ_mcp.lua.diplomacy import (  # noqa: F401
-    build_check_diplomacy_session_state,
     build_check_diplo_action_validity,
     build_check_proposal_eligibility,
     build_check_war_state,
@@ -53,7 +52,6 @@ from civ_mcp.lua.diplomacy import (  # noqa: F401
     build_test_trade,
     build_send_diplo_action,
     build_war_close_session,
-    build_war_dismiss_view,
     parse_deal_options_response,
     parse_test_trade_response,
     parse_diplomacy_response,

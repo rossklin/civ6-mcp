@@ -53,9 +53,14 @@ async def dismiss_popup(conn: GameConnection) -> str:
         )
     # LeaderScene 3D model: SetHide does NOT clear the C++ 3D viewport.
     # Must fire Events.HideLeaderScreen() to unload the 3D leader model.
+    # Skipped while DiplomacyActionView is visible — the view owns the
+    # leader-screen lifecycle there (its own Close() unloads the model),
+    # and yanking the 3D scene out from under it is what unbalances the
+    # bulk-hide bookkeeping.
     checks.append(
         'do local ls = ContextPtr:LookUpControl("/InGame/LeaderScene") '
-        "if ls and not ls:IsHidden() then "
+        'local dav = ContextPtr:LookUpControl("/InGame/DiplomacyActionView") '
+        "if ls and not ls:IsHidden() and (not dav or dav:IsHidden()) then "
         "  pcall(function() Events.HideLeaderScreen() end) "
         "  ls:SetHide(true) "
         '  print("DISMISSED|LeaderScene") '

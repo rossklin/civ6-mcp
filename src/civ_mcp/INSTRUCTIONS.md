@@ -128,9 +128,6 @@ Diplomacy & trade (other_player_id = target player ID):
         target answers on its own turn; your action takes effect on your next
         turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go
         straight to the engine.
-    get_diplomacy_sessions(): Check for open diplomacy sessions and return choices
-    diplomacy_respond(other_player_id, response) — response: POSITIVE | NEGATIVE
-        | EXIT (reply to an open leader dialogue; check get_diplomacy_sessions first)
     propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
         offer_gold, offer_gold_per_turn, offer_resources (comma-separated
         RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
@@ -142,8 +139,6 @@ Diplomacy & trade (other_player_id = target player ID):
     test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
         Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
         name, duration, subtype, city_id}.
-    respond_to_deal(other_player_id, accept: bool) — accept/reject an
-        AI-proposed deal.
     respond_to_trade(other_player_id, accept: bool) — accept/reject an
         incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
     respond_to_diplo_action(other_player_id, accept: bool) — accept/reject
@@ -354,7 +349,11 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 
 ## Diplomacy
 
-**Reactive (AI-initiated):** AI encounters block turn progression. Use `diplomacy_respond(other_player_id, response)` with POSITIVE/NEGATIVE/EXIT to reply to an open leader dialogue. Diplomacy sessions do not affect unit movement or orders — continue commanding units normally afterward.
+**Reactive (AI-initiated):** handled automatically — you never interact with
+AI-initiated diplomacy. Incoming proposals and trade offers toward you are
+silently declined/dismissed when your turn ends; war declarations against
+you cannot be declined and are reported in your turn report. There is no
+tool for replying to an AI leader dialogue — do not look for one.
 
 **Proactive:**
 - `send_diplomatic_action(other_player_id, action)` — action: DIPLOMATIC_DELEGATION (25g, worth sending on first meeting), DECLARE_FRIENDSHIP (requires Friendly status), RESIDENT_EMBASSY (requires Writing tech), plus DENOUNCE and the war declarations. For the three response-able actions (delegation/embassy/friendship) targeting a managed civ, the proposal is filed in the DIPLOMACY MAILBOX instead of the engine — the target answers on its own turn and your action takes effect on your next turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go straight to the engine.
@@ -362,7 +361,6 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 - `propose_trade(other_player_id, ...)` — pass FLAT params: offer_gold, offer_gold_per_turn, offer_resources (comma-separated RESOURCE_TYPE names), offer_favor, offer_open_borders, plus the request_* equivalents; joint_war_target (player ID) for a joint war. Targeting a managed civ routes through the deal mailbox.
 - `test_trade(other_player_id, offer_items, request_items)` — dry-run check against the default AI player without committing. Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount, name, duration, subtype, city_id}.
 - `propose_peace(other_player_id)` — white peace; eligibility (at war, past cooldown) is checked first. Targeting a managed civ routes through the deal mailbox.
-- `respond_to_deal(other_player_id, accept)` — accept/reject an AI-proposed deal.
 - `respond_to_trade(other_player_id, accept)` — accept/reject an incoming mailbox deal from a managed civ (see DEAL MAILBOX in get_full_game_state).
 - `respond_to_diplo_action(other_player_id, accept)` — accept/reject an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy) from a managed civ. Accept marks it; the proposer's action takes effect on the proposer's next turn.
 - Check the diplomacy section of `get_full_game_state` for defensive pacts before declaring war.

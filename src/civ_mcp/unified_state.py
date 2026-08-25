@@ -35,7 +35,9 @@ _SECTIONS: list[tuple[str, str, bool]] = [
     ("spies", "spies", True),
     ("diplomacy", "diplomacy", True),
     ("own_abilities", "own_abilities", True),
-    ("pending_deals", "pending_deals", True),
+    # No pending_deals section: AI-initiated deals toward the agent are
+    # auto-declined by end_turn (see end_turn._auto_clear_diplomacy) and
+    # must not be surfaced to the agent.
     ("trade_routes", "trade_routes", True),
     ("empire_resources", "empire_resources", True),
     ("strategic_map", "strategic_map", True),

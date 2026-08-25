@@ -68,6 +68,12 @@ class GameState:
         # One-shot warning from the most recent advisor call, consumed and
         # cleared by the server wrapper.
         self._advisor_budget_warning: str | None = None
+        # Informational notes from auto-resolved diplomacy (e.g. war
+        # declarations) stashed during end_turn, drained into the turn
+        # report by build_post_turn_report.  Proposal sessions and pending
+        # deals are auto-resolved SILENTLY — they expect a reaction the
+        # agent has no path to give, and surfacing them invites hunting.
+        self._diplo_auto_notes: list[str] = []
 
     async def get_game_identity(self) -> tuple[str, int]:
         """Return (civ_type_lower, random_seed) for the current game.
@@ -715,71 +721,27 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def get_diplomacy_sessions(self) -> list[lq.DiplomacySession]:
+        """Scan for engine diplomacy sessions targeting the local player.
+
+        Internal helper (not agent-reachable): AI-initiated sessions toward
+        a managed agent are auto-resolved by end_turn — see
+        ``end_turn._auto_clear_diplomacy``.  The agent has no interactive
+        path for them by design.
+        """
         lua = lq.build_diplomacy_session_query()
         lines = await self.conn.execute_write(lua)
         return lq.parse_diplomacy_sessions(lines)
 
-    async def diplomacy_respond(self, other_player_id: int, response: str) -> str:
-        # Capture dialogue text BEFORE response to detect goodbye phase
-        pre_sessions = await self.get_diplomacy_sessions()
-        pre_text = ""
-        for s in pre_sessions:
-            if s.other_player_id == other_player_id:
-                pre_text = s.dialogue_text
-                break
+    async def get_pending_deals(self) -> list[lq.PendingDeal]:
+        """Scan for incoming trade-deal offers targeting the local player.
 
-        # Phase 1: Send AddResponse only (no CloseSession — engine handles lifecycle)
-        lua = lq.build_diplomacy_respond(other_player_id, response.upper())
+        Internal helper (not agent-reachable): AI-initiated deals toward a
+        managed agent are auto-declined by end_turn — see
+        ``end_turn._auto_clear_diplomacy``.
+        """
+        lua = lq.build_pending_deals_query()
         lines = await self.conn.execute_write(lua)
-        result = _action_result(lines)
-
-        # EXIT and error paths return immediately
-        if "SESSION_CLOSED" in result or result.startswith("Error"):
-            return result
-
-        # Phase 2: Give engine ~9 frames (0.3s at 30fps) to process the
-        # response and transition/close the session, then check state in
-        # a separate TCP round-trip (same-frame checks see stale state).
-        await asyncio.sleep(0.3)
-        check_lines = await self.conn.execute_write(
-            lq.build_check_diplomacy_session_state(other_player_id)
-        )
-        if not any("SESSION_OPEN" in l for l in check_lines):
-            return f"OK:RESPONDED|{response.upper()}|SESSION_CLOSED"
-
-        # Phase 3: Session still open — check if dialogue text changed.
-        # If unchanged, we're in the goodbye phase. Auto-close.
-        post_sessions = await self.get_diplomacy_sessions()
-        post_text = ""
-        for s in post_sessions:
-            if s.other_player_id == other_player_id:
-                post_text = s.dialogue_text
-                break
-
-        if not post_sessions:
-            # Session disappeared between checks (race condition)
-            return f"OK:RESPONDED|{response.upper()}|SESSION_CLOSED"
-
-        if post_text == pre_text:
-            # Dialogue unchanged → goodbye phase. Force close.
-            log.info(
-                "Goodbye phase detected (text unchanged) for player %d — auto-closing",
-                other_player_id,
-            )
-            close_lua = lq.build_diplomacy_respond(other_player_id, "EXIT")
-            await self.conn.execute_write(close_lua)
-            return f"OK:RESPONDED|{response.upper()}|SESSION_CLOSED (auto-closed goodbye phase)"
-
-        # Include the new dialogue text so the agent can see what the leader said
-        post_reason = ""
-        for s in post_sessions:
-            if s.other_player_id == other_player_id:
-                post_reason = s.reason_text
-                break
-        dialogue_note = f'\nLeader says: "{post_text}"'
-        if post_reason:
-            dialogue_note += f'\nReason/agenda: "{post_reason}"'
-        return f"OK:RESPONDED|{response.upper()}|SESSION_CONTINUES{dialogue_note}"
+        return lq.parse_pending_deals_response(lines)
 
     async def send_diplomatic_action(self, other_player_id: int, action: str) -> str:
         if action.upper() == "OPEN_BORDERS":
@@ -859,20 +821,28 @@ class GameState:
         OnDiplomacySessionClosed asynchronously so the view needs a frame
         to transition from CONVERSATION_MODE to OVERVIEW_MODE):
         1. CloseSession — view transitions to OVERVIEW_MODE
-        2. NaturalWonderPopup trick — forces Close() from OVERVIEW_MODE
+        2. The view's own Close(), executed in the DiplomacyActionView
+           context (handoff.build_dismiss_leader_screen_lua).  The old
+           NaturalWonderPopup trick + raw hide events were unreliable and
+           could leave the UI input-blocked.
         """
         await asyncio.sleep(8)
         try:
+            from civ_mcp import handoff
+
             # Phase 1: close session → view goes to OVERVIEW_MODE
-            lua1 = lq.build_war_close_session(other_player_id)
-            await self.conn.execute_write(lua1)
+            await self.conn.execute_write(
+                lq.build_war_close_session(other_player_id)
+            )
 
             # Let engine process OnDiplomacySessionClosed
             await asyncio.sleep(1)
 
-            # Phase 2: force-dismiss the OVERVIEW_MODE view
-            lua2 = lq.build_war_dismiss_view()
-            await self.conn.execute_write(lua2)
+            # Phase 2: dismiss the view through its own Close()
+            await self.conn.execute_in_named_state(
+                handoff.DIPLO_SHIM_STATE,
+                handoff.build_dismiss_leader_screen_lua(),
+            )
         except Exception as e:
             log.warning("War diplomacy cleanup failed: %s", e)
 
@@ -894,20 +864,13 @@ class GameState:
         lua = lq.build_propose_trade(other_player_id, offer_items, request_items)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
-        # Dismiss diplomacy UI left open by the trade session.
-        # After CloseSession, the game transitions DiplomacyActionView to
-        # OVERVIEW_MODE (intel screen). Need a brief delay for the C++ UI
-        # state machine to settle, then dismiss it in a separate call.
-        await asyncio.sleep(0.3)
-        try:
-            await self.conn.execute_write(
-                'pcall(function() ContextPtr:LookUpControl("/InGame/DiplomacyActionView"):SetHide(true) end) '
-                "pcall(function() Events.HideLeaderScreen() end) "
-                "LuaEvents.DiplomacyActionView_ShowIngameUI() "
-                f'print("{lq.SENTINEL}")'
-            )
-        except Exception:
-            pass
+        # Dismiss the diplomacy UI the trade session popped.  Same idiom as
+        # send_diplomatic_action: the session events reach the view on later
+        # frames, so the dismiss is a separate delayed round-trip through the
+        # view's own Close() (DiplomacyActionView context) — raw hide events
+        # skip the view's teardown and can freeze the UI (see
+        # handoff.build_dismiss_leader_screen_lua).
+        asyncio.create_task(self._cleanup_diplo_screen())
         return result
 
     async def test_trade(

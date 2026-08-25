@@ -33,7 +33,8 @@
 -- War declarations branch on isWar: they validate via CanDeclareWarOn instead
 -- of IsDiplomaticActionValid, and leave the session open so the leader
 -- animation plays — Python schedules cleanup ~8s later via
--- _cleanup_war_diplomacy (build_war_close_session + build_war_dismiss_view).
+-- _cleanup_war_diplomacy (build_war_close_session + the DAV-context
+-- Close() dismiss from handoff.build_dismiss_leader_screen_lua).
 --
 -- Open Borders is NOT supported here — it's a trade deal, not a diplomatic
 -- action. Use propose_trade with AGREEMENT/OPEN_BORDERS items instead.
@@ -82,8 +83,12 @@ if not isWar then
         if not sid or sid < 0 then break end
         DiplomacyManager.CloseSession(sid)
     end
-    LuaEvents.DiplomacyActionView_ShowIngameUI()
-    pcall(function() Events.HideLeaderScreen() end)
+    -- No view dismissal here, deliberately: the statement events pop
+    -- DiplomacyActionView on later frames, so a same-frame hide runs before
+    -- the view processes them (leaving the screen up or in a stale state),
+    -- and raw hide events skip the view's teardown entirely (frozen-UI
+    -- risk).  game_state.send_diplomatic_action schedules the delayed
+    -- DAV-context Close() via _cleanup_diplo_screen instead.
 end
 -- Report result.
 -- NOTE: All post-state queries (HasDelegationAt, HasEmbassyAt, IsDiplomaticActionValid,

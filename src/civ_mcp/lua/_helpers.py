@@ -72,7 +72,14 @@ def _bail_lua(lua_expr: str) -> str:
 
 
 def _lua_close_diplo_session() -> str:
-    """Lua snippet: close any open diplomacy session with ``target``, restore UI.
+    """Lua snippet: close any open diplomacy session with ``target``.
+
+    Engine-side session close only — deliberately NO view dismissal: raw
+    hide events (ShowIngameUI/HideLeaderScreen) skip the
+    DiplomacyActionView's teardown and unbalance the engine's bulk-hide
+    bookkeeping (live-observed frozen UI).  If the session popped the
+    leader screen, the caller schedules the delayed DAV-context Close()
+    instead (GameState._cleanup_diplo_screen).
 
     Expects ``me`` and ``target`` to be defined in scope.
     """
@@ -84,9 +91,7 @@ def _lua_close_diplo_session() -> str:
         "sid = DiplomacyManager.FindOpenSessionID(me, target) "
         "if not sid or sid < 0 then break end "
         "DiplomacyManager.CloseSession(sid) "
-        "end "
-        "LuaEvents.DiplomacyActionView_ShowIngameUI() "
-        "pcall(function() Events.HideLeaderScreen() end)"
+        "end"
     )
 
 

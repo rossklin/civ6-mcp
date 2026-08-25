@@ -2224,11 +2224,13 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             "remove_improvement", "build_route", "sacrifice_builder_charges",
             # Research & civics
             "set_research", "set_civic",
-            # Diplomacy & trade
-            "send_diplomatic_action", "diplomacy_respond", "propose_peace",
+            # Diplomacy & trade.  No diplomacy_respond/get_diplomacy_sessions
+            # or engine respond_to_deal: AI-initiated diplomacy toward an
+            # agent is auto-resolved by end_turn (_auto_clear_diplomacy) —
+            # silent decline/dismiss, wars reported in the turn report.
+            "send_diplomatic_action", "propose_peace",
             "form_alliance", "propose_trade", "test_trade",
-            "respond_to_deal", "respond_to_trade", "respond_to_diplo_action",
-            "get_diplomacy_sessions",
+            "respond_to_trade", "respond_to_diplo_action",
             # Messaging (managed-player chat)
             "send_message",
             # Governance
