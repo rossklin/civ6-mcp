@@ -936,6 +936,7 @@ def _handle_human_deal_proposed(
             duration=it.get("duration", 0),
             value_type=it.get("value", -1),
             subtype=it.get("sub", -1),
+            label=it.get("label", ""),
         )
         for it in items_data
     ]
@@ -3877,10 +3878,17 @@ def _format_mailbox_item(item: SerializedDealItem, indent: str = "  ") -> str:
             return f"{indent}- {item.amount} Gold per turn ({item.duration} turns)\n"
         return f"{indent}- {item.amount} Gold\n"
     elif t == "RESOURCE":
-        return f"{indent}- Resource (id={item.value_type}) x{item.amount}\n"
+        # Label (shim-resolved name) for human-constructed items; name for
+        # agent-constructed ones; raw index as last resort.
+        base = item.label or item.name or f"Resource (id={item.value_type})"
+        return f"{indent}- {base} x{item.amount}\n"
     elif t == "FAVOR":
         return f"{indent}- {item.amount} Diplomatic Favor\n"
     elif t == "AGREEMENT":
+        # Label carries the resolved agreement kind + value payload (e.g.
+        # "Peace Treaty", "Joint War vs Rome (30 turns)") from the deal shim.
+        if item.label:
+            return f"{indent}- {item.label}\n"
         return f"{indent}- Agreement (sub={item.subtype})\n"
     elif t == "CITY":
         return f"{indent}- City (id={item.value_type})\n"

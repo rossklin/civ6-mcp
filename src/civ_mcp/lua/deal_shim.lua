@@ -68,6 +68,66 @@ UpdateDealStatus = function()
     end
 end
 
+-- Agent-readable item label ------------------------------------------------
+-- The mailbox renders AGREEMENT/RESOURCE items to the agent; raw enum values
+-- (sub=547027585) and resource indexes are meaningless there. This state has
+-- the enums + GameInfo, so resolve them HERE, at serialization time:
+--  - AGREEMENT sub-type name (reverse DealAgreementTypes lookup) with the
+--    ValueType payload interpreted per agreement kind (joint-war target
+--    player, alliance type index), matching the native conventions
+--    (DiplomacyDealView.lua OnSelectAgreementOption).
+--  - RESOURCE name from GameInfo.Resources.
+-- Appended as |label=... (pipe-sanitized) — the Python parser stores k=v
+-- pairs verbatim and _format_mailbox_item prefers the label when present.
+local function mcp_item_label(item, typeName)
+    local label = ""
+    pcall(function()
+        if typeName == "AGREEMENT" then
+            local sub = item:GetSubType() or -1
+            local value = item:GetValueType() or -1
+            local duration = item:GetDuration() or 0
+            if sub == DealAgreementTypes.OPEN_BORDERS then
+                label = "Open Borders"
+            elseif sub == DealAgreementTypes.MAKE_PEACE then
+                label = "Peace Treaty"
+            elseif sub == DealAgreementTypes.RESEARCH_AGREEMENT then
+                label = "Research Agreement"
+            elseif sub == DealAgreementTypes.JOINT_WAR
+                or sub == DealAgreementTypes.THIRD_PARTY_WAR then
+                local tName = ""
+                if value >= 0 and Players[value] then
+                    tName = Locale.Lookup(
+                        PlayerConfigurations[value]:GetCivilizationShortDescription())
+                end
+                if tName == "" then tName = "Player " .. tostring(value) end
+                local verb = "Third-Party War"
+                if sub == DealAgreementTypes.JOINT_WAR then verb = "Joint War" end
+                label = verb .. " vs " .. tName
+            elseif sub == DealAgreementTypes.ALLIANCE then
+                local aName = ""
+                local row = GameInfo.Alliances[value]
+                if row then
+                    aName = tostring(row.AllianceType):gsub("^ALLIANCE_", "")
+                end
+                if aName == "" then aName = "Type " .. tostring(value) end
+                label = aName .. " Alliance"
+            else
+                -- Unknown agreement kind: fall back to the enum member name
+                -- (reverse lookup) so the agent at least sees a stable token.
+                for k, v in pairs(DealAgreementTypes) do
+                    if v == sub then label = k; break end
+                end
+                if label == "" then label = "Agreement#" .. tostring(sub) end
+            end
+            if duration > 0 then label = label .. " (" .. duration .. " turns)" end
+        elseif typeName == "RESOURCE" then
+            local res = GameInfo.Resources[item:GetValueType() or -1]
+            if res then label = Locale.Lookup(res.Name) end
+        end
+    end)
+    return (tostring(label):gsub("|", "/"))
+end
+
 -- SendWorkingDeal wrapper --------------------------------------------------
 -- Same guard + local-upvalue pattern: the guard keeps the global pointing at
 -- the real function; the local upvalue (origSWD) makes self-recursion
@@ -128,12 +188,15 @@ DealManager.SendWorkingDeal = function(action, fromP, toP)
                         print("MCP_TRACE|Deal contained unknown item type " .. tostring(iType))
                     end
 
-                    print("MCPDEAL_ITEM|" .. typeName
+                    local line = "MCPDEAL_ITEM|" .. typeName
                         .. "|from=" .. tostring(item:GetFromPlayerID())
                         .. "|amount=" .. tostring(item:GetAmount())
                         .. "|duration=" .. tostring(item:GetDuration())
                         .. "|value=" .. tostring(item:GetValueType() or -1)
-                        .. "|sub=" .. tostring(item:GetSubType() or -1))
+                        .. "|sub=" .. tostring(item:GetSubType() or -1)
+                    local label = mcp_item_label(item, typeName)
+                    if label ~= "" then line = line .. "|label=" .. label end
+                    print(line)
                 end
             end
 

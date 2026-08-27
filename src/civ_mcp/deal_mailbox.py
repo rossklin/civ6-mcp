@@ -41,6 +41,11 @@ class SerializedDealItem:
     subtype: int | str = -1
     name: str = ""  # resource type string for agent-constructed RESOURCE items
     alliance_type: str = ""  # e.g. "MILITARY" for agent-constructed ALLIANCE items
+    # Agent-readable label resolved by the deal shim at serialization time
+    # (enum names + GameInfo are only available in the game's Lua states):
+    # e.g. "Peace Treaty", "Joint War vs Rome (30 turns)", "Research Alliance".
+    # Display-only — the executor reads the raw fields above.
+    label: str = ""
 
     @property
     def is_gold_lump(self) -> bool:

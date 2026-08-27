@@ -80,6 +80,22 @@ class TestParseProposedDeal:
         assert len(result["items"]) == 1
         assert result["items"][0]["amount"] == 1
 
+    def test_label_field_survives(self):
+        """The deal shim appends |label=... (shim-resolved agreement/resource
+        names, incl. spaces and parentheses) — the parser must keep it a
+        string rather than dropping or mangling it."""
+        _parse_mcpdeal_line(_p("MCPDEAL|action=4|from=0|to=2"))
+        _parse_mcpdeal_line(
+            _p(
+                "MCPDEAL_ITEM|AGREEMENT|from=2|amount=0|duration=30|value=-1"
+                "|sub=547027585|label=Joint War vs Rome (30 turns)"
+            )
+        )
+        result = _parse_mcpdeal_line(_p("MCPDEAL_END"))
+        item = result["items"][0]
+        assert item["label"] == "Joint War vs Rome (30 turns)"
+        assert item["sub"] == 547027585
+
     def test_multiple_deals_reset_state(self):
         """After a deal is emitted, the next deal starts fresh."""
         # First deal
