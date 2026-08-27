@@ -385,15 +385,14 @@ class DiplomacySession:
     """An open engine diplomacy session targeting the local player.
 
     Minimal by design: the only consumer is end_turn's auto-resolve
-    (_auto_clear_diplomacy), which closes the session and reports wars.
-    There is no agent interaction path for AI-initiated sessions, so no
-    dialogue/choices/deal payload is collected anymore.
+    (_auto_clear_diplomacy), which closes sessions silently.  No
+    relationship/war flag — war and denounce *events* come from the
+    diplomatic-state watch instead (see build_diplo_state_watch_query).
     """
 
     other_player_id: int
     other_civ_name: str
     other_leader_name: str
-    is_at_war: bool = False  # session is a war declaration (nothing to decline)
 
 
 @dataclass

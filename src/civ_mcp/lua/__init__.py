@@ -43,6 +43,7 @@ from civ_mcp.lua.diplomacy import (  # noqa: F401
     build_diplomacy_query,
     build_diplomacy_respond,
     build_diplomacy_session_query,
+    build_diplo_state_watch_query,
     build_form_alliance,
     build_own_abilities_query,
     build_pending_deals_query,

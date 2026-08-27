@@ -54,17 +54,21 @@ async def _poll_advanced(
 
 
 async def _auto_clear_diplomacy(gs: GameState) -> tuple[bool, list[str]]:
-    """Auto-resolve diplomacy targeting the local player: reject pending
-    deals, then close any open sessions.
+    """Diplomacy housekeeping at every end_turn checkpoint: watch
+    diplomatic-state transitions, reject pending deals, close open
+    sessions.
 
     Built-in-AI proposals and deals toward a managed agent are rare (the
     agent is only a valid target while it holds the local-player slot) and
-    the agent has no interactive path for them — so the policy is to
-    resolve them automatically and SILENTLY: surfacing them would invite
-    the agent to hunt for a way to respond that does not exist.  Only
-    informational events that expect no reaction (war declarations) are
-    returned as report lines, stashed on ``gs._diplo_auto_notes`` by the
-    caller and drained into the turn report.
+    the agent has no interactive path for them — so they are resolved
+    automatically and SILENTLY: surfacing them would invite the agent to
+    hunt for a way to respond that does not exist.  The only things
+    returned as report lines are important events that expect no reaction:
+    war declarations and denunciations, detected by diffing each rival's
+    diplomatic state (``gs._diplo_state_watch``) — NOT from sessions, whose
+    at-war flag cannot distinguish "war declared" from "peace offer from a
+    wartime rival".  The state watch also catches wars/denouncements that
+    land with no session at all while the agent is off the clock.
 
     Returns ``(any_resolved, notes)`` — ``any_resolved`` is True when at
     least one deal or session was found (and resolved), so callers can
@@ -75,6 +79,44 @@ async def _auto_clear_diplomacy(gs: GameState) -> tuple[bool, list[str]]:
     the offer in limbo — so deals are always handled before the blanket
     session sweep.
     """
+    notes: list[str] = []
+
+    # 0. Diplomatic-state watch: report transitions into WAR or DENOUNCED.
+    # The first observation of each player is adopted silently so standing
+    # wars/denouncements are not replayed as fresh events after a server
+    # restart; our own declarations/denounces are pre-marked by
+    # GameState.send_diplomatic_action for the same reason.
+    try:
+        lines = await gs.conn.execute_write(
+            lq.build_diplo_state_watch_query(), perspective=False
+        )
+        for line in lines:
+            if not line.startswith("DIPLO_STATE|"):
+                continue
+            parts = line.split("|")
+            if len(parts) < 5:
+                continue
+            pid = int(parts[1])
+            civ, leader = parts[2], parts[3]
+            state = parts[4].upper()
+            prev = gs._diplo_state_watch.get(pid)
+            gs._diplo_state_watch[pid] = state
+            if prev is None or prev == state:
+                continue
+            if "WAR" in state and "WAR" not in prev:
+                notes.append(
+                    f"WAR — {civ} ({leader}) is now at war with us!"
+                    " Reassess: check unit positions, city defenses, and"
+                    " military strength."
+                )
+            elif "DENOUNCED" in state and "DENOUNCED" not in prev:
+                notes.append(
+                    f"DENOUNCED by {civ} ({leader}) — expect relationship"
+                    " penalties; check grievances in the diplomacy state."
+                )
+    except Exception:
+        log.debug("Diplomatic-state watch failed", exc_info=True)
+
     # 1. Reject pending trade deals (also closes their sessions).
     any_resolved = False
     try:
@@ -97,8 +139,10 @@ async def _auto_clear_diplomacy(gs: GameState) -> tuple[bool, list[str]]:
     except Exception:
         log.debug("Pending deal scan failed", exc_info=True)
 
-    # 2. Close any remaining diplomacy sessions.
-    notes: list[str] = []
+    # 2. Close any remaining diplomacy sessions — silently.  (Whatever the
+    # session carried — proposal, demand, peace offer — the agent cannot
+    # interact with it; wars and denounces are already reported by the
+    # state watch above.)
     try:
         sessions = await gs.get_diplomacy_sessions()
     except Exception:
@@ -114,19 +158,11 @@ async def _auto_clear_diplomacy(gs: GameState) -> tuple[bool, list[str]]:
                 "Session EXIT with P%d failed", s.other_player_id, exc_info=True
             )
             continue
-        if s.is_at_war:
-            # Wars expect no reaction (you cannot decline one) — report them.
-            notes.append(
-                f"WAR DECLARED by {s.other_civ_name} ({s.other_leader_name})!"
-                " Session dismissed. Reassess: check unit positions, city"
-                " defenses, and military strength."
-            )
-        else:
-            log.info(
-                "Auto-dismissed diplomacy session from %s (no agent "
-                "interaction path)",
-                s.other_civ_name,
-            )
+        log.info(
+            "Auto-dismissed diplomacy session from %s (no agent "
+            "interaction path)",
+            s.other_civ_name,
+        )
     if sessions:
         any_resolved = True
         # The statement events may have popped the leader screen on the

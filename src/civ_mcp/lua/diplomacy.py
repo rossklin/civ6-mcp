@@ -348,13 +348,13 @@ print("{SENTINEL}")
 def build_diplomacy_session_query() -> str:
     """Scan for open diplomacy sessions targeting the local player (InGame).
 
-    Emits one minimal line per session — ``SESSION|<pid>|<civ>|<leader>|<war>``
-    — the only consumer being end_turn's auto-resolve (close the session,
-    report wars).  The old version scraped the DiplomacyActionView UI
-    controls for dialogue text, buttons, and incoming-deal items to format
-    a proposal for the agent; that interaction path no longer exists (see
-    ``end_turn._auto_clear_diplomacy``).  Must run in the InGame context —
-    ``DiplomacyManager`` is nil in GameCore.
+    Emits one minimal line per session — ``SESSION|<pid>|<civ>|<leader>`` —
+    the only consumer being end_turn's auto-resolve, which closes sessions
+    silently.  No relationship/war flag: it cannot distinguish "war
+    declared" from "peace offer from a wartime rival" — war and denounce
+    *events* come from the diplomatic-state watch
+    (:func:`build_diplo_state_watch_query`) instead.  Must run in the
+    InGame context — ``DiplomacyManager`` is nil in GameCore.
     """
     return f"""
 local me = Game.GetLocalPlayer()
@@ -366,13 +366,47 @@ for i = 0, 62 do
             local cfg = PlayerConfigurations[i]
             local civName = Locale.Lookup(cfg:GetCivilizationShortDescription())
             local leaderName = Locale.Lookup(cfg:GetLeaderName())
-            local atWar = Players[me]:GetDiplomacy():IsAtWarWith(i) and "1" or "0"
-            print("SESSION|" .. i .. "|" .. civName:gsub("|","/") .. "|" .. leaderName:gsub("|","/") .. "|" .. atWar)
+            print("SESSION|" .. i .. "|" .. civName:gsub("|","/") .. "|" .. leaderName:gsub("|","/"))
             found = true
         end
     end
 end
 if not found then print("NONE") end
+print("{SENTINEL}")
+"""
+
+
+def build_diplo_state_watch_query() -> str:
+    """One line per met major civ: their diplomatic state toward the local
+    player (InGame context — GetDiplomaticAI access).
+
+    ``DIPLO_STATE|<pid>|<civ>|<leader>|<STATE>`` where STATE is the same
+    mapping as build_diplomacy_query (ALLIED, DECLARED_FRIEND, FRIENDLY,
+    NEUTRAL, UNFRIENDLY, DENOUNCED, WAR).  Consumed by end_turn's
+    diplomatic-state watch: transitions into WAR or DENOUNCED are reported
+    to the agent as important, response-free information — regardless of
+    whether a session accompanied them, since AI war declarations and
+    denunciations also land while the agent is off the clock with no
+    session at all.
+    """
+    return f"""
+local me = Game.GetLocalPlayer()
+local pDiplo = Players[me]:GetDiplomacy()
+local states = {{"ALLIED","DECLARED_FRIEND","FRIENDLY","NEUTRAL","UNFRIENDLY","DENOUNCED","WAR"}}
+for i = 0, 62 do
+    if i ~= me and Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() and pDiplo:HasMet(i) then
+        local okS, st = pcall(function()
+            return Players[i]:GetDiplomaticAI():GetDiplomaticStateIndex(me)
+        end)
+        if okS and st then
+            local cfg = PlayerConfigurations[i]
+            local civName = Locale.Lookup(cfg:GetCivilizationShortDescription())
+            local leaderName = Locale.Lookup(cfg:GetLeaderName())
+            print("DIPLO_STATE|" .. i .. "|" .. civName:gsub("|","/") .. "|"
+                .. leaderName:gsub("|","/") .. "|" .. (states[st + 1] or tostring(st)))
+        end
+    end
+end
 print("{SENTINEL}")
 """
 
@@ -1520,20 +1554,19 @@ def parse_own_abilities_response(lines: list[str]) -> OwnAbilities:
 
 
 def parse_diplomacy_sessions(lines: list[str]) -> list[DiplomacySession]:
-    """Parse open diplomacy session output (``SESSION|pid|civ|leader|war``)."""
+    """Parse open diplomacy session output (``SESSION|pid|civ|leader``)."""
     sessions = []
     for line in lines:
         if line == "NONE":
             break
         if line.startswith("SESSION|"):
             parts = line.split("|")
-            if len(parts) >= 5:
+            if len(parts) >= 4:
                 sessions.append(
                     DiplomacySession(
                         other_player_id=int(parts[1]),
                         other_civ_name=parts[2],
                         other_leader_name=parts[3],
-                        is_at_war=parts[4] == "1",
                     )
                 )
     return sessions

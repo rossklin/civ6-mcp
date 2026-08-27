@@ -74,6 +74,11 @@ class GameState:
         # deals are auto-resolved SILENTLY — they expect a reaction the
         # agent has no path to give, and surfacing them invites hunting.
         self._diplo_auto_notes: list[str] = []
+        # Diplomatic-state watch (pid -> last seen state name, e.g. "WAR"):
+        # transitions into WAR/DENOUNCED are reported as turn-report notes
+        # (end_turn._auto_clear_diplomacy).  Pre-marked by our own
+        # declarations so they are not announced as foreign events.
+        self._diplo_state_watch: dict[int, str] = {}
 
     async def get_game_identity(self) -> tuple[str, int]:
         """Return (civ_type_lower, random_seed) for the current game.
@@ -769,6 +774,9 @@ class GameState:
                 asyncio.create_task(
                     self._cleanup_war_diplomacy(other_player_id)
                 )
+                # Pre-mark the state watch so end_turn's diff does not
+                # announce OUR declaration as a foreign war event.
+                self._diplo_state_watch[other_player_id] = "WAR"
             else:
                 # One-way statement (denounce): the builder closes the
                 # session and restores the UI in the same chunk, but the
@@ -777,6 +785,11 @@ class GameState:
                 # leaving the leader screen up. Dismiss in a separate,
                 # delayed round-trip.
                 asyncio.create_task(self._cleanup_diplo_screen())
+                if action.upper() == "DENOUNCE":
+                    # Their state toward us may sour after we denounce them —
+                    # pre-mark so the watcher does not report it as their
+                    # denouncement of us.
+                    self._diplo_state_watch[other_player_id] = "DENOUNCED"
 
         return result
 
