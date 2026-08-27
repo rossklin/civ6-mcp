@@ -620,56 +620,6 @@ def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> s
             lines.append(f"    Can: {actions_str}")
     return "\n".join(lines)
 
-
-def narrate_pending_deals(deals: list[lq.PendingDeal]) -> str:
-    if not deals:
-        return "No pending trade deals."
-    lines = [f"{len(deals)} pending trade deal(s):"]
-    for d in deals:
-        lines.append(
-            f"\n  From: {d.other_player_name} ({d.other_leader_name}) [player {d.other_player_id}]"
-        )
-
-        # Detect mutual items (same name on both sides — alliances, open borders, joint wars)
-        their_names = {i.name for i in d.items_from_them}
-        our_names = {i.name for i in d.items_from_us}
-        mutual_names = their_names & our_names
-
-        mutual = [i for i in d.items_from_them if i.name in mutual_names]
-        their_only = [i for i in d.items_from_them if i.name not in mutual_names]
-        our_only = [i for i in d.items_from_us if i.name not in mutual_names]
-
-        if mutual:
-            lines.append("  Mutual:")
-            for item in mutual:
-                dur = f" for {item.duration} turns" if item.duration > 0 else ""
-                lines.append(f"    = {item.name}{dur}")
-        if their_only:
-            lines.append("  They offer:")
-            for item in their_only:
-                dur = f" for {item.duration} turns" if item.duration > 0 else ""
-                amt = (
-                    f" x{item.amount}"
-                    if item.amount > 1 or item.item_type == "GOLD"
-                    else ""
-                )
-                lines.append(f"    + {item.name}{amt}{dur}")
-        if our_only:
-            lines.append("  They want:")
-            for item in our_only:
-                dur = f" for {item.duration} turns" if item.duration > 0 else ""
-                amt = (
-                    f" x{item.amount}"
-                    if item.amount > 1 or item.item_type == "GOLD"
-                    else ""
-                )
-                lines.append(f"    - {item.name}{amt}{dur}")
-        lines.append(
-            f"  -> respond_to_trade(other_player_id={d.other_player_id}, accept=True/False)"
-        )
-    return "\n".join(lines)
-
-
 def narrate_deal_options(opts: lq.DealOptions) -> str:
     lines = [
         f"Trade options with {opts.other_civ_name} (player {opts.other_player_id}):"
