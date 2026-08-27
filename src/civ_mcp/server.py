@@ -3703,8 +3703,16 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
     if req_ob:
         request_items.append({"type": "AGREEMENT", "subtype": "OPEN_BORDERS"})
     if joint_war > 0:
-        offer_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
-        request_items.append({"type": "AGREEMENT", "subtype": "JOINT_WAR"})
+        # ValueType on a JOINT_WAR agreement item is the TARGET player ID
+        # (native UI: OnSelectAgreementOption does SetValueType(target) —
+        # DiplomacyDealView.lua ~1414). Both sides commit to the war, so the
+        # item is added on each side with the same target.
+        offer_items.append(
+            {"type": "AGREEMENT", "subtype": "JOINT_WAR", "value": joint_war}
+        )
+        request_items.append(
+            {"type": "AGREEMENT", "subtype": "JOINT_WAR", "value": joint_war}
+        )
 
     return offer_items, request_items
 

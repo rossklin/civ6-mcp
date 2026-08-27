@@ -925,8 +925,15 @@ for i = 0, 62 do
                     elseif iType == DealItemTypes.AGREEMENTS then
                         typeName = "AGREEMENT"
                         if subType == DealAgreementTypes.OPEN_BORDERS then itemName = "Open Borders"
-                        elseif subType == DealAgreementTypes.JOINT_WAR then 
-                            itemName = "Joint War: " .. valueType
+                        elseif subType == DealAgreementTypes.JOINT_WAR then
+                            -- ValueType = target player ID (native convention,
+                            -- see _lua_deal_item) — resolve it to the civ name.
+                            local tName = ""
+                            if valueType and valueType >= 0 and Players[valueType] then
+                                tName = Locale.Lookup(PlayerConfigurations[valueType]:GetCivilizationShortDescription())
+                            end
+                            if tName == "" then tName = "Player " .. tostring(valueType) end
+                            itemName = "Joint War vs " .. tName
                         elseif subType == DealAgreementTypes.ALLIANCE then
                             local aNames = {"Research","Cultural","Economic","Military","Religious"}
                             itemName = (valueType >= 0 and valueType < 5 and aNames[valueType+1] or "Unknown") .. " Alliance"
@@ -1005,6 +1012,35 @@ def _lua_deal_item(from_var: str, item: dict) -> str:
         )
     elif t == "AGREEMENT":
         subtype = item["subtype"]  # "OPEN_BORDERS", "JOINT_WAR", "ALLIANCE"
+        if subtype == "JOINT_WAR":
+            # Native flow (DiplomacyDealView.lua OnSelectAgreementOption):
+            # ValueType = the TARGET PLAYER ID of the war, plus a WarType
+            # parameter (GameInfo.Wars row, display naming) and the 30-turn
+            # duration from DiplomaticActions.xml. Without the ValueType the
+            # deal is a joint war against nobody.
+            target = item.get("value", 0)
+            return (
+                f"do local ai = deal:AddItemOfType(DealItemTypes.AGREEMENTS, {from_var}) "
+                f"if ai then ai:SetSubType(DealAgreementTypes.JOINT_WAR) "
+                f"ai:SetValueType({target}) "
+                f'local warRow = GameInfo.Wars["JOINT_WAR"] '
+                f'if warRow then pcall(function() ai:SetParameterValue("WarType", warRow.Index) end) end '
+                f'pcall(function() local da = GameInfo.DiplomaticActions["DIPLOACTION_JOINT_WAR"] '
+                f"ai:SetDuration((da and da.Duration) or 30) end) "
+                f"end end"
+            )
+        if subtype == "ALLIANCE":
+            # ValueType = the alliance type index (GameInfo.Alliances row),
+            # same as build_form_alliance. Without it the deal defaults to
+            # index 0 (Research) regardless of the requested type.
+            a_type = item.get("alliance_type", "")
+            return (
+                f"do local ai = deal:AddItemOfType(DealItemTypes.AGREEMENTS, {from_var}) "
+                f"if ai then ai:SetSubType(DealAgreementTypes.ALLIANCE) "
+                f'local aRow = GameInfo.Alliances["ALLIANCE_{a_type}"] '
+                f"if aRow then pcall(function() ai:SetValueType(aRow.Index) end) end "
+                f"end end"
+            )
         return (
             f"do local ai = deal:AddItemOfType(DealItemTypes.AGREEMENTS, {from_var}) "
             f"if ai then ai:SetSubType(DealAgreementTypes.{subtype}) end end"
@@ -1075,7 +1111,14 @@ if sid and sid >= 0 then
                 else desc = amount .. " gold" end
             elseif iType == DealItemTypes.AGREEMENTS then
                 if subType == DealAgreementTypes.OPEN_BORDERS then desc = "Open Borders"
-                elseif subType == DealAgreementTypes.JOINT_WAR then desc = "Joint War"
+                elseif subType == DealAgreementTypes.JOINT_WAR then
+                    local tName = ""
+                    local vt = item:GetValueType() or -1
+                    if vt >= 0 and Players[vt] then
+                        tName = Locale.Lookup(PlayerConfigurations[vt]:GetCivilizationShortDescription())
+                    end
+                    if tName == "" then tName = "Player " .. tostring(vt) end
+                    desc = "Joint War vs " .. tName
                 else desc = "Agreement" end
             elseif iType == DealItemTypes.RESOURCES then
                 local res = GameInfo.Resources[item:GetValueType() or -1]
