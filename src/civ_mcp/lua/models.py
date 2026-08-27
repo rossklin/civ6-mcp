@@ -381,27 +381,19 @@ class CivInfo:
 
 
 @dataclass
-class DiplomacyChoice:
-    key: str  # e.g. "CHOICE_POSITIVE", "CHOICE_EXIT"
-    text: str  # localized display text
-
-
-@dataclass
 class DiplomacySession:
-    session_id: int
+    """An open engine diplomacy session targeting the local player.
+
+    Minimal by design: the only consumer is end_turn's auto-resolve
+    (_auto_clear_diplomacy), which closes the session and reports wars.
+    There is no agent interaction path for AI-initiated sessions, so no
+    dialogue/choices/deal payload is collected anymore.
+    """
+
     other_player_id: int
     other_civ_name: str
     other_leader_name: str
-    choices: list[DiplomacyChoice]
-    dialogue_text: str = ""  # leader's spoken text (from UI controls)
-    reason_text: str = ""  # agenda/reason subtext
-    buttons: str = (
-        ""  # semicolon-separated visible button labels; "GOODBYE" if goodbye phase
-    )
-    deal_summary: str = ""  # human-readable deal content when AI proposes a deal (e.g. "They offer: Research Alliance (25 turns)")
-    is_at_war: bool = (
-        False  # True if this player declared war (session is war declaration)
-    )
+    is_at_war: bool = False  # session is a war declaration (nothing to decline)
 
 
 @dataclass
@@ -1225,7 +1217,6 @@ class FullGameState:
     # Diplomacy
     diplomacy: list[CivInfo] = field(default_factory=list)
     pending_deals: list[PendingDeal] = field(default_factory=list)
-    diplomacy_sessions: list[DiplomacySession] = field(default_factory=list)
 
     # Our own civilization's abilities & uniques
     own_abilities: OwnAbilities | None = None

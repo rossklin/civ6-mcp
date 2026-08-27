@@ -234,15 +234,6 @@ def _parse_special(
         except Exception:
             log.warning("Failed to parse pending_deals section", exc_info=True)
 
-    elif section_name == "diplomacy_sessions":
-        try:
-            sessions = lq.parse_diplomacy_sessions(lines)
-            state.diplomacy_sessions = sessions
-        except Exception:
-            log.warning(
-                "Failed to parse diplomacy_sessions section", exc_info=True
-            )
-
     elif section_name == "religion_status":
         try:
             status = lq.parse_religion_status_response(lines)

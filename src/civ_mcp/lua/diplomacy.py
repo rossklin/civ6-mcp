@@ -346,40 +346,19 @@ print("{SENTINEL}")
 
 
 def build_diplomacy_session_query() -> str:
-    """Check for open diplomacy sessions and return choices (InGame context).
+    """Scan for open diplomacy sessions targeting the local player (InGame).
 
-    Also reads the DiplomacyActionView UI controls to capture the leader's
-    actual dialogue text, reason/agenda subtext, and visible button labels.
-    Button info helps detect goodbye phase (only "Goodbye" button visible).
+    Emits one minimal line per session — ``SESSION|<pid>|<civ>|<leader>|<war>``
+    — the only consumer being end_turn's auto-resolve (close the session,
+    report wars).  The old version scraped the DiplomacyActionView UI
+    controls for dialogue text, buttons, and incoming-deal items to format
+    a proposal for the agent; that interaction path no longer exists (see
+    ``end_turn._auto_clear_diplomacy``).  Must run in the InGame context —
+    ``DiplomacyManager`` is nil in GameCore.
     """
     return f"""
 local me = Game.GetLocalPlayer()
 local found = false
-local dialogueText = ""
-local reasonText = ""
-local ctrl1 = ContextPtr:LookUpControl("/InGame/DiplomacyActionView/LeaderResponseText")
-local ctrl2 = ContextPtr:LookUpControl("/InGame/DiplomacyActionView/LeaderReasonText")
-if ctrl1 then local ok, t = pcall(ctrl1.GetText, ctrl1); if ok and t and t ~= "" then dialogueText = t end end
-if ctrl2 then local ok, t = pcall(ctrl2.GetText, ctrl2); if ok and t and t ~= "" then reasonText = t end end
-local dealCtrl = ContextPtr:LookUpControl("/InGame/DiplomacyDealView/LeaderResponseText")
-if dealCtrl and not dealCtrl:IsHidden() then local ok, t = pcall(dealCtrl.GetText, dealCtrl); if ok and t and t ~= "" then dialogueText = t end end
-local btnTexts = {{}}
-for _, path in ipairs({{
-    "/InGame/DiplomacyActionView/SelectionStack/Selection1Button/SelectionText",
-    "/InGame/DiplomacyActionView/SelectionStack/Selection2Button/SelectionText",
-}}) do
-    local btn = ContextPtr:LookUpControl(path)
-    if btn then
-        local par = btn:GetParent()
-        if par and not par:IsHidden() then
-            local ok, t = pcall(btn.GetText, btn)
-            if ok and t and t ~= "" then btnTexts[#btnTexts + 1] = t end
-        end
-    end
-end
-local goodbyeBtn = ContextPtr:LookUpControl("/InGame/DiplomacyActionView/GoodbyeButton")
-if goodbyeBtn and not goodbyeBtn:IsHidden() then btnTexts[#btnTexts + 1] = "GOODBYE" end
-local buttonInfo = table.concat(btnTexts, ";")
 for i = 0, 62 do
     if i ~= me and Players[i] and Players[i]:IsAlive() then
         local sid = DiplomacyManager.FindOpenSessionID(me, i)
@@ -388,51 +367,8 @@ for i = 0, 62 do
             local civName = Locale.Lookup(cfg:GetCivilizationShortDescription())
             local leaderName = Locale.Lookup(cfg:GetLeaderName())
             local atWar = Players[me]:GetDiplomacy():IsAtWarWith(i) and "1" or "0"
-            print("SESSION|" .. sid .. "|" .. i .. "|" .. civName .. "|" .. leaderName .. "|" .. dialogueText .. "|" .. reasonText .. "|" .. buttonInfo .. "|" .. atWar)
+            print("SESSION|" .. i .. "|" .. civName:gsub("|","/") .. "|" .. leaderName:gsub("|","/") .. "|" .. atWar)
             found = true
-            local okD, deal = pcall(function() return DealManager.GetWorkingDeal(DealDirection.INCOMING, me, i) end)
-            if okD and deal then
-                local okN, cnt = pcall(function() return deal:GetItemCount() end)
-                if okN and cnt and cnt > 0 then
-                    for item in deal:Items() do
-                        local fromTag = "THEM"
-                        local okF, fromID = pcall(function() return item:GetFromPlayerID() end)
-                        if okF and fromID == me then fromTag = "US" end
-                        local itype = item:GetType()
-                        local typeName = "UNKNOWN"
-                        local itemName = "Unknown"
-                        local ok3, vid = pcall(function() return item:GetValueTypeID() end); vid = (ok3 and vid) and tostring(vid) or ""
-                        local ok4, sid2 = pcall(function() return item:GetSubTypeID() end); sid2 = (ok4 and sid2) and tostring(sid2) or ""
-                        local amount = item:GetAmount() or 0
-                        local duration = item:GetDuration() or 0
-                        if itype == DealItemTypes.AGREEMENTS then
-                            typeName = "AGREEMENT"
-                            if vid == "OPEN_BORDERS" or sid2 == "DIPLOACTION_OPEN_BORDERS" then itemName = "Open Borders"
-                            elseif vid == "JOINT_WAR" or sid2 == "DIPLOACTION_JOINT_WAR" then itemName = "Joint War"
-                            elseif string.find(vid, "ALLIANCE") or sid2 == "DIPLOACTION_ALLIANCE" then
-                                local aMap = {{RESEARCH="Research", CULTURAL="Cultural", ECONOMIC="Economic", MILITARY="Military", RELIGIOUS="Religious"}}
-                                local aKey = string.match(vid, "ALLIANCE_(%w+)")
-                                itemName = ((aKey and aMap[aKey]) or aKey or "Unknown") .. " Alliance"
-                            else itemName = "" end
-                        elseif itype == DealItemTypes.GOLD then
-                            typeName = "GOLD"
-                            itemName = duration > 0 and "Gold per turn" or "Gold (lump)"
-                        elseif itype == DealItemTypes.RESOURCES then
-                            typeName = "RESOURCE"
-                            itemName = vid ~= "" and vid or "Resource"
-                        elseif itype == DealItemTypes.FAVOR then
-                            typeName = "FAVOR"; itemName = "Diplomatic Favor"
-                        elseif itype == DealItemTypes.CITIES then
-                            typeName = "CITY"; itemName = "City"
-                        elseif itype == DealItemTypes.GREATWORK then
-                            typeName = "GREAT_WORK"; itemName = "Great Work"
-                        end
-                        if itemName ~= "" and itemName ~= "Unknown" then
-                            print("DEAL_ITEM|" .. i .. "|" .. fromTag .. "|" .. typeName .. "|" .. itemName:gsub("|","/") .. "|" .. amount .. "|" .. duration)
-                        end
-                    end
-                end
-            end
         end
     end
 end
@@ -1584,7 +1520,7 @@ def parse_own_abilities_response(lines: list[str]) -> OwnAbilities:
 
 
 def parse_diplomacy_sessions(lines: list[str]) -> list[DiplomacySession]:
-    """Parse open diplomacy session output."""
+    """Parse open diplomacy session output (``SESSION|pid|civ|leader|war``)."""
     sessions = []
     for line in lines:
         if line == "NONE":
@@ -1594,31 +1530,11 @@ def parse_diplomacy_sessions(lines: list[str]) -> list[DiplomacySession]:
             if len(parts) >= 5:
                 sessions.append(
                     DiplomacySession(
-                        session_id=int(parts[1]),
-                        other_player_id=int(parts[2]),
-                        other_civ_name=parts[3],
-                        other_leader_name=parts[4],
-                        choices=[],
-                        dialogue_text=parts[5] if len(parts) > 5 else "",
-                        reason_text=parts[6] if len(parts) > 6 else "",
-                        buttons=parts[7] if len(parts) > 7 else "",
-                        is_at_war=parts[8] == "1" if len(parts) > 8 else False,
+                        other_player_id=int(parts[1]),
+                        other_civ_name=parts[2],
+                        other_leader_name=parts[3],
+                        is_at_war=parts[4] == "1",
                     )
-                )
-        elif line.startswith("DEAL_ITEM|") and sessions:
-            # DEAL_ITEM|playerID|fromTag|typeName|itemName|amount|duration
-            parts = line.split("|")
-            if len(parts) >= 5:
-                from_tag = parts[2]  # "THEM" or "US"
-                item_name = parts[4]
-                amount = int(parts[5]) if len(parts) > 5 else 0
-                duration = int(parts[6]) if len(parts) > 6 else 0
-                dur_str = f" ({duration} turns)" if duration > 0 else ""
-                amt_str = f" x{amount}" if amount > 0 else ""
-                entry = f"{'They offer' if from_tag == 'THEM' else 'You offer'}: {item_name}{amt_str}{dur_str}"
-                s = sessions[-1]
-                s.deal_summary = (
-                    (s.deal_summary + "; " + entry) if s.deal_summary else entry
                 )
     return sessions
 

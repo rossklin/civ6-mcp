@@ -621,36 +621,6 @@ def narrate_diplomacy(civs: list[lq.CivInfo], managed_ids: tuple[int, ...]) -> s
     return "\n".join(lines)
 
 
-def narrate_diplomacy_sessions(sessions: list[lq.DiplomacySession]) -> str:
-    if not sessions:
-        return "No pending diplomacy sessions."
-    lines = [f"{len(sessions)} pending diplomacy session(s):"]
-    for s in sessions:
-        lines.append(
-            f"  {s.other_civ_name} ({s.other_leader_name}) — "
-            f"session {s.session_id}, player {s.other_player_id}"
-        )
-        if s.dialogue_text:
-            lines.append(f'  Says: "{s.dialogue_text}"')
-        if s.reason_text:
-            lines.append(f"  Reason: {s.reason_text}")
-        if s.buttons:
-            lines.append(f"  Buttons: {s.buttons}")
-        # Phase-appropriate guidance
-        if s.deal_summary:
-            lines.append(f"  Deal: {s.deal_summary}")
-            lines.append(
-                f"  This is a DEAL proposal — use respond_to_trade(other_player_id={s.other_player_id}, accept=True/False)"
-            )
-        elif s.buttons == "GOODBYE":
-            lines.append(
-                "  Phase: GOODBYE — respond with POSITIVE or NEGATIVE (auto-closes)"
-            )
-        else:
-            lines.append("  Respond with: POSITIVE (friendly) or NEGATIVE (dismissive)")
-    return "\n".join(lines)
-
-
 def narrate_pending_deals(deals: list[lq.PendingDeal]) -> str:
     if not deals:
         return "No pending trade deals."

@@ -1316,15 +1316,13 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                     f"The game has ended."
                 )
 
-        # Provide specific blocker info instead of generic message
+        # Provide specific blocker info instead of generic message.  (No
+        # session listing anymore: sessions are auto-resolved by
+        # _auto_clear_diplomacy before we ever get here, and telling the
+        # agent about one would invite interaction that does not exist.  If
+        # one still shows up in the blocker query below, that is actionable
+        # on its own.)
         details: list[str] = []
-        try:
-            sessions = await gs.get_diplomacy_sessions()
-            if sessions:
-                names = [s.other_civ_name for s in sessions]
-                details.append(f"Open diplomacy session with: {', '.join(names)}")
-        except Exception:
-            pass
         try:
             blocking_lines = await gs.conn.execute_write(
                 lq.build_end_turn_blocking_query()
