@@ -1017,8 +1017,9 @@ def _lua_deal_item(from_var: str, item: dict) -> str:
             # ValueType = the TARGET PLAYER ID of the war, plus a WarType
             # parameter (GameInfo.Wars row, display naming) and the 30-turn
             # duration from DiplomaticActions.xml. Without the ValueType the
-            # deal is a joint war against nobody.
-            target = item.get("value", 0)
+            # deal is a joint war against nobody.  Key is "value_type" (the
+            # mailbox/filing convention); "value" kept as a legacy fallback.
+            target = item.get("value_type", item.get("value", 0))
             return (
                 f"do local ai = deal:AddItemOfType(DealItemTypes.AGREEMENTS, {from_var}) "
                 f"if ai then ai:SetSubType(DealAgreementTypes.JOINT_WAR) "

@@ -165,6 +165,24 @@ class TestParseTradeParamsPeaceAlliance:
         assert offer == [{"type": "AGREEMENT", "subtype": "OPEN_BORDERS"}]
         assert request == [{"type": "AGREEMENT", "subtype": "OPEN_BORDERS"}]
 
+    def test_joint_war_target_in_value_type_key(self):
+        """Regression: the target MUST land under "value_type" — the mailbox
+        filing and both Lua item builders read that key.  An earlier version
+        emitted "value", the target was silently dropped to -1 at filing,
+        and the presentation injected a joint war against nobody (engine
+        dropped the invalid item → empty deal table, live-observed)."""
+        offer, request = server._parse_trade_params(
+            {"other_player_id": 0, "joint_war_target": 2}
+        )
+        expected = {
+            "type": "AGREEMENT",
+            "subtype": "JOINT_WAR",
+            "value_type": 2,
+            "duration": 30,
+        }
+        assert offer == [expected]
+        assert request == [expected]
+
 
 # ---------------------------------------------------------------------------
 # _lua_add_deal_item
@@ -200,6 +218,36 @@ class TestLuaAddDealItemAgreement:
         lua = _lua_add_deal_item("me", _item(subtype=547027585))
         assert "SetSubType(547027585)" in lua
         assert "DealAgreementTypes.547027585" not in lua
+
+    def test_joint_war_agent_item_sets_target(self):
+        """Regression: the presentation path must SetValueType(target) +
+        WarType parameter + duration for JOINT_WAR items — without the
+        ValueType the item is a war against nobody, which the engine's deal
+        validation silently drops (live-observed: empty deal table)."""
+        lua = _lua_add_deal_item(
+            "me", _item(subtype="JOINT_WAR", value_type=2, duration=30)
+        )
+        assert "SetSubType(DealAgreementTypes.JOINT_WAR)" in lua
+        assert "ai:SetValueType(2)" in lua
+        assert 'SetParameterValue("WarType"' in lua
+        assert 'GameInfo.Wars["JOINT_WAR"]' in lua
+        assert "ai:SetDuration(30)" in lua
+
+    def test_joint_war_human_int_item_sets_target(self):
+        """Human-constructed joint war items (int subtype from the engine)
+        get the same treatment."""
+        lua = _lua_add_deal_item(
+            "me", _item(subtype=-768271062, value_type=2, duration=30)
+        )
+        assert "SetSubType(-768271062)" in lua
+        assert "ai:SetValueType(2)" in lua
+        assert 'SetParameterValue("WarType"' in lua
+
+    def test_joint_war_defaults_duration(self):
+        lua = _lua_add_deal_item(
+            "me", _item(subtype="JOINT_WAR", value_type=2, duration=0)
+        )
+        assert "ai:SetDuration(30)" in lua
 
     def test_alliance_agent_resolves_value_by_name(self):
         lua = _lua_add_deal_item(

@@ -3706,13 +3706,25 @@ def _parse_trade_params(params: dict) -> tuple[list[dict], list[dict]]:
     if joint_war > 0:
         # ValueType on a JOINT_WAR agreement item is the TARGET player ID
         # (native UI: OnSelectAgreementOption does SetValueType(target) —
-        # DiplomacyDealView.lua ~1414). Both sides commit to the war, so the
-        # item is added on each side with the same target.
+        # DiplomacyDealView.lua ~1414), with the 30-turn duration from
+        # DiplomaticActions.xml. Both sides commit to the war, so the item is
+        # added on each side with the same target.  Key MUST be "value_type" —
+        # that is what the mailbox filing and both Lua item builders read.
         offer_items.append(
-            {"type": "AGREEMENT", "subtype": "JOINT_WAR", "value": joint_war}
+            {
+                "type": "AGREEMENT",
+                "subtype": "JOINT_WAR",
+                "value_type": joint_war,
+                "duration": 30,
+            }
         )
         request_items.append(
-            {"type": "AGREEMENT", "subtype": "JOINT_WAR", "value": joint_war}
+            {
+                "type": "AGREEMENT",
+                "subtype": "JOINT_WAR",
+                "value_type": joint_war,
+                "duration": 30,
+            }
         )
 
     return offer_items, request_items

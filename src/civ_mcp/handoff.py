@@ -1297,12 +1297,30 @@ def _lua_add_deal_item(from_var: str, item) -> str:
         else:
             sub_expr = str(sub)  # int — enum members are ints, so this works
         parts = [f"ai:SetSubType({sub_expr})"]
+        has_vt = item.value_type is not None and item.value_type >= 0
+        # Joint war: ValueType = the TARGET player ID, plus the WarType
+        # parameter and the 30-turn duration (native flow:
+        # DiplomacyDealView.lua OnSelectAgreementOption).  Without the
+        # ValueType the item is a joint war against nobody — invalid — and
+        # the engine's deal validation silently drops it (live-observed as
+        # an empty deal table).  Detected in LUA so both subtype encodings
+        # work: agent items carry the enum NAME (DealAgreementTypes.JOINT_WAR),
+        # human items the enum's integer value — both compare equal to
+        # DealAgreementTypes.JOINT_WAR.
+        if has_vt:
+            dur = duration if duration and duration > 0 else 30
+            parts.append(
+                f"if {sub_expr} == DealAgreementTypes.JOINT_WAR then "
+                f"ai:SetValueType({item.value_type}) "
+                'pcall(function() local w = GameInfo.Wars["JOINT_WAR"] '
+                'if w then ai:SetParameterValue("WarType", w.Index) end end) '
+                f"ai:SetDuration({dur}) end"
+            )
         # Alliance items additionally need SetValueType with the
         # GameInfo.Alliances index.  Detect in Lua so it works for both
         # encodings (agent name → DealAgreementTypes.ALLIANCE; human int →
         # the enum's integer value).
         at = getattr(item, "alliance_type", "") or ""
-        has_vt = item.value_type is not None and item.value_type >= 0
         if at:
             # Agent item: resolve the index by alliance-type name.
             vt_lua = (
