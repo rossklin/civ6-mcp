@@ -5,12 +5,13 @@ The working deal persists in the engine across calls. If a builder skips
 new ones and get traded for real — observed live on 2026-08-01, where a
 ``test_trade`` preview followed by ``propose_trade`` moved twice the intended
 gold. These tests pin the clearing behaviour into the generated Lua.
+Note that test_trade has been removed and I'm not sure if the same applies to a 
+previous rejected proposal.
 """
 
 from civ_mcp.lua.diplomacy import (
     build_form_alliance,
     build_propose_trade,
-    build_test_trade,
 )
 
 GOLD_50 = [{"type": "GOLD", "amount": 50, "duration": 0}]
@@ -40,23 +41,3 @@ class TestFormAllianceClearsWorkingDeal:
         lua = build_form_alliance(0, "MILITARY")
         assert "ClearWorkingDeal(DealDirection.OUTGOING, me, target)" in lua
         assert "HasPendingDeal" not in lua
-
-
-class TestTestTradeCleansUp:
-    def test_clears_both_directions_on_exit(self):
-        """EQUALIZE populates both working deals. Leaving them behind is what
-        poisoned the next propose_trade."""
-        lua = build_test_trade(0, GOLD_50, OPEN_BORDERS)
-        assert "ClearWorkingDeal(DealDirection.OUTGOING, me, target)" in lua
-        assert "ClearWorkingDeal(DealDirection.INCOMING, me, target)" in lua
-
-    def test_cleanup_follows_the_equalize(self):
-        lua = build_test_trade(0, GOLD_50, [])
-        equalize = lua.index("DealProposalAction.EQUALIZE")
-        assert "ClearWorkingDeal(DealDirection.INCOMING" in lua[equalize:]
-
-    def test_preview_never_commits(self):
-        """A preview must not send ACCEPTED or PROPOSED — those execute."""
-        lua = build_test_trade(0, GOLD_50, OPEN_BORDERS)
-        assert "DealProposalAction.ACCEPTED" not in lua
-        assert "DealProposalAction.PROPOSED" not in lua

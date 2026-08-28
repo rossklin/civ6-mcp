@@ -701,26 +701,6 @@ class DealOptions:
     alliance_eligible: bool = False
     current_alliance: str | None = None
 
-
-@dataclass
-class TestTradeItem:
-    side: str  # "US" or "THEM"
-    item_type: str  # GOLD, RESOURCE, AGREEMENT, FAVOR, CITY, GREAT_WORK
-    amount: int
-    duration: int
-    value_id: str  # e.g. "YIELD_GOLD", "RESOURCE_HORSES"
-    subtype_id: str  # e.g. "DIPLOACTION_OPEN_BORDERS"
-
-
-@dataclass
-class TestTradeResult:
-    other_player_id: int
-    other_civ_name: str
-    proposed: list[TestTradeItem] = field(default_factory=list)
-    counter: list[TestTradeItem] = field(default_factory=list)
-    rejected: bool = False
-
-
 @dataclass
 class PolicySlot:
     """A government policy slot with its current policy."""

@@ -25,7 +25,6 @@ from civ_mcp.narrate import (
     narrate_goody_rewards,
     narrate_move_discoveries,
     narrate_settle_candidates,
-    narrate_test_trade,
 )
 from civ_mcp.narrate_unified import narrate_full_state
 
@@ -885,17 +884,6 @@ class GameState:
         # handoff.build_dismiss_leader_screen_lua).
         asyncio.create_task(self._cleanup_diplo_screen())
         return result
-
-    async def test_trade(
-        self,
-        other_player_id: int,
-        offer_items: list[dict],
-        request_items: list[dict],
-    ) -> str:
-        lua = lq.build_test_trade(other_player_id, offer_items, request_items)
-        lines = await self.conn.execute_write(lua)
-        result = lq.parse_test_trade_response(lines)
-        return narrate_test_trade(result)
 
     async def propose_peace(self, other_player_id: int) -> str:
         lua = lq.build_propose_peace(other_player_id)

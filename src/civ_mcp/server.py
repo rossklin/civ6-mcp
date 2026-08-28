@@ -2230,7 +2230,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             # agent is auto-resolved by end_turn (_auto_clear_diplomacy) —
             # silent decline/dismiss, wars reported in the turn report.
             "send_diplomatic_action", "propose_peace",
-            "form_alliance", "propose_trade", "test_trade",
+            "form_alliance", "propose_trade",
             "respond_to_trade", "respond_to_diplo_action",
             # Messaging (managed-player chat)
             "send_message",

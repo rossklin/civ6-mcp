@@ -18,8 +18,6 @@ from civ_mcp.lua.models import (
     DiplomacySession,
     OwnAbilities,
     PendingDeal,
-    TestTradeItem,
-    TestTradeResult,
     TradeableCity,
     TraitInfo,
     UniqueInfo,
@@ -1077,9 +1075,8 @@ local pDiplo = Players[me]:GetDiplomacy()
 if not pDiplo:HasMet(target) then {_bail("ERR:NOT_MET|Have not met player " + str(other_player_id))} end
 if pDiplo:IsAtWarWith(target) then {_bail("ERR:AT_WAR|Cannot trade while at war")} end
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
--- Always clear: the working deal persists across calls, and a leftover deal
--- (e.g. from a prior test_trade EQUALIZE) would stack its items underneath
--- ours and silently double the amounts actually traded.
+-- Always clear: the working deal persists across calls, and a leftover deal would
+-- stack its items underneath ours and silently double the amounts actually traded.
 DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target)
 local deal = DealManager.GetWorkingDeal(DealDirection.OUTGOING, me, target)
 if not deal then {_bail("ERR:NO_DEAL_OBJECT|Failed to get working deal")} end
@@ -1147,133 +1144,6 @@ end
 print("OK:" .. result .. "|Trade " .. result:lower() .. " with " .. name .. termsStr)
 print("{SENTINEL}")
 """
-
-
-def build_test_trade(
-    other_player_id: int,
-    offer_items: list[dict],
-    request_items: list[dict],
-) -> str:
-    """Test a trade deal via EQUALIZE — returns what the AI thinks is fair (InGame).
-
-    Same item format as build_propose_trade. Does NOT commit the deal.
-    """
-    offer_lua = " ".join(_lua_deal_item("me", item) for item in offer_items)
-    request_lua = " ".join(_lua_deal_item("target", item) for item in request_items)
-
-    return f"""
-local me = Game.GetLocalPlayer()
-local target = {other_player_id}
-local pDiplo = Players[me]:GetDiplomacy()
-if not pDiplo:HasMet(target) then {_bail("ERR:NOT_MET|Have not met player " + str(other_player_id))} end
-if pDiplo:IsAtWarWith(target) then {_bail("ERR:AT_WAR|Cannot trade while at war")} end
-local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
-print("CIV|" .. target .. "|" .. name:gsub("|","/"))
-pcall(function()
-    local sid = DiplomacyManager.FindOpenSessionID(me, target)
-    if sid and sid >= 0 then DiplomacyManager.CloseSession(sid) end
-end)
-DiplomacyManager.RequestSession(me, target, "MAKE_DEAL")
-DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target)
-local deal = DealManager.GetWorkingDeal(DealDirection.OUTGOING, me, target)
-if not deal then {_bail("ERR:NO_DEAL_OBJECT|Failed to get working deal")} end
-{offer_lua}
-{request_lua}
-print("PROPOSED_ITEMS")
-for item in deal:Items() do
-    local fromTag = item:GetFromPlayerID() == me and "US" or "THEM"
-    local itype = item:GetType()
-    local typeName = "UNKNOWN"
-    local ok3, vid = pcall(function() return item:GetValueTypeID() end); vid = (ok3 and vid) and tostring(vid) or ""
-    local ok4, sid2 = pcall(function() return item:GetSubTypeID() end); sid2 = (ok4 and sid2) and tostring(sid2) or ""
-    local amount = item:GetAmount() or 0
-    local duration = item:GetDuration() or 0
-    if itype == DealItemTypes.GOLD then typeName = "GOLD"
-    elseif itype == DealItemTypes.RESOURCES then typeName = "RESOURCE"
-    elseif itype == DealItemTypes.AGREEMENTS then typeName = "AGREEMENT"
-    elseif itype == DealItemTypes.FAVOR then typeName = "FAVOR"
-    elseif itype == DealItemTypes.CITIES then typeName = "CITY"
-    elseif itype == DealItemTypes.GREATWORK then typeName = "GREAT_WORK"
-    end
-    print("ITEM|" .. fromTag .. "|" .. typeName .. "|" .. amount .. "|" .. duration .. "|" .. vid .. "|" .. sid2)
-end
-DealManager.SendWorkingDeal(DealProposalAction.EQUALIZE, me, target)
-local inDeal = DealManager.GetWorkingDeal(DealDirection.INCOMING, me, target)
-if inDeal and inDeal:GetItemCount() and inDeal:GetItemCount() > 0 then
-    print("AI_COUNTER")
-    for item in inDeal:Items() do
-        local fromTag = item:GetFromPlayerID() == me and "US" or "THEM"
-        local itype = item:GetType()
-        local typeName = "UNKNOWN"
-        local ok3, vid = pcall(function() return item:GetValueTypeID() end); vid = (ok3 and vid) and tostring(vid) or ""
-        local ok4, sid2 = pcall(function() return item:GetSubTypeID() end); sid2 = (ok4 and sid2) and tostring(sid2) or ""
-        local amount = item:GetAmount() or 0
-        local duration = item:GetDuration() or 0
-        if itype == DealItemTypes.GOLD then typeName = "GOLD"
-        elseif itype == DealItemTypes.RESOURCES then typeName = "RESOURCE"
-        elseif itype == DealItemTypes.AGREEMENTS then typeName = "AGREEMENT"
-        elseif itype == DealItemTypes.FAVOR then typeName = "FAVOR"
-        elseif itype == DealItemTypes.CITIES then typeName = "CITY"
-        elseif itype == DealItemTypes.GREATWORK then typeName = "GREAT_WORK"
-        end
-        print("ITEM|" .. fromTag .. "|" .. typeName .. "|" .. amount .. "|" .. duration .. "|" .. vid .. "|" .. sid2)
-    end
-else
-    print("AI_COUNTER")
-    print("REJECTED")
-end
-pcall(function()
-    local sid = DiplomacyManager.FindOpenSessionID(me, target)
-    if sid and sid >= 0 then DiplomacyManager.CloseSession(sid) end
-end)
--- EQUALIZE leaves both working deals populated and HasPendingDeal true. Left
--- behind, those items stack under the next propose_trade and get traded for
--- real — this preview must not outlive itself.
-pcall(function() DealManager.ClearWorkingDeal(DealDirection.OUTGOING, me, target) end)
-pcall(function() DealManager.ClearWorkingDeal(DealDirection.INCOMING, me, target) end)
-print("{SENTINEL}")
-"""
-
-
-def parse_test_trade_response(lines: list[str]) -> TestTradeResult:
-    """Parse the test trade response."""
-    result = TestTradeResult(
-        other_player_id=0,
-        other_civ_name="",
-        proposed=[],
-        counter=[],
-        rejected=False,
-    )
-    section = ""
-    for line in lines:
-        if line.startswith("CIV|"):
-            parts = line.split("|")
-            if len(parts) >= 3:
-                result.other_player_id = int(parts[1])
-                result.other_civ_name = parts[2]
-        elif line == "PROPOSED_ITEMS":
-            section = "proposed"
-        elif line == "AI_COUNTER":
-            section = "counter"
-        elif line == "REJECTED":
-            result.rejected = True
-        elif line.startswith("ITEM|") and section:
-            parts = line.split("|")
-            if len(parts) >= 7:
-                item = TestTradeItem(
-                    side=parts[1],
-                    item_type=parts[2],
-                    amount=int(parts[3]),
-                    duration=int(parts[4]),
-                    value_id=parts[5],
-                    subtype_id=parts[6],
-                )
-                if section == "proposed":
-                    result.proposed.append(item)
-                else:
-                    result.counter.append(item)
-    return result
-
 
 def _eligibility_guard_lua(other_player_id: int, kind: str) -> str:
     """Lua guard that bails with ``ERR:...`` if a peace/alliance proposal is invalid.

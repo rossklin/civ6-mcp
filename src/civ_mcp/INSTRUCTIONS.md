@@ -136,9 +136,6 @@ Diplomacy & trade (other_player_id = target player ID):
     form_alliance(other_player_id, alliance_type, ...) — alliance_type:
         MILITARY | RESEARCH | CULTURAL | ECONOMIC | RELIGIOUS (required).
         You can also add trade items.
-    test_trade(other_player_id, offer_items, request_items) — dry-run check against default AI player.
-        Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount,
-        name, duration, subtype, city_id}.
     respond_to_trade(other_player_id, accept: bool) — accept/reject an
         incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
     respond_to_diplo_action(other_player_id, accept: bool) — accept/reject
@@ -359,7 +356,6 @@ tool for replying to an AI leader dialogue — do not look for one.
 - `send_diplomatic_action(other_player_id, action)` — action: DIPLOMATIC_DELEGATION (25g, worth sending on first meeting), DECLARE_FRIENDSHIP (requires Friendly status), RESIDENT_EMBASSY (requires Writing tech), plus DENOUNCE and the war declarations. For the three response-able actions (delegation/embassy/friendship) targeting a managed civ, the proposal is filed in the DIPLOMACY MAILBOX instead of the engine — the target answers on its own turn and your action takes effect on your next turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go straight to the engine.
 - `form_alliance(other_player_id, alliance_type)` — alliance_type: MILITARY/RESEARCH/CULTURAL/ECONOMIC/RELIGIOUS; requires declared friendship + Diplomatic Service civic. Targeting a managed civ routes through the deal mailbox after an eligibility check.
 - `propose_trade(other_player_id, ...)` — pass FLAT params: offer_gold, offer_gold_per_turn, offer_resources (comma-separated RESOURCE_TYPE names), offer_favor, offer_open_borders, plus the request_* equivalents; joint_war_target (player ID) for a joint war. Targeting a managed civ routes through the deal mailbox.
-- `test_trade(other_player_id, offer_items, request_items)` — dry-run check against the default AI player without committing. Each item dict: {type: GOLD|RESOURCE|FAVOR|AGREEMENT|CITY, amount, name, duration, subtype, city_id}.
 - `propose_peace(other_player_id)` — white peace; eligibility (at war, past cooldown) is checked first. Targeting a managed civ routes through the deal mailbox.
 - `respond_to_trade(other_player_id, accept)` — accept/reject an incoming mailbox deal from a managed civ (see DEAL MAILBOX in get_full_game_state).
 - `respond_to_diplo_action(other_player_id, accept)` — accept/reject an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy) from a managed civ. Accept marks it; the proposer's action takes effect on the proposer's next turn.
