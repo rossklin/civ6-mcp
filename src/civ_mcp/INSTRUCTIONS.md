@@ -344,6 +344,8 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 - **City Capture**: conquered or disloyal city — `resolve_city_capture("keep"/"reject"/"raze"/"liberate_founder"/"liberate_previous")`
 - Move responses show the **target tile**, not arrival position (async pathfinding)
 
+Note that if any production, research or similar has 1 turn left, that is not a blocker. It will simply complete next turn.
+
 ## Diplomacy
 
 **Reactive (AI-initiated):** handled automatically — you never interact with
