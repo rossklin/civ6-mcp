@@ -5,6 +5,8 @@ Powershell: uv run python -m pytest .\tests -q 2>&1
 Or bash equivalent.
 ## User interaction
 Do not use the AskUserQuestion tool, just ask the question in plain text.
+## General direction
+This project previously had different modes but is now only focused on the handoff mode
 ## Developing Lua code in this project
 All new Lua code should use the Lua template file structure:
 - Add a Lua template file in src/civ_mcp/lua
