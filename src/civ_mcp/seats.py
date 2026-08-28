@@ -96,6 +96,12 @@ class Seat:
     session_key: int | None = None
     client_name: str = ""
     pending_report: PendingTurnReport | None = None
+    # Turn-timer bookkeeping (see the unified tools in server.py): monotonic
+    # timestamp when this seat's timer started, and the game turn it started
+    # on.  The first get_full_game_state completion while the seat holds the
+    # clock starts it; the budget is 100 + turn seconds.
+    timer_start: float | None = None
+    timer_turn: int | None = None
 
     @property
     def claimed(self) -> bool:

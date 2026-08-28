@@ -2010,6 +2010,53 @@ async def get_agent_reference(ctx: Context) -> str:
 # lua/ modules — they're just not exposed as individual MCP tools.
 
 
+# Turn timer — a soft pace limit on each seat's own turn.  The seat has
+# 100 + <turn number> seconds, measured from the first get_full_game_state
+# completion while it holds the clock (the slow orientation fetch itself
+# costs no budget).  Nothing is actually terminated when the budget runs
+# out: execute_commands merely appends a yellow-card warning, to nudge the
+# agent toward an imperfect-but-timely turn instead of endless deliberation.
+_TURN_TIMER_BASE_SECONDS = 100
+
+
+def _start_turn_timer(seat: Seat, own: TurnOwnership) -> None:
+    """Start the seat's turn timer, unless it already runs for this turn.
+
+    Only the *first* get_full_game_state completion of a turn starts the
+    clock — later calls that same turn leave it running.  Reads made while
+    another player is on the clock never start it, so scouting during
+    someone else's turn does not eat the budget.
+    """
+    if own.local_player != seat.player_id:
+        return
+    if own.turn is None or seat.timer_turn == own.turn:
+        return
+    seat.timer_turn = own.turn
+    seat.timer_start = time.monotonic()
+    log.info("[T%s] turn timer started for P%s", own.turn, seat.player_id)
+
+
+async def _turn_timer_warning(seat: Seat, conn: GameConnection) -> str | None:
+    """Yellow-card text when the seat is over budget on its own turn."""
+    if seat.timer_start is None or seat.timer_turn is None:
+        return None
+    # Judge against the live game, not the stale timer: a timer left over
+    # from an earlier turn (the agent never oriented this turn) never fires.
+    own = await handoff.try_ownership(conn)
+    if own.turn != seat.timer_turn or own.local_player != seat.player_id:
+        return None
+    budget = _TURN_TIMER_BASE_SECONDS + seat.timer_turn
+    over = (time.monotonic() - seat.timer_start) - budget
+    if over <= 0:
+        return None
+    return (
+        f"\n\n⚠ YELLOW CARD: you have exceeded the turn time limit "
+        f"(over by {over:.0f}s; your budget is {budget}s = 100 + turn "
+        "number). The turn will be terminated if this happens again. "
+        "Accept an imperfect solution and finish your turn."
+    )
+
+
 @mcp.tool(
     annotations={"readOnlyHint": True},
     meta={"anthropic/maxResultSizeChars": 500000},
@@ -2181,6 +2228,10 @@ async def get_full_game_state(ctx: Context) -> str:
                         text += f"\n[{who} P{other} (T{m.turn})] {m.text}"
         except Exception:
             log.debug("Failed to append messages", exc_info=True)
+
+        # The turn timer starts now, at completion: get_full_game_state's
+        # own (slow) runtime is not charged against the seat's budget.
+        _start_turn_timer(_get_seat(ctx), status)
 
         return text
 
@@ -2505,7 +2556,57 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
 
         return "\n".join(results) if results else "No commands to execute."
 
-    return await _logged(ctx, "execute_commands", {}, _run)
+    result = await _logged(ctx, "execute_commands", {}, _run)
+    # Over-budget turns get a yellow card appended — a warning only, the
+    # commands above were executed regardless.
+    warning = await _turn_timer_warning(seat, gs.conn)
+    if warning:
+        result += warning
+    return result
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_turn_timer(ctx: Context) -> str:
+    """Check how much time you have left to play this turn.
+
+    Your turn timer starts when get_full_game_state first completes on your
+    turn (that call's own runtime is not counted against you), and your
+    budget is 100 + <turn number> seconds. Once the budget is spent,
+    execute_commands appends a yellow-card warning.
+    """
+    gs = _get_game(ctx)
+    seat = _get_seat(ctx)
+
+    async def _run():
+        own = await handoff.try_ownership(gs.conn)
+        if own.turn is None:
+            return (
+                "Could not read the current turn — the game may not have a "
+                "save loaded."
+            )
+        budget = _TURN_TIMER_BASE_SECONDS + own.turn
+        if seat.timer_start is None or seat.timer_turn != own.turn:
+            return (
+                f"Turn {own.turn}: your turn timer has not started yet. It "
+                "starts when get_full_game_state first completes on your "
+                f"turn; your budget will be {budget}s (100 + turn number)."
+            )
+        elapsed = time.monotonic() - seat.timer_start
+        remaining = budget - elapsed
+        if remaining >= 0:
+            return (
+                f"Turn {own.turn}: {remaining:.0f}s remaining of your "
+                f"{budget}s budget (100 + turn number). "
+                f"Elapsed: {elapsed:.0f}s."
+            )
+        return (
+            f"Turn {own.turn}: TIME EXCEEDED — {(-remaining):.0f}s over your "
+            f"{budget}s budget (100 + turn number). execute_commands now "
+            "appends a yellow-card warning. Accept an imperfect solution "
+            "and finish your turn."
+        )
+
+    return await _logged(ctx, "get_turn_timer", {}, _run)
 
 
 # ---------------------------------------------------------------------------
