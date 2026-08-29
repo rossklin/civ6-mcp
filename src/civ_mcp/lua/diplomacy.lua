@@ -9,6 +9,7 @@ local me = Game.GetLocalPlayer()
 local pDiplo = Players[me]:GetDiplomacy()
 local pVis = PlayersVisibility[me]
 local states = {"ALLIED","DECLARED_FRIEND","FRIENDLY","NEUTRAL","UNFRIENDLY","DENOUNCED","WAR"}
+local aNames = {"RESEARCH","CULTURAL","ECONOMIC","MILITARY","RELIGIOUS"}
 local checkActions = {"DIPLOACTION_DIPLOMATIC_DELEGATION","DIPLOACTION_DECLARE_FRIENDSHIP","DIPLOACTION_DENOUNCE","DIPLOACTION_RESIDENT_EMBASSY","DIPLOACTION_OPEN_BORDERS","DIPLOACTION_MAKE_ALLIANCE"}
 
 local out = {}
@@ -66,20 +67,101 @@ end
 local myMil = 0
 pcall(function() myMil = Players[me]:GetStats():GetMilitaryStrength() or 0 end)
 
--- Third-party defensive pacts between met civs, collected up front so each
--- civ's block can list its partners inline (pid -> list of partner pids,
--- ascending like the old PACT|a|b|DEFENSIVE scan).
-local pactPartners = {}
+-- Third-party relationships between the other met civs, collected up front
+-- so each civ's block can list them inline: relOthers[pid] = list of
+-- descriptor strings. Only pairs where we have met BOTH civs are included
+-- (the game hides relationship intel on civs we haven't met). What started
+-- as the PACT|a|b|DEFENSIVE scan now also covers alliances, declared
+-- friendships, open borders, denouncements and wars.
+local relOthers = {}
+local function addPairRel(i, j, descFn)
+    -- descFn(selfPid, otherPid) returns the fragment for self's block, so
+    -- directional relationships can phrase each side correctly.
+    if relOthers[i] == nil then relOthers[i] = {} end
+    if relOthers[j] == nil then relOthers[j] = {} end
+    table.insert(relOthers[i], descFn(i, j))
+    table.insert(relOthers[j], descFn(j, i))
+end
+local function partnerName(pid)
+    return civDisplayName(pid) .. " (player " .. pid .. ")"
+end
 for i = 0, 62 do
     if i ~= me and Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() and pDiplo:HasMet(i) then
         for j = i + 1, 62 do
             if j ~= me and Players[j] and Players[j]:IsAlive() and Players[j]:IsMajor() and pDiplo:HasMet(j) then
-                local okP, hp = pcall(function() return Players[i]:GetDiplomacy():HasDefensivePact(j) end)
+                local iDiplo = Players[i]:GetDiplomacy()
+                local jDiplo = Players[j]:GetDiplomacy()
+                -- Diplomatic state index each way (offset into the states
+                -- table: 0=ALLIED, 1=DECLARED_FRIEND, 5=DENOUNCED; -1 when
+                -- they have not met each other, in which case nothing below
+                -- matches).
+                local si, sj = -1, -1
+                pcall(function() si = Players[i]:GetDiplomaticAI():GetDiplomaticStateIndex(j) end)
+                pcall(function() sj = Players[j]:GetDiplomaticAI():GetDiplomaticStateIndex(i) end)
+
+                local okW, atWar = pcall(function() return iDiplo:IsAtWarWith(j) end)
+                if okW and atWar then
+                    addPairRel(i, j, function(_, other)
+                        return "at war with " .. partnerName(other)
+                    end)
+                end
+
+                -- Alliance is mutual; the type index is only meaningful
+                -- while the ALLIED state is set.
+                if si == 0 or sj == 0 then
+                    local aType, aLevel = -1, 1
+                    pcall(function() aType = iDiplo:GetAllianceType(j) or -1 end)
+                    pcall(function() aLevel = iDiplo:GetAllianceLevel(j) or 1 end)
+                    local typeStr = ((aType >= 0 and aNames[aType + 1]) or "unknown"):lower()
+                    local lvlStr = ""
+                    if aLevel > 0 then lvlStr = " Lv" .. aLevel end
+                    addPairRel(i, j, function(_, other)
+                        return typeStr .. " alliance" .. lvlStr .. " with " .. partnerName(other)
+                    end)
+                end
+
+                if si == 1 or sj == 1 then
+                    addPairRel(i, j, function(_, other)
+                        return "declared friends with " .. partnerName(other)
+                    end)
+                end
+
+                -- Open borders is directional: HasOpenBordersFrom(j) on
+                -- iDiplo means j granted passage, so i's units may enter j's
+                -- lands (usually traded both ways in one deal).
+                local obi, obj = false, false
+                pcall(function() obi = iDiplo:HasOpenBordersFrom(j) end)
+                pcall(function() obj = jDiplo:HasOpenBordersFrom(i) end)
+                if obi or obj then
+                    addPairRel(i, j, function(self, other)
+                        if obi and obj then return "open borders with " .. partnerName(other) end
+                        if (self == i) == obi then return "gets open borders from " .. partnerName(other) end
+                        return "gives open borders to " .. partnerName(other)
+                    end)
+                end
+
+                -- Denunciation is directional too: GetDenounceTurn(k) is the
+                -- turn this player denounced the other (-1 when none); the
+                -- DENOUNCED state only says somebody did.
+                if si == 5 or sj == 5 then
+                    local iDT, jDT = -1, -1
+                    pcall(function() iDT = iDiplo:GetDenounceTurn(j) or -1 end)
+                    pcall(function() jDT = jDiplo:GetDenounceTurn(i) or -1 end)
+                    addPairRel(i, j, function(self, other)
+                        local selfDT = (self == i) and iDT or jDT
+                        local otherDT = (self == i) and jDT or iDT
+                        if selfDT >= 0 and otherDT >= 0 then return "mutually denounced with " .. partnerName(other) end
+                        if selfDT >= 0 then return "denounced " .. partnerName(other) end
+                        if otherDT >= 0 then return "denounced by " .. partnerName(other) end
+                        return "denunciation with " .. partnerName(other)
+                    end)
+                end
+
+                local okP, hp = pcall(function() return iDiplo:HasDefensivePact(j) end)
                 if okP and hp then
-                    if pactPartners[i] == nil then pactPartners[i] = {} end
-                    if pactPartners[j] == nil then pactPartners[j] = {} end
-                    table.insert(pactPartners[i], j)
-                    table.insert(pactPartners[j], i)
+                    addPairRel(i, j, function(_, other)
+                        return "defensive pact with " .. partnerName(other)
+                    end)
                 end
             end
         end
@@ -130,7 +212,6 @@ for i = 0, 62 do
             if stateIdx == 0 then
                 local ok3, aType = pcall(function() return pDiplo:GetAllianceType(i) end)
                 if ok3 and aType and aType >= 0 then
-                    local aNames = {"RESEARCH","CULTURAL","ECONOMIC","MILITARY","RELIGIOUS"}
                     local aLevel = 1
                     pcall(function() aLevel = pDiplo:GetAllianceLevel(i) or 1 end)
                     local lvlStr = ""
@@ -223,13 +304,11 @@ for i = 0, 62 do
                 end
             end
 
-            -- Defensive pacts
-            if pactPartners[i] then
-                local pactNames = {}
-                for _, pid in ipairs(pactPartners[i]) do
-                    table.insert(pactNames, civDisplayName(pid) .. " (player " .. pid .. ")")
-                end
-                line("    !! DEFENSIVE PACTS with: " .. table.concat(pactNames, ", "))
+            -- Relationships with the other civilizations (alliances,
+            -- declared friendships, open borders, denouncements, wars,
+            -- defensive pacts — gathered by the pair scan above)
+            if relOthers[i] then
+                line("    With other civs: " .. table.concat(relOthers[i], "; "))
             end
 
             -- Agendas (hidden for managed civs; visibility-gated: historical
