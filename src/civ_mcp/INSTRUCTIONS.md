@@ -19,15 +19,17 @@ As the sub agent, your task is to play through a full turn loop as explained bel
 
 Each turn in order:
 1. `get_full_game_state`
-2. Consider whether any changes are needed to the turn action plan while checking the turn timer regularly
-3. `execute_commands` with your planned actions. You can iterate this step if required, for instance to set production in
-    a city after founding it. But minimize the number of calls.
-5. `end_turn` — advance the turn and get your post-turn report.
-6. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn.
-7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
-8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
+2. Quickly sort the diary plan items (this pass should take well under 500 words of thinking): execute as planned if nothing in the game state visibly contradicts them, or contested if enemy positions or other new information raise questions. Do not resolve contested items now. Immediately `execute_commands` the execute-as-planned items (skip the call if there are none). Contested items go at the top of your step-3 list.
+3. Call `get_turn_timer`. If you have less than 45s left, proceed immediately to step 7 to end the turn. Otherwise, make a prioritized list of any additional items you would like to address this turn. This can include both new actions needed that were not present in the plan due to new information and follow up actions to existing plan items such as setting the production in a city after founding it.
+4. Call `get_turn_timer`. If you have more than 45s left you can take a moment to think about what to do to address the first action item on your list. You should not spend more than about 400 words thinking about this one action item. 
+5. Repeat step 4 for the second action item, then the third and so on, until you have less than 45s left or no more items require consideration. 
+6. If needed, call `execute_commands` on the items from step 4-5. You can then add follow up items to your list if new information surfaces as a result of the commands you execute. If you do, go back to step 4 and check if you have time to do another iteration.
+7. `end_turn` — advance the turn and get your post-turn report.
+8. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn. The action plan for next turn should be concrete. It should not contain items like "think about X" or "consider Y", it should be directly applicable to `execute_commands`. At this point you are no longer on the clock so you can take your time.
+9. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
+10. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
 
-IMPORTANT the turn is on a timer. After your initial call to `get_full_game_state` completes, you will have 100+T seconds to think (where T is the current turn number). Your last call to `execute_commands` must be made before the time runs out. So you must call `get_turn_timer` regularly to make sure you finish in time. When thinking you go through about 50 words per second, so you should probably interrupt yourself to check the time every 500 words or so. If you do not have a solution for all the problems you face this turn but you notice you are running out of time, you should accept that you will have to make imperfect decisions. Stop reasoning about the turn immediately and proceed to execute commands even if you are not sure what is the correct decision. It is more important that you execute commands in time. After calling end turn, you can take all the time you need to finish reasoning about the situation and writing a great plan for the next turn.
+IMPORTANT the turn is on a timer. After your initial call to `get_full_game_state` completes, you will have 100+T seconds to think (where T is the current turn number). Assume that thinking goes at about 20 words per second, so this is about 4000 words worth of thinking for the whole turn at turn 100. Your last call to `execute_commands` must be made before the time runs out. 
 
 When `wait_for_turn` returns indicating your next turn has started, write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. You should not report what you did during the turn, just bugs and issues. IMPORTANT stop after this, you are done with your task. Do NOT start playing the next turn.
 
