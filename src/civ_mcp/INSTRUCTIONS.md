@@ -19,13 +19,15 @@ As the sub agent, your task is to play through a full turn loop as explained bel
 
 Each turn in order:
 1. `get_full_game_state`
-2. Consider whether any changes are needed to the turn action plan
+2. Consider whether any changes are needed to the turn action plan while checking the turn timer regularly
 3. `execute_commands` with your planned actions. You can iterate this step if required, for instance to set production in
     a city after founding it. But minimize the number of calls.
 5. `end_turn` — advance the turn and get your post-turn report.
 6. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn.
 7. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 8. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
+
+IMPORTANT the turn is on a timer. After your initial call to `get_full_game_state` completes, you will have 100+T seconds to think (where T is the current turn number). Your last call to `execute_commands` must be made before the time runs out. So you must call `get_turn_timer` regularly to make sure you finish in time. When thinking you go through about 50 words per second, so you should probably interrupt yourself to check the time every 500 words or so. If you do not have a solution for all the problems you face this turn but you notice you are running out of time, you should accept that you will have to make imperfect decisions. Stop reasoning about the turn immediately and proceed to execute commands even if you are not sure what is the correct decision. It is more important that you execute commands in time. After calling end turn, you can take all the time you need to finish reasoning about the situation and writing a great plan for the next turn.
 
 When `wait_for_turn` returns indicating your next turn has started, write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. You should not report what you did during the turn, just bugs and issues. IMPORTANT stop after this, you are done with your task. Do NOT start playing the next turn.
 
