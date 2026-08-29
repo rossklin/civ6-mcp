@@ -19,17 +19,17 @@ As the sub agent, your task is to play through a full turn loop as explained bel
 
 Each turn in order:
 1. `get_full_game_state`
-2. Quickly sort the diary plan items (this pass should take well under 500 words of thinking): execute as planned if nothing in the game state visibly contradicts them, or contested if enemy positions or other new information raise questions. Do not resolve contested items now. Immediately `execute_commands` the execute-as-planned items (skip the call if there are none). Contested items go at the top of your step-3 list.
-3. Call `get_turn_timer`. If you have less than 45s left, proceed immediately to step 7 to end the turn. Otherwise, make a prioritized list of any additional items you would like to address this turn. This can include both new actions needed that were not present in the plan due to new information and follow up actions to existing plan items such as setting the production in a city after founding it.
+2. Quickly sort the diary plan items (this pass should take well under 500 words of thinking): execute as planned if nothing in the game state visibly contradicts them, or contested if enemy positions or other new information raise questions. Do not resolve contested items now. Immediately `execute_commands` the execute-as-planned items (skip the call if there are none). Contested items go at the top of your step-3 list. IMPORTANT!!! You do not have time to think about what to do in this step. You should focus ONLY on sorting the items, NOT resolving them. Is it obvious what to do based on the plan? Add it to the execute list. Is it not obvious? DO NOT think about how to solve it. Just add it to the step-3 list. Remember to ask yourself "Roughly how many words have I been thinking so far?" every now and then. If that number is more than 500 you need to immediately wrap it up and execute the commands as best you can.
+3. Call `get_turn_timer`. If you have less than 45s left, proceed immediately to step 7 to end the turn. Otherwise, make a prioritized list of the items from step 2 plus any additional items you would like to address this turn. This can include both new actions needed that were not present in the plan due to new information and follow up actions to existing plan items such as setting the production in a city after founding it.
 4. Call `get_turn_timer`. If you have more than 45s left you can take a moment to think about what to do to address the first action item on your list. You should not spend more than about 400 words thinking about this one action item. 
 5. Repeat step 4 for the second action item, then the third and so on, until you have less than 45s left or no more items require consideration. 
 6. If needed, call `execute_commands` on the items from step 4-5. You can then add follow up items to your list if new information surfaces as a result of the commands you execute. If you do, go back to step 4 and check if you have time to do another iteration.
 7. `end_turn` — advance the turn and get your post-turn report.
-8. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn. The action plan for next turn should be concrete. It should not contain items like "think about X" or "consider Y", it should be directly applicable to `execute_commands`. At this point you are no longer on the clock so you can take your time.
+8. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn. It should be concrete. It should not contain items like "think about X" or multiple options for an action, it should be directly applicable to `execute_commands`. The exception is enemy units, since of course they may have moved next turn. Don't write a concrete plan for handling enemy units, instead just write something like "handle enemy units at location X" and leave it up to the next turn agent. At this point you are no longer on the clock so you can take your time to think about the plans and notes.
 9. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 10. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
 
-IMPORTANT the turn is on a timer. After your initial call to `get_full_game_state` completes, you will have 100+T seconds to think (where T is the current turn number). Assume that thinking goes at about 20 words per second, so this is about 4000 words worth of thinking for the whole turn at turn 100. Your last call to `execute_commands` must be made before the time runs out. 
+IMPORTANT the turn is on a timer. After your initial call to `get_full_game_state` completes, you will have 100+T seconds to think (where T is the current turn number). Assume that thinking goes at about 20 words per second, so this is about 4000 words worth of thinking for the whole turn at turn 100. Your last call to `execute_commands` must be made before the time runs out. This may sound harsh but remember this game is very complex and it is not intended to be played perfectly. It's OK to focus on getting the main actions right and let some less important actions be left undone or make some mistakes. 
 
 When `wait_for_turn` returns indicating your next turn has started, write a list of any issues or bugs you ran into, any unexpected behaviour, any information you needed that was not available, and whether you needed to look anything up in the civilopedia. This should be your report to the manager agent. You should not report what you did during the turn, just bugs and issues. IMPORTANT stop after this, you are done with your task. Do NOT start playing the next turn.
 
@@ -50,7 +50,7 @@ Execute a batch of game commands sequentially. Here is the full reference of eac
 Args:
     commands_json: A JSON array of command objects. Each object has:
         - action: The command name (a game action name, case-sensitive)
-        - params: Dict of parameters for that command
+        - params: Dict of parameters for that command, where the names of the parameters are the keys
 
 Example:
     [{"action": "move_unit", "params": {"unit_index": 0, "target_x": 10, "target_y": 20}},
@@ -98,7 +98,7 @@ Settling & cities:
     set_city_production(city_id, item_type, item_name, target_x?, target_y?)
         item_type: UNIT | BUILDING | DISTRICT; item_name e.g. UNIT_WARRIOR,
         BUILDING_GRANARY, DISTRICT_CAMPUS. DISTRICTs and wonders require
-        target_x/target_y (use get_district_advisor / get_wonder_advisor).
+        target_x/target_y.
         purchase_item(city_id, item_type, item_name, yield_type="YIELD_GOLD")
         item_type: UNIT | BUILDING; yield_type: YIELD_GOLD | YIELD_FAITH.
     list_city_production(city_id) — what the city can build now
@@ -155,8 +155,7 @@ Messaging (managed-player chat; see MESSAGES in state):
         === MESSAGES === section of get_full_game_state.
 
 Governance:
-    set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"};
-        use "NONE" to clear a slot
+    set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"}
     change_government(government_type) — e.g. GOVERNMENT_OLIGARCHY
     appoint_governor(governor_type) — e.g. GOVERNOR_THE_CARDINAL
     assign_governor(governor_type, city_id)
