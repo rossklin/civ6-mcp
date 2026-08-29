@@ -2232,6 +2232,7 @@ async def get_full_game_state(ctx: Context) -> str:
         # The turn timer starts now, at completion: get_full_game_state's
         # own (slow) runtime is not charged against the seat's budget.
         _start_turn_timer(_get_seat(ctx), status)
+        text += f"\n\n=== TURN TIMER ===\n{get_turn_timer(ctx)}"
 
         return text
 
@@ -2596,7 +2597,7 @@ async def get_turn_timer(ctx: Context) -> str:
         if remaining >= 0:
             return (
                 f"Turn {own.turn}: {remaining:.0f}s remaining of your "
-                f"{budget}s budget (100 + turn number). "
+                f"{budget}s budget, that is roughly {(20 * remaining):.0f} words worth of thinking. "
                 f"Elapsed: {elapsed:.0f}s."
             )
         return (
