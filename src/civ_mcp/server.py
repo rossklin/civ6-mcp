@@ -2232,7 +2232,8 @@ async def get_full_game_state(ctx: Context) -> str:
         # The turn timer starts now, at completion: get_full_game_state's
         # own (slow) runtime is not charged against the seat's budget.
         _start_turn_timer(_get_seat(ctx), status)
-        text += f"\n\n=== TURN TIMER ===\n{get_turn_timer(ctx)}"
+        timer_str = await get_turn_timer(ctx)
+        text += f"\n\n=== TURN TIMER ===\n{timer_str}"
 
         return text
 
