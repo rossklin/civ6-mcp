@@ -10,18 +10,14 @@ from civ_mcp.lua._helpers import (
     load_lua_template,
 )
 from civ_mcp.lua.models import (
-    AgendaInfo,
-    CivInfo,
     DealItem,
     DealOptions,
-    DiplomacyModifier,
     DiplomacySession,
     OwnAbilities,
     PendingDeal,
     TradeableCity,
     TraitInfo,
     UniqueInfo,
-    VisibleCity,
 )
 
 # ---------------------------------------------------------------------------
@@ -101,8 +97,9 @@ end
 
 # Lua snippet that builds a ``traitUniques`` map: traitType -> list of
 # "CATEGORY|name|description" strings for the unique units/buildings/
-# districts/improvements granted by that trait. Used by both the diplomacy
-# query (per-rival uniques) and the own-abilities query.
+# districts/improvements granted by that trait. Used by the own-abilities
+# query (diplomacy.lua, the per-rival uniques consumer, builds its own
+# record-shaped copy inline).
 _LUA_BUILD_TRAIT_UNIQUES = _LUA_CLEAN_TEXT + """
 local traitUniques = {}
 local function addUnique(t, kind, name, desc)
@@ -115,179 +112,6 @@ for b in GameInfo.Buildings() do addUnique(b.TraitType, "BUILDING", _loc(b.Name)
 for d in GameInfo.Districts() do addUnique(d.TraitType, "DISTRICT", _loc(d.Name), _loc(d.Description)) end
 for imp in GameInfo.Improvements() do addUnique(imp.TraitType, "IMPROVEMENT", _loc(imp.Name), _loc(imp.Description)) end
 """
-
-
-def build_diplomacy_query() -> str:
-    """Rich diplomacy query — runs in InGame context for GetDiplomaticAI access."""
-    return """
-local me = Game.GetLocalPlayer()
-local pDiplo = Players[me]:GetDiplomacy()
-local pVis = PlayersVisibility[me]
-local states = {"ALLIED","DECLARED_FRIEND","FRIENDLY","NEUTRAL","UNFRIENDLY","DENOUNCED","WAR"}
-local checkActions = {"DIPLOACTION_DIPLOMATIC_DELEGATION","DIPLOACTION_DECLARE_FRIENDSHIP","DIPLOACTION_DENOUNCE","DIPLOACTION_RESIDENT_EMBASSY","DIPLOACTION_OPEN_BORDERS","DIPLOACTION_MAKE_ALLIANCE"}
-{TRAIT_UNIQUES}
-for i = 0, 62 do
-    if i ~= me and Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() then
-        local cfg = PlayerConfigurations[i]
-        local civName = Locale.Lookup(cfg:GetCivilizationShortDescription())
-        local leaderName = Locale.Lookup(cfg:GetLeaderName())
-        local met = pDiplo:HasMet(i) and "1" or "0"
-        local war = pDiplo:IsAtWarWith(i) and "1" or "0"
-        if pDiplo:HasMet(i) then
-            local ai = Players[i]:GetDiplomaticAI()
-            local stateIdx = ai:GetDiplomaticStateIndex(me)
-            local stateName = states[stateIdx + 1] or tostring(stateIdx)
-            local grievances = pDiplo:GetGrievancesAgainst(i)
-            local vis = pDiplo:GetVisibilityOn(i)
-            local hasDel = pDiplo:HasDelegationAt(i) and "1" or "0"
-            local hasEmb = pDiplo:HasEmbassyAt(i) and "1" or "0"
-            local theyDel = Players[i]:GetDiplomacy():HasDelegationAt(me) and "1" or "0"
-            local theyEmb = Players[i]:GetDiplomacy():HasEmbassyAt(me) and "1" or "0"
-            print("CIV|" .. i .. "|" .. civName .. "|" .. leaderName .. "|" .. met .. "|" .. war .. "|" .. stateName .. "|" .. grievances .. "|" .. vis .. "|" .. hasDel .. "|" .. hasEmb .. "|" .. theyDel .. "|" .. theyEmb)
-            local okMil, milStr = pcall(function() return Players[i]:GetStats():GetMilitaryStrength() end)
-            local okMyMil, myMilStr = pcall(function() return Players[me]:GetStats():GetMilitaryStrength() end)
-            if okMil and okMyMil then print("MILITARY|" .. i .. "|" .. (milStr or 0) .. "|" .. (myMilStr or 0)) end
-            local nCivCities = 0
-            for _, ec in Players[i]:GetCities():Members() do
-                nCivCities = nCivCities + 1
-                local ecx, ecy = ec:GetX(), ec:GetY()
-                if pVis:IsRevealed(ecx, ecy) then
-                    local ecName = Locale.Lookup(ec:GetName())
-                    local ecPop = ec:GetPopulation()
-                    local ecLoy, ecLoyPT = 100, 0
-                    local ecCult = ec:GetCulturalIdentity()
-                    if ecCult then ecLoy = ecCult:GetLoyalty(); ecLoyPT = ecCult:GetLoyaltyPerTurn() end
-                    local ecWalls, ecDef = 0, 0
-                    pcall(function()
-                        for _, d in ec:GetDistricts():Members() do
-                            local di = GameInfo.Districts[d:GetType()]
-                            if di and di.DistrictType == "DISTRICT_CITY_CENTER" then
-                                ecWalls = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
-                                ecDef = ec:GetStrengthValue() or 0
-                                break
-                            end
-                        end
-                    end)
-                    print("ECITY|" .. i .. "|" .. ecName:gsub("|","/") .. "|" .. ecx .. "," .. ecy .. "|" .. ecPop .. "|" .. string.format("%.0f|%.1f", ecLoy, ecLoyPT) .. "|" .. ecWalls .. "|" .. ecDef)
-                end
-            end
-            print("CIVCITIES|" .. i .. "|" .. nCivCities)
-            local mods = ai:GetDiplomaticModifiers(me)
-            if mods then
-                for _, mod in ipairs(mods) do
-                    local txt = tostring(mod.Text):gsub("|", "/")
-                    print("MOD|" .. i .. "|" .. mod.Score .. "|" .. txt)
-                end
-            end
-            if stateIdx == 0 then
-                local ok3, aType = pcall(function() return pDiplo:GetAllianceType(i) end)
-                if ok3 and aType and aType >= 0 then
-                    local aNames = {"RESEARCH","CULTURAL","ECONOMIC","MILITARY","RELIGIOUS"}
-                    local aLevel = 1
-                    pcall(function() aLevel = pDiplo:GetAllianceLevel(i) or 1 end)
-                    print("ALLIANCE|" .. i .. "|" .. (aNames[aType+1] or tostring(aType)) .. "|" .. aLevel)
-                end
-            end
-            local avail = {}
-            for _, aName in ipairs(checkActions) do
-                local ok2, valid = pcall(function() return pDiplo:IsDiplomaticActionValid(aName, i, false) end)
-                if ok2 and valid then
-                    local label = aName:gsub("DIPLOACTION_", "")
-                    if label == "OPEN_BORDERS" then label = "Open Borders (via propose_trade)" end
-                    table.insert(avail, label)
-                end
-            end
-            if not pDiplo:IsAtWarWith(i) then
-                local canWar = false
-                pcall(function() canWar = pDiplo:CanDeclareWarOn(i) end)
-                if canWar then table.insert(avail, "DECLARE_WAR") end
-            end
-            if #avail > 0 then print("ACTIONS|" .. i .. "|" .. table.concat(avail, ",")) end
-            -- Agendas (visibility-gated: historical always, random only at SECRET+)
-            local okAg, agendas = pcall(function() return Players[i]:GetAgendaTypes() end)
-            if okAg and agendas then
-                local histSet = {}
-                local leaderType = cfg:GetLeaderTypeName()
-                for ha in GameInfo.HistoricalAgendas() do
-                    if ha.LeaderType == leaderType then
-                        local aDef = GameInfo.Agendas[ha.AgendaType]
-                        if aDef then histSet[aDef.Index] = true end
-                    end
-                end
-                local vis = pDiplo:GetVisibilityOn(i)
-                for _, agIdx in ipairs(agendas) do
-                    local aDef = GameInfo.Agendas[agIdx]
-                    if aDef then
-                        local isHist = histSet[agIdx] or false
-                        if isHist then
-                            print("AGENDA|" .. i .. "|HISTORICAL|" .. Locale.Lookup(aDef.Name) .. "|" .. Locale.Lookup(aDef.Description))
-                        elseif vis >= 3 then
-                            print("AGENDA|" .. i .. "|HIDDEN|" .. Locale.Lookup(aDef.Name) .. "|" .. Locale.Lookup(aDef.Description))
-                        else
-                            print("AGENDA|" .. i .. "|HIDDEN|???|Requires Secret diplomatic visibility (spy or alliance)")
-                        end
-                    end
-                end
-            end
-            -- Unique abilities (civ + leader traits) and unique units/buildings/
-            -- districts/improvements. Only the named ability traits carry a
-            -- Description; marker traits (e.g. infrastructure tags) are filtered
-            -- out by requiring a non-empty description.
-            local civType = cfg:GetCivilizationTypeName()
-            local leaderType = cfg:GetLeaderTypeName()
-            local traitSeen = {}
-            for ct in GameInfo.CivilizationTraits() do
-                if ct.CivilizationType == civType and traitSeen[ct.TraitType] == nil then
-                    traitSeen[ct.TraitType] = true
-                    local tDef = GameInfo.Traits[ct.TraitType]
-                    if tDef and tDef.Description and tDef.Description ~= "" then
-                        local tName = _loc(tDef.Name)
-                        if tName == "" then tName = ct.TraitType end
-                        local tDesc = _loc(tDef.Description)
-                        print("TRAIT|" .. i .. "|CIVILIZATION|" .. tName .. "|" .. tDesc)
-                    end
-                end
-            end
-            for lt in GameInfo.LeaderTraits() do
-                if lt.LeaderType == leaderType and traitSeen[lt.TraitType] == nil then
-                    traitSeen[lt.TraitType] = true
-                    local tDef = GameInfo.Traits[lt.TraitType]
-                    if tDef and tDef.Description and tDef.Description ~= "" then
-                        local tName = _loc(tDef.Name)
-                        if tName == "" then tName = lt.TraitType end
-                        local tDesc = _loc(tDef.Description)
-                        print("TRAIT|" .. i .. "|LEADER|" .. tName .. "|" .. tDesc)
-                    end
-                end
-            end
-            for t in pairs(traitSeen) do
-                local list = traitUniques[t]
-                if list then
-                    for _, u in ipairs(list) do
-                        print("UNIQUE|" .. i .. "|" .. u)
-                    end
-                end
-            end
-            local okPact, hasPact = pcall(function() return Players[i]:GetDiplomacy():HasDefensivePact(me) end)
-            if okPact and hasPact then print("PACT|" .. i .. "|DEFENSIVE") end
-        else
-            print("CIV|" .. i .. "|Unmet Civilization|Unknown Leader|" .. met .. "|" .. war .. "|UNKNOWN|0|0|0|0|0|0")
-        end
-    end
-end
--- Scan for third-party defensive pacts
-for i = 0, 62 do
-    if i ~= me and Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() and pDiplo:HasMet(i) then
-        for j = i+1, 62 do
-            if j ~= me and Players[j] and Players[j]:IsAlive() and Players[j]:IsMajor() and pDiplo:HasMet(j) then
-                local okP, hp = pcall(function() return Players[i]:GetDiplomacy():HasDefensivePact(j) end)
-                if okP and hp then print("PACT|" .. i .. "|" .. j .. "|DEFENSIVE") end
-            end
-        end
-    end
-end
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL).replace("{TRAIT_UNIQUES}", _LUA_BUILD_TRAIT_UNIQUES)
 
 
 def build_own_abilities_query() -> str:
@@ -379,7 +203,7 @@ def build_diplo_state_watch_query() -> str:
     player (InGame context — GetDiplomaticAI access).
 
     ``DIPLO_STATE|<pid>|<civ>|<leader>|<STATE>`` where STATE is the same
-    mapping as build_diplomacy_query (ALLIED, DECLARED_FRIEND, FRIENDLY,
+    mapping as diplomacy.lua (ALLIED, DECLARED_FRIEND, FRIENDLY,
     NEUTRAL, UNFRIENDLY, DENOUNCED, WAR).  Consumed by end_turn's
     diplomatic-state watch: transitions into WAR or DENOUNCED are reported
     to the agent as important, response-free information — regardless of
@@ -1289,150 +1113,6 @@ local atWar = Players[me]:GetDiplomacy():IsAtWarWith({other_player_id})
 print(atWar and "AT_WAR" or "AT_PEACE")
 print("{SENTINEL}")
 """
-
-
-def parse_diplomacy_response(lines: list[str]) -> list[CivInfo]:
-    civs: dict[int, CivInfo] = {}
-    for line in lines:
-        if line.startswith("CIV|"):
-            parts = line.split("|")
-            if len(parts) < 13:
-                continue
-            pid = int(parts[1])
-            total_score = 0  # will sum modifiers below
-            civs[pid] = CivInfo(
-                player_id=pid,
-                civ_name=parts[2],
-                leader_name=parts[3],
-                has_met=parts[4] == "1",
-                is_at_war=parts[5] == "1",
-                diplomatic_state=parts[6],
-                grievances=int(parts[7]),
-                access_level=int(parts[8]),
-                has_delegation=parts[9] == "1",
-                has_embassy=parts[10] == "1",
-                they_have_delegation=parts[11] == "1",
-                they_have_embassy=parts[12] == "1",
-                modifiers=[],
-                available_actions=[],
-            )
-        elif line.startswith("MOD|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].modifiers.append(
-                        DiplomacyModifier(
-                            score=int(parts[2]),
-                            text=parts[3],
-                        )
-                    )
-                    civs[pid].relationship_score += int(parts[2])
-        elif line.startswith("ALLIANCE|"):
-            parts = line.split("|")
-            if len(parts) >= 3:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].alliance_type = parts[2]
-                    if len(parts) >= 4:
-                        try:
-                            civs[pid].alliance_level = int(parts[3])
-                        except ValueError:
-                            pass
-        elif line.startswith("MILITARY|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                pid = int(parts[1])
-                if pid in civs:
-                    try:
-                        civs[pid].military_strength = int(parts[2])
-                        civs[pid]._our_military = int(parts[3])  # type: ignore[attr-defined]
-                    except ValueError:
-                        pass
-        elif line.startswith("ECITY|"):
-            parts = line.split("|")
-            if len(parts) >= 9:
-                pid = int(parts[1])
-                if pid in civs:
-                    xy = parts[3].split(",")
-                    try:
-                        vc = VisibleCity(
-                            name=parts[2],
-                            x=int(xy[0]),
-                            y=int(xy[1]),
-                            population=int(parts[4]),
-                            loyalty=float(parts[5]),
-                            loyalty_per_turn=float(parts[6]),
-                            has_walls=int(parts[7]) > 0,
-                            defense_strength=int(parts[8]),
-                        )
-                        civs[pid].visible_cities.append(vc)
-                    except (ValueError, IndexError):
-                        pass
-        elif line.startswith("CIVCITIES|"):
-            parts = line.split("|")
-            if len(parts) >= 3:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].num_cities = int(parts[2])
-        elif line.startswith("ACTIONS|"):
-            parts = line.split("|")
-            if len(parts) >= 3:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].available_actions = parts[2].split(",")
-        elif line.startswith("AGENDA|"):
-            parts = line.split("|")
-            if len(parts) >= 5:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].agendas.append(
-                        AgendaInfo(
-                            category=parts[2],
-                            name=parts[3],
-                            description=parts[4],
-                        )
-                    )
-        elif line.startswith("TRAIT|"):
-            parts = line.split("|")
-            if len(parts) >= 5:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].traits.append(
-                        TraitInfo(
-                            kind=parts[2],
-                            name=parts[3],
-                            description=parts[4],
-                        )
-                    )
-        elif line.startswith("UNIQUE|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                pid = int(parts[1])
-                if pid in civs:
-                    civs[pid].uniques.append(
-                        UniqueInfo(
-                            category=parts[2],
-                            name=parts[3],
-                            description=parts[4] if len(parts) > 4 else "",
-                        )
-                    )
-        elif line.startswith("PACT|"):
-            parts = line.split("|")
-            if len(parts) == 3:
-                # PACT|pid|DEFENSIVE — pact between us and pid
-                pid = int(parts[1])
-                if pid in civs:
-                    # Mark that this civ has a defensive pact (with us)
-                    pass  # We don't track pacts with us specially
-            elif len(parts) == 4:
-                # PACT|pid1|pid2|DEFENSIVE — third-party pact
-                pid1, pid2 = int(parts[1]), int(parts[2])
-                if pid1 in civs:
-                    civs[pid1].defensive_pacts.append(pid2)
-                if pid2 in civs:
-                    civs[pid2].defensive_pacts.append(pid1)
-    return list(civs.values())
 
 
 def parse_own_abilities_response(lines: list[str]) -> OwnAbilities:

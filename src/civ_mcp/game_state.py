@@ -1553,11 +1553,22 @@ class GameState:
 
         # First run section queries in the old format, that go through the parser/narrator roundabout
         state = await fetch_full_state(self.conn)
-        # Unset available governors because they should be accessed through the get_available_governors tool        
+        # Unset available governors because they should be accessed through the get_available_governors tool
         state.governors.available_to_appoint = []
-        text = narrate_full_state(state, managed_ids)
+        text = narrate_full_state(state)
 
         # Then run queries in the new format that output the correct format directly
+        # Append the diplomacy query output. Managed ids are baked into the
+        # Lua as a lookup table: managed civs are effectively "us", so their
+        # relationship state, modifiers and agendas are hidden.
+        managed_lua = "{" + ",".join(f"[{pid}]=true" for pid in managed_ids) + "}"
+        lines: list[str] = await self.conn.execute_write(
+            load_lua_template("diplomacy.lua").replace(
+                "__MCP_MANAGED_IDS_TAG__", managed_lua
+            )
+        )
+        text = text + "\n\n## Known Civilizations\n" + "\n".join(lines)
+
         # Append the tech/civics query output
         lines: list[str] = await self.conn.execute_write(
             load_lua_template("tech_civics.lua")

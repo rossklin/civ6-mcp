@@ -296,33 +296,6 @@ class SpyInfo:
     status: str = "idle"  # "idle", "in_transit", "on_mission", "escaping"
 
 @dataclass
-class DiplomacyModifier:
-    score: int
-    text: str
-
-
-@dataclass
-class VisibleCity:
-    name: str
-    x: int
-    y: int
-    population: int
-    loyalty: float = 100.0
-    loyalty_per_turn: float = 0.0
-    has_walls: bool = False
-    defense_strength: int = 0
-
-
-@dataclass
-class AgendaInfo:
-    """Leader agenda (historical or hidden random)."""
-
-    category: str  # "HISTORICAL" or "HIDDEN"
-    name: str  # localized name, or "???" if hidden
-    description: str  # localized description
-
-
-@dataclass
 class TraitInfo:
     """A civilization or leader unique ability."""
 
@@ -346,36 +319,6 @@ class OwnAbilities:
 
     civ_name: str = ""
     leader_name: str = ""
-    traits: list[TraitInfo] = field(default_factory=list)
-    uniques: list[UniqueInfo] = field(default_factory=list)
-
-
-@dataclass
-class CivInfo:
-    player_id: int
-    civ_name: str
-    leader_name: str
-    has_met: bool
-    is_at_war: bool
-    diplomatic_state: str = "UNKNOWN"  # FRIENDLY, NEUTRAL, UNFRIENDLY, etc.
-    relationship_score: int = 0
-    modifiers: list[DiplomacyModifier] | None = None
-    grievances: int = 0
-    access_level: int = 0  # 0=None, higher=more visibility
-    has_delegation: bool = False
-    has_embassy: bool = False
-    they_have_delegation: bool = False
-    they_have_embassy: bool = False
-    available_actions: list[str] | None = None  # actions we can take
-    alliance_type: str | None = None
-    alliance_level: int = 0
-    defensive_pacts: list[int] = field(
-        default_factory=list
-    )  # player IDs with defensive pacts
-    military_strength: int = 0  # their military strength
-    num_cities: int = 0  # number of cities they own
-    visible_cities: list[VisibleCity] = field(default_factory=list)
-    agendas: list[AgendaInfo] = field(default_factory=list)
     traits: list[TraitInfo] = field(default_factory=list)
     uniques: list[UniqueInfo] = field(default_factory=list)
 
@@ -1193,8 +1136,8 @@ class FullGameState:
     city_distances: list[str] = field(default_factory=list)
     spies: list[SpyInfo] = field(default_factory=list)
 
-    # Diplomacy
-    diplomacy: list[CivInfo] = field(default_factory=list)
+    # Diplomacy — the narrated overview lives in lua/diplomacy.lua, run
+    # directly by GameState.get_full_game_state (no parsed model).
     pending_deals: list[PendingDeal] = field(default_factory=list)
 
     # Our own civilization's abilities & uniques

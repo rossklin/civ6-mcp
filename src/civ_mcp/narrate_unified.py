@@ -10,7 +10,7 @@ from civ_mcp import narrate as nr
 from civ_mcp.lua.models import FullGameState
 
 
-def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> str:
+def narrate_full_state(state: FullGameState) -> str:
     """Render a FullGameState into a single formatted string.
 
     Sections with no data are omitted.  The output is designed for
@@ -37,11 +37,6 @@ def narrate_full_state(state: FullGameState, managed_ids: tuple[int, ...]) -> st
     if state.spies:
         parts.append("\n## Spies\n")
         parts.append(nr.narrate_spies(state.spies))
-
-    # ── Known Civilizations ───────────────────────────────────────
-    if state.diplomacy:
-        parts.append("\n## Known Civilizations\n")
-        parts.append(nr.narrate_diplomacy(state.diplomacy, managed_ids))
 
     # NOTE: no "Pending Diplomacy"/"Pending Trades" sections — AI-initiated
     # diplomacy toward the agent is auto-resolved by end_turn (silently

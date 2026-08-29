@@ -40,7 +40,6 @@ from civ_mcp.lua.diplomacy import (  # noqa: F401
     build_check_war_state,
     build_deal_options_query,
     build_diplomacy_choices_query,
-    build_diplomacy_query,
     build_diplomacy_respond,
     build_diplomacy_session_query,
     build_diplo_state_watch_query,
@@ -53,7 +52,6 @@ from civ_mcp.lua.diplomacy import (  # noqa: F401
     build_send_diplo_action,
     build_war_close_session,
     parse_deal_options_response,
-    parse_diplomacy_response,
     parse_diplomacy_sessions,
     parse_own_abilities_response,
     parse_pending_deals_response,
@@ -136,7 +134,6 @@ from civ_mcp.lua.map import (  # noqa: F401
 
 # Re-export all models
 from civ_mcp.lua.models import (  # noqa: F401
-    AgendaInfo,
     AppointedGovernor,
     AgentExtras,
     AttackOutcome,
@@ -149,7 +146,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     CityReligionInfo,
     CitySnapshot,
     CityStateInfo,
-    CivInfo,
     CombatEstimate,
     CongressProposal,
     CongressResolution,
@@ -158,7 +154,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     DedicationChoice,
     DedicationStatus,
     DemographicEntry,
-    DiplomacyModifier,
     DistrictPlacement,
     EnvoyStatus,
     FogBoundary,
@@ -212,7 +207,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     SpaceProject,
     VictoryPlayerProgress,
     VictoryProgress,
-    VisibleCity,
     WorldCongressStatus,
     WonderPlacement,
 )
