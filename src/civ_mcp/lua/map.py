@@ -367,9 +367,9 @@ def parse_strategic_map_response(lines: list[str]) -> StrategicMapData:
     )
 
 
-def build_found_city(unit_index: int) -> str:
+def build_found_city(unit_id: int) -> str:
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if not UnitManager.CanStartOperation(unit, UnitOperationTypes.FOUND_CITY, nil, true) then
     {_bail("ERR:CANNOT_FOUND|Unit cannot found cities (not a settler or no moves)")}
 end
@@ -447,7 +447,7 @@ def parse_verify_city_at(lines: list[str]) -> int | None:
     return None
 
 
-def build_settle_advisor_query(unit_index: int) -> str:
+def build_settle_advisor_query(unit_id: int) -> str:
     """Scan radius 5 around settler for valid + scored settle candidates.
 
     Scores by weighted yields, water bonus, defense, and resource value.
@@ -456,7 +456,7 @@ def build_settle_advisor_query(unit_index: int) -> str:
     """
     return f"""
 local me = Game.GetLocalPlayer()
-local unit = UnitManager.GetUnit(me, {unit_index})
+local unit = UnitManager.GetUnit(me, {unit_id})
 if unit == nil then print("NONE"); print("{SENTINEL}"); return end
 local sx, sy = unit:GetX(), unit:GetY()
 local vis = PlayersVisibility[me]

@@ -388,7 +388,7 @@ class TestSendDiplomaticActionRouting:
         cmds = [
             {"action": "send_diplomatic_action",
              "params": {"other_player_id": 0, "action_name": "DECLARE_FRIENDSHIP"}},
-            {"action": "fortify_unit", "params": {"unit_index": 3}},
+            {"action": "fortify_unit", "params": {"unit_id": 3}},
         ]
 
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))

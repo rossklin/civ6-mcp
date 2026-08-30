@@ -170,7 +170,7 @@ print("{SENTINEL}")
     )
 
 
-def build_trade_destinations_query(unit_index: int) -> str:
+def build_trade_destinations_query(unit_id: int) -> str:
     """List valid trade route destinations with yields, quests, and pressure.
 
     Tries CanStartOperation first.  If ALL destinations fail (capacity bug
@@ -179,7 +179,7 @@ def build_trade_destinations_query(unit_index: int) -> str:
     city-state quest status, and trading post info.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local opInfo = GameInfo.UnitOperations["UNITOPERATION_MAKE_TRADE_ROUTE"]
 if opInfo == nil then {_bail("ERR:NO_TRADE_OP|MAKE_TRADE_ROUTE operation not found")} end
 local opHash = opInfo.Hash
@@ -439,7 +439,7 @@ def parse_trade_destinations_response(lines: list[str]) -> list[TradeDestination
     return results
 
 
-def build_make_trade_route(unit_index: int, target_x: int, target_y: int) -> str:
+def build_make_trade_route(unit_id: int, target_x: int, target_y: int) -> str:
     """Start a trade route from a trader to a target city (InGame context).
 
     Uses the same param format as the game's TradeRouteChooser.lua:
@@ -447,7 +447,7 @@ def build_make_trade_route(unit_index: int, target_x: int, target_y: int) -> str
     Checks CanStartOperation first to avoid ghost route desyncs.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if unit:GetMovesRemaining() == 0 then {_bail("ERR:NO_MOVES|Trader has no moves remaining")} end
 local destCity = CityManager.GetCityAt({target_x}, {target_y})
 if destCity == nil then {_bail("ERR:NO_CITY|No city at ({target_x},{target_y})")} end
@@ -474,13 +474,13 @@ print("{SENTINEL}")
 """
 
 
-def build_teleport_to_city(unit_index: int, target_x: int, target_y: int) -> str:
+def build_teleport_to_city(unit_id: int, target_x: int, target_y: int) -> str:
     """Teleport a trader to a different city to change origin (InGame context).
 
     Only works when the trader is idle (not on an active route).
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local opInfo = GameInfo.UnitOperations["UNITOPERATION_TELEPORT_TO_CITY"]
 if opInfo == nil then {_bail("ERR:NO_TELEPORT_OP|TELEPORT_TO_CITY operation not found")} end
 local opHash = opInfo.Hash

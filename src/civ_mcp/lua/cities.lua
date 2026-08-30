@@ -18,7 +18,7 @@ local function CityProductionOptions(cityId)
     end
 
     local me = Game.GetLocalPlayer()
-    local pCity = CityManager.GetCity(me, cityId % 65536)
+    local pCity = CityManager.GetCity(me, cityId)
     if pCity == nil then return "ERROR city " .. cityId .. " does not exist" end
 
     local bq = pCity:GetBuildQueue()

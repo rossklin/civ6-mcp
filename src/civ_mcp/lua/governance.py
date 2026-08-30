@@ -317,7 +317,7 @@ print("{SENTINEL}")
 """
 
 
-def build_promote_unit(unit_index: int, promotion_type: str) -> str:
+def build_promote_unit(unit_id: int, promotion_type: str) -> str:
     """Apply a promotion to a unit (InGame context).
 
     Uses ``UnitManager.RequestCommand(PROMOTE)`` — the same path the game's
@@ -332,7 +332,7 @@ def build_promote_unit(unit_index: int, promotion_type: str) -> str:
     within this call.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local x, y = unit:GetX(), unit:GetY()
 if x == -9999 then {_bail("ERR:UNIT_CONSUMED")} end
 local promo = GameInfo.UnitPromotions["{promotion_type}"]
@@ -427,10 +427,10 @@ print("{SENTINEL}")
 """
 
 
-def build_unit_upgrade_query(unit_index: int) -> str:
+def build_unit_upgrade_query(unit_id: int) -> str:
     """Check if a unit can upgrade and get cost/target info (InGame context)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local info = GameInfo.Units[unit:GetType()]
 local ut = info and info.UnitType or "UNKNOWN"
 local params = {{}}
@@ -467,10 +467,10 @@ print("{SENTINEL}")
 """
 
 
-def build_upgrade_unit(unit_index: int) -> str:
+def build_upgrade_unit(unit_id: int) -> str:
     """Execute unit upgrade (InGame context)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local info = GameInfo.Units[unit:GetType()]
 local ut = info and info.UnitType or "UNKNOWN"
 local upgCol = info and info.UpgradeUnitCollection

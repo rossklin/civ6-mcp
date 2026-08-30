@@ -578,7 +578,7 @@ class TestExecuteCommandsPeaceAllianceRouting:
         mailed, executed = _patch(monkeypatch)
         cmds = [
             {"action": "propose_peace", "params": {"other_player_id": 0}},
-            {"action": "fortify_unit", "params": {"unit_index": 3}},
+            {"action": "fortify_unit", "params": {"unit_id": 3}},
         ]
 
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))

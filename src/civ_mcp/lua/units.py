@@ -37,9 +37,9 @@ def build_units_query() -> str:
 
 
 
-def build_move_unit(unit_index: int, target_x: int, target_y: int) -> str:
+def build_move_unit(unit_id: int, target_x: int, target_y: int) -> str:
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if unit:GetMovesRemaining() <= 0 then
     {_bail("ERR:NO_MOVES|Unit has no movement points remaining this turn. Use skip or wait until next turn.")}
 end
@@ -194,7 +194,7 @@ def parse_goody_log(lines: list[str]) -> list[GoodyReward]:
 
 
 def build_unit_position_query(
-    unit_index: int,
+    unit_id: int,
     move_target_x: int | None = None,
     move_target_y: int | None = None,
 ) -> str:
@@ -252,15 +252,15 @@ end)
 """
     return f"""
 local me = Game.GetLocalPlayer()
-local u = Players[me]:GetUnits():FindID({unit_index})
+local u = Players[me]:GetUnits():FindID({unit_id})
 if u then print("POS|" .. u:GetX() .. "|" .. u:GetY()) else print("POS|GONE") end
 {diag_block}print("{SENTINEL}")
 """
 
 
-def build_attack_unit(unit_index: int, target_x: int, target_y: int) -> str:
+def build_attack_unit(unit_id: int, target_x: int, target_y: int) -> str:
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local ux, uy = unit:GetX(), unit:GetY()
 local dist = Map.GetPlotDistance(ux, uy, {target_x}, {target_y})
 -- Find hostile unit on target tile (prefer military over civilian)
@@ -426,7 +426,7 @@ print("{SENTINEL}")
 
 
 def build_attack_outcome_query(
-    attacker_unit_index: int, target_x: int, target_y: int
+    attacker_unit_id: int, target_x: int, target_y: int
 ) -> str:
     """GameCore context: read true post-combat HP after an attack resolves.
 
@@ -442,7 +442,7 @@ def build_attack_outcome_query(
     """
     return f"""
 local me = Game.GetLocalPlayer()
-local attacker = Players[me]:GetUnits():FindID({attacker_unit_index})
+local attacker = Players[me]:GetUnits():FindID({attacker_unit_id})
 local attHP, attMax = -1, -1
 if attacker then
     attMax = attacker:GetMaxDamage()
@@ -598,9 +598,9 @@ print("{SENTINEL}")
 """.replace("{SENTINEL}", SENTINEL)
 
 
-def build_fortify_unit(unit_index: int) -> str:
+def build_fortify_unit(unit_id: int) -> str:
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if unit:GetFortifyTurns() > 0 then
     print("OK:ALREADY_FORTIFIED|Fortify turns: " .. unit:GetFortifyTurns())
     print("{SENTINEL}"); return
@@ -621,20 +621,20 @@ print("{SENTINEL}")
 """
 
 
-def build_skip_unit(unit_index: int) -> str:
+def build_skip_unit(unit_id: int) -> str:
     """Skip a unit's turn (GameCore context — uses FinishMoves)."""
     return f"""
-{_lua_get_unit_gamecore(unit_index)}
+{_lua_get_unit_gamecore(unit_id)}
 UnitManager.FinishMoves(unit)
 print("OK:SKIPPED")
 print("{SENTINEL}")
 """
 
 
-def build_exit_formation(unit_index: int) -> str:
+def build_exit_formation(unit_id: int) -> str:
     """Exit the current formation (unlink from escort partner)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if not UnitManager.CanStartCommand(unit, UnitCommandTypes.EXIT_FORMATION, me, true) then
     {_bail("ERR:NOT_IN_FORMATION|Unit is not in a formation")}
 end
@@ -645,20 +645,20 @@ print("{SENTINEL}")
 """
 
 
-def build_enter_formation(unit_index: int, target_unit_index: int) -> str:
+def build_enter_formation(unit_id: int, target_unit_id: int) -> str:
     """Enter a formation with another unit (escort/link)."""
     return f"""
-{_lua_get_unit(unit_index)}
--- Find the target unit by its index
+{_lua_get_unit(unit_id)}
+-- Find the target unit by its per-player ID
 local target = nil
 for _, u in Players[me]:GetUnits():Members() do
-    if u:GetID() % 65536 == {target_unit_index} and u:GetX() ~= -9999 then
+    if u:GetID() == {target_unit_id} and u:GetX() ~= -9999 then
         target = u
         break
     end
 end
 if not target then
-    {_bail(f"ERR:TARGET_NOT_FOUND|Unit with index {target_unit_index} not found")}
+    {_bail(f"ERR:TARGET_NOT_FOUND|Unit with id {target_unit_id} not found")}
 end
 local tx, ty = target:GetX(), target:GetY()
 local ux, uy = unit:GetX(), unit:GetY()
@@ -745,10 +745,10 @@ print("{SENTINEL}")
 """.replace("{SENTINEL}", SENTINEL)
 
 
-def build_automate_explore(unit_index: int) -> str:
+def build_automate_explore(unit_id: int) -> str:
     """Automate a unit's exploration (InGame context)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local hash = GameInfo.UnitOperations["UNITOPERATION_AUTOMATE_EXPLORE"].Hash
 if not UnitManager.CanStartOperation(unit, hash, nil, nil) then
     {_bail("ERR:CANNOT_AUTOMATE|Unit cannot auto-explore")}
@@ -759,10 +759,10 @@ print("{SENTINEL}")
 """
 
 
-def build_heal_unit(unit_index: int) -> str:
+def build_heal_unit(unit_id: int) -> str:
     """Fortify until healed (InGame context). Distinct from plain fortify."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local hp = unit:GetMaxDamage() - unit:GetDamage()
 local maxHP = unit:GetMaxDamage()
 if hp >= maxHP then {_bail_lua('"ERR:FULL_HP|Unit already at full health (" .. hp .. "/" .. maxHP .. ")"')} end
@@ -777,10 +777,10 @@ print("{SENTINEL}")
 """
 
 
-def build_alert_unit(unit_index: int) -> str:
+def build_alert_unit(unit_id: int) -> str:
     """Put unit on alert — sleeps but auto-wakes when enemy enters sight (InGame context)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if UnitManager.CanStartOperation(unit, UnitOperationTypes.ALERT, nil, nil) then
     UnitManager.RequestOperation(unit, UnitOperationTypes.ALERT, {{}})
     print("OK:ALERT|" .. unit:GetX() .. "," .. unit:GetY())
@@ -791,10 +791,10 @@ print("{SENTINEL}")
 """
 
 
-def build_sleep_unit(unit_index: int) -> str:
+def build_sleep_unit(unit_id: int) -> str:
     """Put unit to sleep — stays until manually woken (InGame context)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local sleepHash = GameInfo.UnitOperations["UNITOPERATION_SLEEP"].Hash
 if UnitManager.CanStartOperation(unit, sleepHash, nil, nil) then
     UnitManager.RequestOperation(unit, sleepHash, {{}})
@@ -806,10 +806,10 @@ print("{SENTINEL}")
 """
 
 
-def build_delete_unit(unit_index: int) -> str:
+def build_delete_unit(unit_id: int) -> str:
     """Delete (disband) a unit (InGame context)."""
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local unitInfo = GameInfo.Units[unit:GetType()]
 local uName = unitInfo and unitInfo.UnitType or "UNKNOWN"
 if UnitManager.CanStartCommand(unit, UnitCommandTypes.DELETE, true) then
@@ -822,13 +822,13 @@ print("{SENTINEL}")
 """
 
 
-def build_improve_tile(unit_index: int, improvement_name: str) -> str:
+def build_improve_tile(unit_id: int, improvement_name: str) -> str:
     """Build an improvement with a builder unit (InGame context).
 
     improvement_name is e.g. IMPROVEMENT_FARM, IMPROVEMENT_MINE, etc.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local imp = GameInfo.Improvements["{improvement_name}"]
 if imp == nil then
     -- Feature removals (IMPROVEMENT_REMOVE_*) may not be in Improvements table.
@@ -946,14 +946,14 @@ print("{SENTINEL}")
 """
 
 
-def build_remove_feature(unit_index: int) -> str:
+def build_remove_feature(unit_id: int) -> str:
     """Remove (chop/harvest) a feature from the tile the builder is standing on.
 
     Uses UNITOPERATION_REMOVE_FEATURE — works on forest, jungle, marsh.
     The game auto-detects which feature is present; no feature param needed.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if unit:GetMovesRemaining() <= 0 then
     {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")}
 end
@@ -981,13 +981,13 @@ print("{SENTINEL}")
 """
 
 
-def build_repair_improvement(unit_index: int) -> str:
+def build_repair_improvement(unit_id: int) -> str:
     """Repair a pillaged improvement at the builder's current tile (InGame context).
 
     Auto-detects the pillaged improvement — no improvement name needed.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local ux, uy = unit:GetX(), unit:GetY()
 if unit:GetMovesRemaining() <= 0 then
     {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")}
@@ -1024,14 +1024,14 @@ print("{SENTINEL}")
 """
 
 
-def build_remove_improvement(unit_index: int) -> str:
+def build_remove_improvement(unit_id: int) -> str:
     """Remove (demolish) an intact improvement from the builder's current tile.
 
     Uses UNITOPERATION_REMOVE_IMPROVEMENT. The game auto-detects which
     improvement is present; no improvement param needed. Costs one builder charge.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local ux, uy = unit:GetX(), unit:GetY()
 if unit:GetMovesRemaining() <= 0 then
     {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")}
@@ -1061,7 +1061,7 @@ print("{SENTINEL}")
 """
 
 
-def build_sacrifice_builder_charges(unit_index: int) -> str:
+def build_sacrifice_builder_charges(unit_id: int) -> str:
     """Sacrifice builder charges to boost a district project (Royal Society).
 
     Requires the Royal Society (BUILDING_GOV_SCIENCE) to be built.
@@ -1070,7 +1070,7 @@ def build_sacrifice_builder_charges(unit_index: int) -> str:
     Each charge adds 2% of the project's production cost.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local entry = GameInfo.Units[unit:GetType()]
 if not entry or entry.UnitType ~= "UNIT_BUILDER" then {_bail("ERR:NOT_A_BUILDER|Unit is not a builder")} end
 local ux, uy = unit:GetX(), unit:GetY()
@@ -1160,7 +1160,7 @@ print("{SENTINEL}")
 """
 
 
-def build_build_route(unit_index: int) -> str:
+def build_build_route(unit_id: int) -> str:
     """Build a route (road/railroad) on the Military Engineer's current tile.
 
     Uses UNITOPERATION_BUILD_ROUTE — after Steam Power tech this builds
@@ -1168,7 +1168,7 @@ def build_build_route(unit_index: int) -> str:
     1 Coal per railroad tile from the player's stockpile.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 if unit:GetMovesRemaining() <= 0 then
     {_bail("ERR:NO_MOVES|Military Engineer has no moves remaining this turn")}
 end
@@ -1282,30 +1282,31 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
         if line.startswith("FORMATION|"):
             parts = line.split("|")
             if len(parts) >= 4:
-                src_idx = int(parts[1])
-                tgt_idx = int(parts[2])
+                src_id = int(parts[1])
+                tgt_id = int(parts[2])
                 tgt_type = parts[3]
-                formations[src_idx] = (tgt_idx, tgt_type)
+                formations[src_id] = (tgt_id, tgt_type)
     # Pass 2: parse unit lines with formation lookup
+    # Line format: id|name|type|x,y|moves/max|hp/max|cs|rs|charges|targets|promo|canUp|upName|upCost|imps|religion
     for line in lines:
         if line.startswith("FORMATION|"):
             continue
         parts = line.split("|")
-        if len(parts) < 7:
+        if len(parts) < 6:
             continue
-        x_str, y_str = parts[4].split(",")
-        moves_cur, moves_max = parts[5].split("/")
-        hp_cur, hp_max = parts[6].split("/")
-        cs = int(parts[7]) if len(parts) > 7 else 0
-        rs = int(parts[8]) if len(parts) > 8 else 0
-        charges = int(parts[9]) if len(parts) > 9 else 0
-        targets_raw = parts[10] if len(parts) > 10 else ""
+        x_str, y_str = parts[3].split(",")
+        moves_cur, moves_max = parts[4].split("/")
+        hp_cur, hp_max = parts[5].split("/")
+        cs = int(parts[6]) if len(parts) > 6 else 0
+        rs = int(parts[7]) if len(parts) > 7 else 0
+        charges = int(parts[8]) if len(parts) > 8 else 0
+        targets_raw = parts[9] if len(parts) > 9 else ""
         targets = (
             [_parse_attack_target(t) for t in targets_raw.split(";") if t]
             if targets_raw
             else []
         )
-        promos_raw = parts[11] if len(parts) > 11 else ""
+        promos_raw = parts[10] if len(parts) > 10 else ""
         available_promotions: list[PromotionOption] = []
         if promos_raw and promos_raw != "0":
             for pt in promos_raw.split(";"):
@@ -1320,22 +1321,20 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                             description=f[2],
                         )
                     )
-        can_upgrade = parts[12] == "1" if len(parts) > 12 else False
-        upgrade_target = parts[13] if len(parts) > 13 else ""
-        upgrade_cost = int(parts[14]) if len(parts) > 14 and parts[14].isdigit() else 0
-        valid_imps_raw = parts[15] if len(parts) > 15 else ""
+        can_upgrade = parts[11] == "1" if len(parts) > 11 else False
+        upgrade_target = parts[12] if len(parts) > 12 else ""
+        upgrade_cost = int(parts[13]) if len(parts) > 13 and parts[13].isdigit() else 0
+        valid_imps_raw = parts[14] if len(parts) > 14 else ""
         valid_imps = (
             [v for v in valid_imps_raw.split(";") if v] if valid_imps_raw else []
         )
-        religion = parts[16] if len(parts) > 16 else ""
-        unit_idx = int(parts[1])
-        fm = formations.get(unit_idx)
+        religion = parts[15] if len(parts) > 15 else ""
+        fm = formations.get(int(parts[0]))
         units.append(
             UnitInfo(
                 unit_id=int(parts[0]),
-                unit_index=unit_idx,
-                name=parts[2],
-                unit_type=parts[3],
+                name=parts[1],
+                unit_type=parts[2],
                 x=int(x_str),
                 y=int(y_str),
                 moves_remaining=float(moves_cur),
@@ -1468,15 +1467,17 @@ def diff_threats(
 ) -> tuple[list[ThreatInfo], list[ThreatInfo], list[ThreatInfo]]:
     """Compare threat snapshots: (disappeared, new, moved).
 
-    Match by unit_id when available, otherwise by (owner_id, unit_type, x, y).
+    Match by (owner_id, unit_id) — the engine's ComponentID pair — when the
+    id is available, otherwise by (owner_id, unit_type, x, y). Unit ids are
+    only unique per player, so keying by id alone would collide across owners.
     """
-    after_by_uid: dict[int, ThreatInfo] = {}
+    after_by_uid: dict[tuple[int, int], ThreatInfo] = {}
     after_by_key: dict[tuple, ThreatInfo] = {}
     after_matched: set[int] = set()
 
     for i, t in enumerate(after):
         if t.unit_id:
-            after_by_uid[t.unit_id] = t
+            after_by_uid[(t.owner_id, t.unit_id)] = t
         after_by_key[(t.owner_id, t.unit_type, t.x, t.y)] = t
 
     disappeared: list[ThreatInfo] = []
@@ -1484,8 +1485,8 @@ def diff_threats(
 
     for bt in before:
         at = None
-        if bt.unit_id and bt.unit_id in after_by_uid:
-            at = after_by_uid[bt.unit_id]
+        if bt.unit_id and (bt.owner_id, bt.unit_id) in after_by_uid:
+            at = after_by_uid[(bt.owner_id, bt.unit_id)]
         elif (bt.owner_id, bt.unit_type, bt.x, bt.y) in after_by_key:
             at = after_by_key[(bt.owner_id, bt.unit_type, bt.x, bt.y)]
 
@@ -1501,10 +1502,10 @@ def diff_threats(
     return disappeared, new_threats, moved
 
 
-def build_pathing_estimate_query(unit_index: int, target_x: int, target_y: int) -> str:
+def build_pathing_estimate_query(unit_id: int, target_x: int, target_y: int) -> str:
     """InGame context: suggested path to destination."""
     return (load_lua_template("pathing_estimate.lua")
-    .replace("__MCP_UNIT_INDEX_TAG__", str(unit_index))
+    .replace("__MCP_UNIT_ID_TAG__", str(unit_id))
     .replace("__MCP_TARGET_X_TAG__", str(target_x))
     .replace("__MCP_TARGET_Y_TAG__", str(target_y))
     )
@@ -1651,7 +1652,7 @@ for _, u in Players[me]:GetUnits():Members() do
     if entry and entry.UnitType == "UNIT_BUILDER" and u:GetBuildCharges() > 0 then
         local bx, by = u:GetX(), u:GetY()
         if bx ~= -9999 then
-            table.insert(builders, {id=u:GetID(), idx=u:GetID() % 65536, x=bx, y=by, charges=u:GetBuildCharges(), moves=u:GetMovesRemaining()})
+            table.insert(builders, {id=u:GetID(), x=bx, y=by, charges=u:GetBuildCharges(), moves=u:GetMovesRemaining()})
         end
     end
 end
@@ -1803,7 +1804,7 @@ end
 
 -- Print builder info
 for _, b in ipairs(builders) do
-    print("BUILDER|" .. b.id .. "|" .. b.idx .. "|" .. b.x .. "," .. b.y .. "|" .. b.charges .. "|" .. string.format("%.1f", b.moves))
+    print("BUILDER|" .. b.id .. "|" .. b.x .. "," .. b.y .. "|" .. b.charges .. "|" .. string.format("%.1f", b.moves))
 end
 print("{SENTINEL}")
 """.replace("{SENTINEL}", SENTINEL)
@@ -1844,19 +1845,18 @@ def parse_builder_tasks(
                 )
             elif line.startswith("BUILDER|"):
                 parts = line.split("|")
-                if len(parts) < 6:
+                if len(parts) < 5:
                     continue
-                xy = parts[3].split(",")
+                xy = parts[2].split(",")
                 if len(xy) != 2:
                     continue
                 builders.append(
                     BuilderInfo(
                         unit_id=int(parts[1]),
-                        unit_index=int(parts[2]),
                         x=int(xy[0]),
                         y=int(xy[1]),
-                        charges=int(parts[4]),
-                        moves=float(parts[5]),
+                        charges=int(parts[3]),
+                        moves=float(parts[4]),
                     )
                 )
         except (ValueError, IndexError):

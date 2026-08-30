@@ -28,7 +28,7 @@ Every tool call follows a four-step pattern:
 1. **Build** — Generate a Lua script that queries or modifies game state, outputting pipe-delimited fields via `print()` and terminating with `---END---`
 2. **Execute** — Send the Lua over TCP in a binary frame (4B length + 4B tag + null-terminated payload) to FireTuner on port 4318
 3. **Parse** — Split pipe-delimited output lines into Python dataclasses (`UnitInfo`, `CityInfo`, `TileInfo`, etc.)
-4. **Narrate** — Convert dataclasses into LLM-optimized text (e.g. `Warrior #65536 at (31,15) HP:100/100 moves:2 [FORTIFIED]`)
+4. **Narrate** — Convert dataclasses into LLM-optimized text (e.g. `Warrior [id:6] at (31,15) HP:100/100 moves:2 [FORTIFIED]`)
 
 ---
 

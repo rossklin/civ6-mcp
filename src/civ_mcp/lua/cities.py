@@ -253,7 +253,7 @@ def build_verify_production(city_id: int, item_name: str) -> str:
     """
     return f"""
 local me = Game.GetLocalPlayer()
-local pCity = Players[me]:GetCities():FindID({city_id} % 65536)
+local pCity = Players[me]:GetCities():FindID({city_id})
 if pCity == nil then print("NOT_FOUND"); print("{SENTINEL}"); return end
 local bq = pCity:GetBuildQueue()
 local cur = bq:CurrentlyBuilding()
@@ -296,8 +296,8 @@ if "{itype}" == "UNIT" then
             if u:GetOwner() == me then
                 local uDef = GameInfo.Units[u:GetType()]
                 if uDef and uDef.FormationClass == targetClass then
-                    local uid = u:GetID() + u:GetOwner() * 65536
-                    {_bail_lua(f'"ERR:STACKING_CONFLICT|Cannot purchase {item_name} — " .. uDef.UnitType .. " (unit_id=" .. uid .. ") is on the city tile. Move it with unit_action(unit_id=" .. uid .. ", action=\'move\', target_x, target_y) first, then retry the purchase."')}
+                    local uid = u:GetID()
+                    {_bail_lua(f'"ERR:STACKING_CONFLICT|Cannot purchase {item_name} — " .. uDef.UnitType .. " (unit_id=" .. uid .. ") is on the city tile. Move it with move_unit(unit_id=" .. uid .. ", target_x, target_y) first, then retry the purchase."')}
                 end
             end
         end

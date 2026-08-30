@@ -231,14 +231,14 @@ print("{SENTINEL}")
 """
 
 
-def build_activate_great_person(unit_index: int) -> str:
+def build_activate_great_person(unit_id: int) -> str:
     """Activate a Great Person on their matching district (InGame context).
 
     Great Prophets use UNITOPERATION_FOUND_RELIGION instead of the generic
     UNITCOMMAND_ACTIVATE_GREAT_PERSON used by all other Great People.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local uInfo = GameInfo.Units[unit:GetType()]
 local uName = uInfo and uInfo.UnitType or "UNKNOWN"
 local ux, uy = unit:GetX(), unit:GetY()
@@ -373,7 +373,7 @@ def parse_great_people_response(lines: list[str]) -> list[GreatPersonInfo]:
     return results
 
 
-def build_gp_advisor_query(unit_index: int) -> str:
+def build_gp_advisor_query(unit_id: int) -> str:
     """InGame context: list candidate cities for a Great Person activation.
 
     Reports each city that has the matching district, with activation
@@ -381,7 +381,7 @@ def build_gp_advisor_query(unit_index: int) -> str:
     """
     sentinel = SENTINEL
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local uInfo = GameInfo.Units[unit:GetType()]
 if not uInfo then {_bail("ERR:UNIT_INFO_NOT_FOUND")} end
 local gpClass = ""

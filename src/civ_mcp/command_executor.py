@@ -3,8 +3,9 @@
 Each command is a dict with ``action`` (matching a ``GameState`` method name)
 and ``params`` (keyword arguments for that method).
 
-Unit IDs (composite) in params are automatically converted to unit indices
-via ``unit_id % 65536`` before calling the underlying method.
+Every unit-taking command uses ``unit_id``: the engine's per-player unit ID
+(``u:GetID()``), the same value shown as ``[id:N]`` in the Units section of
+get_full_game_state. There is no separate index format.
 """
 
 from __future__ import annotations
@@ -18,18 +19,21 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Params whose name ends with "unit_id" and should be converted from
-# composite ID to unit_index.
-_UNIT_ID_PARAMS: frozenset[str] = frozenset({"unit_id", "trader_id"})
+# Legacy param names from before the unit_id/unit_index unification, still
+# accepted so diary plans written against older instructions execute. The
+# values were always the same number — only the name changed.
+_PARAM_ALIASES: dict[str, str] = {
+    "unit_index": "unit_id",
+    "target_unit_index": "target_unit_id",
+}
 
 
 def _convert_params(params: dict[str, Any]) -> dict[str, Any]:
-    """Convert composite unit IDs to raw indices and handle other transforms."""
+    """Rename legacy param names and handle other transforms."""
     converted: dict[str, Any] = {}
     for key, value in params.items():
-        if key in _UNIT_ID_PARAMS and isinstance(value, int):
-            converted[key] = value % 65536
-        elif key == "accept" and isinstance(value, str):
+        key = _PARAM_ALIASES.get(key, key)
+        if key == "accept" and isinstance(value, str):
             converted[key] = value.lower() in ("true", "yes", "1", "accept")
         else:
             converted[key] = value
@@ -77,7 +81,7 @@ async def execute_commands(gs: GameState, commands_json: str) -> str:
             results.append(f"[{i + 1}/{total}] {action}: SKIPPED: params must be a dict")
             continue
 
-        # Convert params (unit_id → unit_index, etc.)
+        # Convert params (legacy names → unit_id, etc.)
         try:
             converted = _convert_params(params)
         except Exception:

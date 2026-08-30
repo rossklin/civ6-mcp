@@ -183,7 +183,7 @@ Every query follows this same four-step pattern:
 
 3. **Parse**: `lua_queries.py` splits each pipe-delimited line into fields and returns structured Python dataclasses (`UnitInfo`, `CityInfo`, `TileInfo`, etc.).
 
-4. **Narrate**: `game_state.py` converts the dataclasses into human-readable text optimised for an LLM to consume. This is where raw data like `UNIT_WARRIOR|31|15|100|2|FORTIFIED` becomes `Warrior #65536 at (31,15) HP:100/100 moves:2 [FORTIFIED]`.
+4. **Narrate**: `game_state.py` converts the dataclasses into human-readable text optimised for an LLM to consume. This is where raw data like `UNIT_WARRIOR|31|15|100|2|FORTIFIED` becomes `Warrior [id:6] at (31,15) HP:100/100 moves:2 [FORTIFIED]`.
 
 Action tools follow the same pattern but skip narration — they return a short `OK: moved to (32,15)` or `ERR:STACKING_CONFLICT` result.
 
@@ -433,7 +433,7 @@ A subtle but important design choice: the MCP tools don't return raw data. They 
 Raw parse output might be a `UnitInfo(type_name="UNIT_WARRIOR", x=31, y=15, hp=100, max_hp=100, moves=2, max_moves=2, status="FORTIFIED")`. The narration turns this into:
 
 ```
-Warrior #65536 at (31,15) HP:100/100 moves:2/2 [FORTIFIED]
+Warrior [id:6] at (31,15) HP:100/100 moves:2/2 [FORTIFIED]
   Actions: skip, heal, alert, sleep, delete, move, attack
 ```
 

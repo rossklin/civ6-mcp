@@ -136,15 +136,15 @@ class GameState:
             log.debug("Game-over check failed in GameCore too", exc_info=True)
             return None
 
-    async def spy_travel(self, unit_index: int, target_x: int, target_y: int) -> str:
-        lua = lq.build_spy_travel(unit_index, target_x, target_y)
+    async def spy_travel(self, unit_id: int, target_x: int, target_y: int) -> str:
+        lua = lq.build_spy_travel(unit_id, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
     async def spy_mission(
-        self, unit_index: int, mission_type: str, target_x: int, target_y: int
+        self, unit_id: int, mission_type: str, target_x: int, target_y: int
     ) -> str:
-        lua = lq.build_spy_mission(unit_index, mission_type, target_x, target_y)
+        lua = lq.build_spy_mission(unit_id, mission_type, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -152,7 +152,7 @@ class GameState:
     # Action methods (run in InGame context for UnitManager access)
     # ------------------------------------------------------------------
 
-    async def move_unit(self, unit_index: int, target_x: int, target_y: int) -> str:
+    async def move_unit(self, unit_id: int, target_x: int, target_y: int) -> str:
         # Pre-dismiss any blocking popups that would silently eat the move
         try:
             await self.dismiss_popup()
@@ -176,7 +176,7 @@ class GameState:
                     break
         except Exception:
             log.debug("Goody snapshot failed", exc_info=True)
-        lua = lq.build_move_unit(unit_index, target_x, target_y)
+        lua = lq.build_move_unit(unit_id, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
         # Post-move: read actual position from GameCore (move is async in InGame)
@@ -184,7 +184,7 @@ class GameState:
             try:
                 pos_lines = await self.conn.execute_read(
                     lq.build_unit_position_query(
-                        unit_index,
+                        unit_id,
                         move_target_x=target_x,
                         move_target_y=target_y,
                     )
@@ -239,16 +239,11 @@ class GameState:
                     if rewards or not goody_expect:
                         break
                     await asyncio.sleep(0.15)
-                # Attribute to this unit by index (event passes either the full
-                # unit ID or the bare index; % 65536 normalizes both). Fall back
-                # to all new rewards if none match — during our turn only the
-                # commanded unit is moving, so any new reward is ours.
-                mine = [
-                    r
-                    for r in rewards
-                    if (r.unit_id % 65536) == (unit_index % 65536)
-                    or r.unit_id == unit_index
-                ]
+                # Attribute to this unit by id. The event log carries the
+                # engine's (playerID, unitID) pair; per-player unit ids are
+                # unique, and during our turn only the commanded unit is
+                # moving. Fall back to all new rewards if none match.
+                mine = [r for r in rewards if r.unit_id == unit_id]
                 reward_text = narrate_goody_rewards(mine if mine else rewards)
                 if reward_text:
                     result += "\n" + reward_text
@@ -290,13 +285,13 @@ class GameState:
                 log.debug("Post-move visibility diff failed", exc_info=True)
         return result
 
-    async def attack_unit(self, unit_index: int, target_x: int, target_y: int) -> str:
+    async def attack_unit(self, unit_id: int, target_x: int, target_y: int) -> str:
         # Pre-attack: dismiss any blocking popups that would silently eat the attack
         try:
             await self.dismiss_popup()
         except Exception:
             pass
-        lua = lq.build_attack_unit(unit_index, target_x, target_y)
+        lua = lq.build_attack_unit(unit_id, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
         # Combat estimates now live in the game state (units section), not here.
@@ -316,7 +311,7 @@ class GameState:
             await asyncio.sleep(0.4)
             try:
                 out_lines = await self.conn.execute_read(
-                    lq.build_attack_outcome_query(unit_index, target_x, target_y)
+                    lq.build_attack_outcome_query(unit_id, target_x, target_y)
                 )
             except Exception as e:
                 log.debug("Attack outcome read failed: %s", e)
@@ -394,14 +389,14 @@ class GameState:
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def found_city(self, unit_index: int) -> str:
+    async def found_city(self, unit_id: int) -> str:
         # Pre-dismiss any blocking popups (tech completion, era change, etc.)
         try:
             await self.dismiss_popup()
         except Exception:
             pass
 
-        lua = lq.build_found_city(unit_index)
+        lua = lq.build_found_city(unit_id)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
 
@@ -443,14 +438,14 @@ class GameState:
             "Error: FOUND_FAILED"
         ):
             try:
-                advisor_result = await self.get_settle_advisor(unit_index)
+                advisor_result = await self.get_settle_advisor(unit_id)
                 result += "\n\n" + advisor_result
             except Exception as e:
                 log.debug("Settle advisor failed: %s", e)
         return result
 
-    async def get_settle_advisor(self, unit_index: int) -> str:
-        lua = lq.build_settle_advisor_query(unit_index)
+    async def get_settle_advisor(self, unit_id: int) -> str:
+        lua = lq.build_settle_advisor_query(unit_id)
         lines = await self.conn.execute_read(lua)
         candidates = lq.parse_settle_advisor_response(lines)
         if candidates:
@@ -470,26 +465,26 @@ class GameState:
         lines = await self.conn.execute_read(lua)
         return lq.parse_settle_advisor_response(lines)
 
-    async def fortify_unit(self, unit_index: int) -> str:
-        lua = lq.build_fortify_unit(unit_index)
+    async def fortify_unit(self, unit_id: int) -> str:
+        lua = lq.build_fortify_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
         if result.startswith("SLEEPING"):
             return "Unit is sleeping (this unit type cannot fortify)"
         return result
 
-    async def skip_unit(self, unit_index: int) -> str:
-        lua = lq.build_skip_unit(unit_index)
+    async def skip_unit(self, unit_id: int) -> str:
+        lua = lq.build_skip_unit(unit_id)
         lines = await self.conn.execute_read(lua)
         return _action_result(lines)
 
-    async def exit_formation(self, unit_index: int) -> str:
-        lua = lq.build_exit_formation(unit_index)
+    async def exit_formation(self, unit_id: int) -> str:
+        lua = lq.build_exit_formation(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def enter_formation(self, unit_index: int, target_unit_index: int) -> str:
-        lua = lq.build_enter_formation(unit_index, target_unit_index)
+    async def enter_formation(self, unit_id: int, target_unit_id: int) -> str:
+        lua = lq.build_enter_formation(unit_id, target_unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -510,58 +505,58 @@ class GameState:
             return f"{fortify_result}\n{skip_result}"
         return skip_result
 
-    async def automate_explore(self, unit_index: int) -> str:
-        lua = lq.build_automate_explore(unit_index)
+    async def automate_explore(self, unit_id: int) -> str:
+        lua = lq.build_automate_explore(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def heal_unit(self, unit_index: int) -> str:
-        lua = lq.build_heal_unit(unit_index)
+    async def heal_unit(self, unit_id: int) -> str:
+        lua = lq.build_heal_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def alert_unit(self, unit_index: int) -> str:
-        lua = lq.build_alert_unit(unit_index)
+    async def alert_unit(self, unit_id: int) -> str:
+        lua = lq.build_alert_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def sleep_unit(self, unit_index: int) -> str:
-        lua = lq.build_sleep_unit(unit_index)
+    async def sleep_unit(self, unit_id: int) -> str:
+        lua = lq.build_sleep_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def delete_unit(self, unit_index: int) -> str:
-        lua = lq.build_delete_unit(unit_index)
+    async def delete_unit(self, unit_id: int) -> str:
+        lua = lq.build_delete_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def improve_tile(self, unit_index: int, improvement_name: str) -> str:
-        lua = lq.build_improve_tile(unit_index, improvement_name)
+    async def improve_tile(self, unit_id: int, improvement_name: str) -> str:
+        lua = lq.build_improve_tile(unit_id, improvement_name)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def remove_feature(self, unit_index: int) -> str:
-        lua = lq.build_remove_feature(unit_index)
+    async def remove_feature(self, unit_id: int) -> str:
+        lua = lq.build_remove_feature(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def repair_improvement(self, unit_index: int) -> str:
-        lua = lq.build_repair_improvement(unit_index)
+    async def repair_improvement(self, unit_id: int) -> str:
+        lua = lq.build_repair_improvement(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def remove_improvement(self, unit_index: int) -> str:
-        lua = lq.build_remove_improvement(unit_index)
+    async def remove_improvement(self, unit_id: int) -> str:
+        lua = lq.build_remove_improvement(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def sacrifice_builder_charges(self, unit_index: int) -> str:
-        lua = lq.build_sacrifice_builder_charges(unit_index)
+    async def sacrifice_builder_charges(self, unit_id: int) -> str:
+        lua = lq.build_sacrifice_builder_charges(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def build_route(self, unit_index: int) -> str:
-        lua = lq.build_build_route(unit_index)
+    async def build_route(self, unit_id: int) -> str:
+        lua = lq.build_build_route(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -992,8 +987,7 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def promote_unit(self, unit_id: int, promotion_type: str) -> str:
-        unit_index = unit_id % 65536
-        lua = lq.build_promote_unit(unit_index, promotion_type)
+        lua = lq.build_promote_unit(unit_id, promotion_type)
         lines = await self.conn.execute_write(lua)  # InGame context
         return _action_result(lines)
 
@@ -1056,14 +1050,12 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def check_unit_upgrade(self, unit_id: int) -> str:
-        unit_index = unit_id % 65536
-        lua = lq.build_unit_upgrade_query(unit_index)
+        lua = lq.build_unit_upgrade_query(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
     async def upgrade_unit(self, unit_id: int) -> str:
-        unit_index = unit_id % 65536
-        lua = lq.build_upgrade_unit(unit_index)
+        lua = lq.build_upgrade_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -1185,16 +1177,16 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def get_trade_destinations(
-        self, unit_index: int
+        self, unit_id: int
     ) -> list[lq.TradeDestination]:
-        lua = lq.build_trade_destinations_query(unit_index)
+        lua = lq.build_trade_destinations_query(unit_id)
         lines = await self.conn.execute_write(lua)
         return lq.parse_trade_destinations_response(lines)
 
     async def make_trade_route(
-        self, unit_index: int, target_x: int, target_y: int
+        self, unit_id: int, target_x: int, target_y: int
     ) -> str:
-        lua = lq.build_make_trade_route(unit_index, target_x, target_y)
+        lua = lq.build_make_trade_route(unit_id, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -1202,13 +1194,13 @@ class GameState:
     # Great Person activation (InGame context)
     # ------------------------------------------------------------------
 
-    async def activate_great_person(self, unit_index: int) -> str:
-        lua = lq.build_activate_great_person(unit_index)
+    async def activate_great_person(self, unit_id: int) -> str:
+        lua = lq.build_activate_great_person(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
-    async def spread_religion(self, unit_index: int) -> str:
-        lua = lq.build_spread_religion(unit_index)
+    async def spread_religion(self, unit_id: int) -> str:
+        lua = lq.build_spread_religion(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -1217,9 +1209,9 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def teleport_to_city(
-        self, unit_index: int, target_x: int, target_y: int
+        self, unit_id: int, target_x: int, target_y: int
     ) -> str:
-        lua = lq.build_teleport_to_city(unit_index, target_x, target_y)
+        lua = lq.build_teleport_to_city(unit_id, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 

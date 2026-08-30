@@ -2799,17 +2799,17 @@ async def get_pathing_estimate(
     """Estimate how many turns a unit needs to reach a destination.
 
     Args:
-        unit_id: The unit's composite ID (from get_units output)
+        unit_id: The unit's ID — the [id:N] value from the Units section
+            of get_full_game_state
         target_x: Destination X coordinate
         target_y: Destination Y coordinate
 
     Returns estimated turns, path length, and reachable tiles this turn.
     """
     gs = _get_game(ctx)
-    unit_index = unit_id % 65536
 
     async def _run():
-        lines: list[str] = await gs.conn.execute_write(build_pathing_estimate_query(unit_index, target_x, target_y))
+        lines: list[str] = await gs.conn.execute_write(build_pathing_estimate_query(unit_id, target_x, target_y))
         return "\n".join(lines)
 
     return await _logged(
@@ -3319,16 +3319,16 @@ async def get_trade_destinations(ctx: Context, unit_id: int) -> str:
     """List valid trade route destinations for a trader unit.
 
     Args:
-        unit_id: The trader's composite ID (from get_units output)
+        unit_id: The trader's ID — the [id:N] value from the Units section
+            of get_full_game_state
 
-    Shows domestic and international destinations. Use unit_action
-    with action='trade_route' and target_x/target_y to start a route.
+    Shows domestic and international destinations. Use make_trade_route
+    with target_x/target_y to start a route.
     """
     gs = _get_game(ctx)
-    unit_index = unit_id % 65536
 
     async def _run():
-        dests = await gs.get_trade_destinations(unit_index)
+        dests = await gs.get_trade_destinations(unit_id)
         return nr.narrate_trade_destinations(dests)
 
     return await _logged(ctx, "get_trade_destinations", {"unit_id": unit_id}, _run)

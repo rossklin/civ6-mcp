@@ -248,7 +248,7 @@ for i, u in Players[id]:GetUnits():Members() do
             end
             if #meList > 0 then validImps = table.concat(meList, ";") end
         end
-        print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName)
+        print(uid .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName)
         -- Track tile occupancy + formation state (checked via game API, not heuristic)
         local key = x .. "," .. y
         if not tileUnits[key] then tileUnits[key] = {} end
@@ -256,7 +256,7 @@ for i, u in Players[id]:GetUnits():Members() do
         pcall(function()
             inFormation = UnitManager.CanStartCommand(u, UnitCommandTypes.EXIT_FORMATION, id, true)
         end)
-        table.insert(tileUnits[key], {idx = uid % 65536, utype = ut, in_fm = inFormation})
+        table.insert(tileUnits[key], {id = uid, utype = ut, in_fm = inFormation})
     end
 end
 -- Detect formations: pair units on same tile where at least one is linked
@@ -267,8 +267,8 @@ for key, group in pairs(tileUnits) do
         for _, a in ipairs(group) do
             if a.in_fm then
                 for _, b in ipairs(group) do
-                    if a.idx ~= b.idx and b.in_fm then
-                        print("FORMATION|" .. a.idx .. "|" .. b.idx .. "|" .. b.utype:gsub("UNIT_", ""))
+                    if a.id ~= b.id and b.in_fm then
+                        print("FORMATION|" .. a.id .. "|" .. b.id .. "|" .. b.utype:gsub("UNIT_", ""))
                     end
                 end
             end

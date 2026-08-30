@@ -127,9 +127,9 @@ class TestParseOverview:
 
 
 class TestParseUnits:
-    # Fields: uid|index|name|type|x,y|moves/max|hp/max|cs|rs|charges|targets|promo|upgrade|upgrade_target|upgrade_cost|valid_imps|religion
-    WARRIOR = "0|0|Warrior|UNIT_WARRIOR|10,24|2.0/2.0|100/100|20|0|0||0|0|||"
-    BUILDER = "1|1|Builder|UNIT_BUILDER|12,22|2.0/2.0|100/100|0|0|3||0|0|||IMPROVEMENT_FARM;IMPROVEMENT_MINE|"
+    # Fields: id|name|type|x,y|moves/max|hp/max|cs|rs|charges|targets|promo|upgrade|upgrade_target|upgrade_cost|valid_imps|religion
+    WARRIOR = "0|Warrior|UNIT_WARRIOR|10,24|2.0/2.0|100/100|20|0|0||0|0|||"
+    BUILDER = "1|Builder|UNIT_BUILDER|12,22|2.0/2.0|100/100|0|0|3||0|0|||IMPROVEMENT_FARM;IMPROVEMENT_MINE|"
 
     def test_basic_warrior(self):
         units = parse_units_response([self.WARRIOR])
@@ -163,7 +163,7 @@ class TestParseUnits:
 
     def test_targets_legacy_bare(self):
         # Legacy bare "x,y" target form (no estimate) still parses.
-        line = "2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|14,6;15,7|0|0|||"
+        line = "2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|14,6;15,7|0|0|||"
         units = parse_units_response([line])
         t = units[0].targets
         assert len(t) == 2
@@ -175,7 +175,7 @@ class TestParseUnits:
         # New format: eName@x,y~hp:N~dd:N~da:N~r:0/1~m:mod,mod
         # dd/da are the engine's predicted damage to defender/attacker.
         tgt = "UNIT_WARRIOR@14,6~hp:100~dd:30~da:18~r:0~m:att Battlecry +7,hills +3"
-        line = f"2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
+        line = f"2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
         units = parse_units_response([line])
         t = units[0].targets
         assert len(t) == 1
@@ -192,7 +192,7 @@ class TestParseUnits:
     def test_target_ranged_kill(self):
         # Ranged attacker, enough damage to kill: is_kill True, no counter-damage.
         tgt = "UNIT_WARRIOR@14,6~hp:20~dd:25~da:0~r:1~m:"
-        line = f"2|2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
+        line = f"2|Archer|UNIT_ARCHER|5,5|2.0/2.0|100/100|25|25|0|{tgt}|0|0|||"
         units = parse_units_response([line])
         t = units[0].targets[0]
         assert t.is_ranged is True

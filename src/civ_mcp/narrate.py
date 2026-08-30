@@ -158,11 +158,11 @@ def narrate_spies(spies: list[lq.SpyInfo]) -> str:
     lines.append("")
     lines.append("Actions:")
     lines.append(
-        "  Travel: spy_action(unit_id, action='travel', target_x, target_y)"
+        "  Travel: spy_travel(unit_id, target_x, target_y)"
         " — send spy to own city or city-state"
     )
     lines.append(
-        "  Mission: spy_action(unit_id, action=MISSION_TYPE, target_x, target_y)"
+        "  Mission: spy_mission(unit_id, MISSION_TYPE, target_x, target_y)"
         " — spy must already be in target city"
     )
     lines.append(
@@ -223,11 +223,11 @@ def narrate_units(
         lines.append(
             f"  {u.name} ({u.unit_type}) at ({u.x},{u.y}) —{strength} "
             f"moves {moves_disp}{charges}{religion_flag}{status}{route_flag}{promo_flag}{upgrade_flag} "
-            f"[id:{u.unit_id}, idx:{u.unit_index}]"
+            f"[id:{u.unit_id}]"
         )
         if u.formation_linked_to is not None:
             lines.append(
-                f"    >> FORMATION with {u.formation_linked_type} (idx:{u.formation_linked_to}) — "
+                f"    >> FORMATION with {u.formation_linked_type} (id:{u.formation_linked_to}) — "
                 f"moving either unit moves both. Use exit_formation to unlink."
             )
         if u.targets:
@@ -961,7 +961,7 @@ def narrate_trade_routes(status: lq.TradeRouteStatus) -> str:
         lines.append(f"\nIdle ({len(idle)}):")
         for t in idle:
             lines.append(
-                f"  Trader (id:{t.unit_id}) at ({t.x},{t.y}) — needs trade_route or teleport"
+                f"  Trader (id:{t.unit_id}) at ({t.x},{t.y}) — idle, can make_trade_route or teleport_to_city"
             )
     if not status.traders:
         lines.append("\nNo trader units.")

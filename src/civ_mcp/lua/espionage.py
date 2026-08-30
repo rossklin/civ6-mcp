@@ -39,7 +39,7 @@ for i, u in Players[me]:GetUnits():Members() do
         local ok_spy, err_spy = pcall(function()
             local x, y = u:GetX(), u:GetY()
             local name = Locale.Lookup(u:GetName())
-            local uid = u:GetID() + me * 65536
+            local uid = u:GetID()
             local rank = 1
             local xp = 0
             local exp = u:GetExperience()
@@ -121,7 +121,6 @@ def parse_spies_response(lines: list[str]) -> list[SpyInfo]:
             spies.append(
                 SpyInfo(
                     unit_id=uid,
-                    unit_index=uid % 65536,
                     name=name,
                     x=x,
                     y=y,
@@ -141,7 +140,7 @@ def parse_spies_response(lines: list[str]) -> list[SpyInfo]:
     return spies
 
 
-def build_spy_travel(unit_index: int, target_x: int, target_y: int) -> str:
+def build_spy_travel(unit_id: int, target_x: int, target_y: int) -> str:
     """InGame context: send spy to a target city tile.
 
     Valid targets: own cities and city-states. Allied civ cities return ERR:CANNOT_TRAVEL.
@@ -157,7 +156,7 @@ def build_spy_travel(unit_index: int, target_x: int, target_y: int) -> str:
     )
     return " ".join(
         [
-            _lua_get_unit(unit_index),
+            _lua_get_unit(unit_id),
             "local entry = GameInfo.Units[unit:GetType()]",
             f'if not entry or entry.UnitType ~= "UNIT_SPY" then {_bail("ERR:NOT_A_SPY")} end',
             f"local params = {{[UnitOperationTypes.PARAM_X0]={target_x}, [UnitOperationTypes.PARAM_Y0]={target_y}}}",
@@ -173,7 +172,7 @@ def build_spy_travel(unit_index: int, target_x: int, target_y: int) -> str:
 
 
 def build_spy_mission(
-    unit_index: int, mission_type: str, target_x: int, target_y: int
+    unit_id: int, mission_type: str, target_x: int, target_y: int
 ) -> str:
     """InGame context: launch a spy mission at a target city tile.
 
@@ -195,11 +194,11 @@ def build_spy_mission(
     err_lua = (
         f'"ERR:CANNOT_MISSION|{mission_type} not available at (" .. '
         f"{target_x} .. ',' .. {target_y} .. "
-        '"). Spy must be in the target city first (use spy_action travel)."'
+        '"). Spy must be in the target city first (use spy_travel first)."'
     )
     return " ".join(
         [
-            _lua_get_unit(unit_index),
+            _lua_get_unit(unit_id),
             "local entry = GameInfo.Units[unit:GetType()]",
             f'if not entry or entry.UnitType ~= "UNIT_SPY" then {_bail("ERR:NOT_A_SPY")} end',
             f"local params = {{[UnitOperationTypes.PARAM_X0]={target_x}, [UnitOperationTypes.PARAM_Y0]={target_y}}}",

@@ -252,8 +252,7 @@ class GoodyReward:
 
 @dataclass
 class UnitInfo:
-    unit_id: int
-    unit_index: int
+    unit_id: int  # engine per-player unit ID (u:GetID()); owner is the local player
     name: str
     unit_type: str
     x: int
@@ -272,7 +271,7 @@ class UnitInfo:
     valid_improvements: list[str] = field(default_factory=list)
     religion: str = ""
     formation_linked_to: int | None = (
-        None  # unit_index of the other unit in the formation, if any
+        None  # unit_id of the other unit in the formation, if any
     )
     formation_linked_type: str = ""  # unit type name of linked unit
     targets: list[AttackTarget] = field(default_factory=list)
@@ -280,8 +279,7 @@ class UnitInfo:
 
 @dataclass
 class SpyInfo:
-    unit_id: int  # composite ID (use with spy_action)
-    unit_index: int  # per-player index (unit_id % 65536)
+    unit_id: int  # engine per-player unit ID (u:GetID())
     name: str  # e.g. "Artimpasa"
     x: int
     y: int
@@ -498,7 +496,7 @@ class ThreatInfo:
     owner_id: int = 63
     owner_name: str = "Barbarian"
     is_city_state: bool = False
-    unit_id: int = 0
+    unit_id: int = 0  # engine per-player unit ID; unique only with owner_id
 
 
 @dataclass
@@ -962,7 +960,7 @@ class TradeDestination:
 class TraderInfo:
     """A trader unit with its route status."""
 
-    unit_id: int
+    unit_id: int  # engine per-player unit ID (u:GetID())
     x: int
     y: int
     has_moves: bool
@@ -1110,8 +1108,7 @@ class BuilderTask:
 
 @dataclass
 class BuilderInfo:
-    unit_id: int  # composite ID
-    unit_index: int
+    unit_id: int  # engine per-player unit ID (u:GetID())
     x: int
     y: int
     charges: int

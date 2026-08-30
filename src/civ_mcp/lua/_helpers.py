@@ -95,20 +95,25 @@ def _lua_close_diplo_session() -> str:
     )
 
 
-def _lua_get_unit(unit_index: int) -> str:
-    """Lua snippet: look up a unit in InGame context or bail."""
+def _lua_get_unit(unit_id: int) -> str:
+    """Lua snippet: look up a unit in InGame context or bail.
+
+    ``unit_id`` is the engine's per-player unit ID (``u:GetID()``); together
+    with the owning player it forms the game's canonical ComponentID pair.
+    All commanded units belong to the local player.
+    """
     return (
         f"local me = Game.GetLocalPlayer() "
-        f"local unit = UnitManager.GetUnit(me, {unit_index}) "
+        f"local unit = UnitManager.GetUnit(me, {unit_id}) "
         f"if unit == nil then {_bail('ERR:UNIT_NOT_FOUND')} end"
     )
 
 
-def _lua_get_unit_gamecore(unit_index: int) -> str:
+def _lua_get_unit_gamecore(unit_id: int) -> str:
     """Lua snippet: look up a unit in GameCore context or bail."""
     return (
         f"local me = Game.GetLocalPlayer() "
-        f"local unit = Players[me]:GetUnits():FindID({unit_index}) "
+        f"local unit = Players[me]:GetUnits():FindID({unit_id}) "
         f"if unit == nil then {_bail('ERR:UNIT_NOT_FOUND')} end"
     )
 
@@ -117,7 +122,7 @@ def _lua_get_city(city_id: int) -> str:
     """Lua snippet: look up a city in InGame context or bail."""
     return (
         f"local me = Game.GetLocalPlayer() "
-        f"local pCity = CityManager.GetCity(me, {city_id} % 65536) "
+        f"local pCity = CityManager.GetCity(me, {city_id}) "
         f"if pCity == nil then {_bail('ERR:CITY_NOT_FOUND')} end"
     )
 

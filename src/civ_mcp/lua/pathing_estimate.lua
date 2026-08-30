@@ -1,5 +1,5 @@
 local me = Game.GetLocalPlayer()
-local unit = UnitManager.GetUnit(me, __MCP_UNIT_INDEX_TAG__)
+local unit = UnitManager.GetUnit(me, __MCP_UNIT_ID_TAG__)
 if unit == nil then print('ERR:UNIT_NOT_FOUND') end
 
 local targetPlot = Map.GetPlot(__MCP_TARGET_X_TAG__, __MCP_TARGET_Y_TAG__)

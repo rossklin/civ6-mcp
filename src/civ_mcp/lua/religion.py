@@ -219,13 +219,13 @@ print("{SENTINEL}")
 """
 
 
-def build_spread_religion(unit_index: int) -> str:
+def build_spread_religion(unit_id: int) -> str:
     """Spread religion at the current tile (InGame context).
 
     Works for Missionaries and Apostles. Consumes a spread charge.
     """
     return f"""
-{_lua_get_unit(unit_index)}
+{_lua_get_unit(unit_id)}
 local ux, uy = unit:GetX(), unit:GetY()
 local uInfo = GameInfo.Units[unit:GetType()]
 local uName = uInfo and uInfo.UnitType or "UNKNOWN"
