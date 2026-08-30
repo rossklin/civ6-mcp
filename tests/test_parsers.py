@@ -6,6 +6,7 @@ typed dataclasses. These tests verify the parsing logic with realistic fixtures.
 
 import pytest
 
+from civ_mcp.lua.cities import parse_city_snapshot_response
 from civ_mcp.lua.overview import parse_gameover_response, parse_overview_response
 from civ_mcp.lua.units import (
     parse_attack_outcome,
@@ -307,3 +308,50 @@ class TestParseEndTurnBlocking:
 
     def test_empty_lines(self):
         assert parse_end_turn_blocking([]) == []
+
+
+# ---------------------------------------------------------------------------
+# parse_city_snapshot_response
+# ---------------------------------------------------------------------------
+
+
+class TestParseCitySnapshot:
+    def test_producing_city(self):
+        line = "CITY|0|Athens|7|UNIT_SETTLER|3.2|12|100.0|0.5"
+        cities = parse_city_snapshot_response([line])
+        assert len(cities) == 1
+        c = cities[0]
+        assert c.city_id == 0
+        assert c.name == "Athens"
+        assert c.population == 7
+        assert c.currently_building == "UNIT_SETTLER"
+        assert c.food_surplus == pytest.approx(3.2)
+        assert c.turns_to_grow == 12
+        assert c.loyalty == pytest.approx(100.0)
+        assert c.loyalty_per_turn == pytest.approx(0.5)
+
+    def test_idle_city(self):
+        # "nothing" producing, negative turns-to-grow (not growing), loyalty pressure
+        line = "CITY|1|Corinth|4|nothing|1.0|-1|73.5|-2.0"
+        cities = parse_city_snapshot_response([line])
+        c = cities[0]
+        assert c.currently_building == "nothing"
+        assert c.turns_to_grow == -1
+        assert c.loyalty_per_turn == pytest.approx(-2.0)
+
+    def test_float_formatted_ints(self):
+        # Lua may print integers as floats ("7.0"); _int() normalizes both.
+        line = "CITY|2|Thebes|9.0|BUILDING_GRANARY|2.5|8.0|95.0|-0.3"
+        cities = parse_city_snapshot_response([line])
+        assert cities[0].population == 9
+        assert cities[0].turns_to_grow == 8
+
+    def test_non_city_lines_skipped(self):
+        lines = ["FORMATION|9|1|SETTLER", "some unsolicited tuner print"]
+        assert parse_city_snapshot_response(lines) == []
+
+    def test_malformed_line_skipped(self):
+        assert parse_city_snapshot_response(["CITY|3|Sparta"]) == []
+
+    def test_empty_lines(self):
+        assert parse_city_snapshot_response([]) == []

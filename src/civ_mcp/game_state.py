@@ -1274,8 +1274,12 @@ class GameState:
         unit_lines = await self.conn.execute_write(lq.build_units_query())
         units = lq.parse_units_response(unit_lines)
 
-        city_lines = await self.conn.execute_write(lq.build_cities_query())
-        cities, _ = lq.parse_cities_response(city_lines)
+        city_lines = await self.conn.execute_write(
+            load_lua_template("cities_snapshot.lua").replace(
+                "__MCP_SENTINEL_TAG__", lq.SENTINEL
+            )
+        )
+        cities = lq.parse_city_snapshot_response(city_lines)
 
         try:
             stk_lines = await self.conn.execute_write(lq.build_stockpile_query())
@@ -1287,19 +1291,7 @@ class GameState:
         return lq.TurnSnapshot(
             turn=overview.turn,
             units={u.unit_id: u for u in units},
-            cities={
-                c.city_id: lq.CitySnapshot(
-                    city_id=c.city_id,
-                    name=c.name,
-                    population=c.population,
-                    currently_building=c.currently_building,
-                    food_surplus=c.food_surplus,
-                    turns_to_grow=c.turns_to_grow,
-                    loyalty=c.loyalty,
-                    loyalty_per_turn=c.loyalty_per_turn,
-                )
-                for c in cities
-            },
+            cities={c.city_id: c for c in cities},
             current_research=overview.current_research,
             current_civic=overview.current_civic,
             stockpiles=stockpiles,
@@ -1373,19 +1365,14 @@ class GameState:
                         )
                     )
                 if (
-                    cb.currently_building != "NONE"
+                    cb.currently_building != "nothing"
                     and ca.currently_building != cb.currently_building
                 ):
-                    now = ca.currently_building
-                    if now in ("NONE", "nothing"):
-                        now = "nothing"
-                    elif now == "CORRUPTED_QUEUE":
-                        now = "nothing (queue invalidated — set new production)"
                     events.append(
                         lq.TurnEvent(
                             priority=2,
                             category="city",
-                            message=f"{ca.name} finished building {cb.currently_building}. Now: {now}.",
+                            message=f"{ca.name} finished building {cb.currently_building}. Now: {ca.currently_building}.",
                         )
                     )
 

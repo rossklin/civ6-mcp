@@ -33,6 +33,7 @@ from civ_mcp.lua.cities import (  # noqa: F401
     build_resolve_city_capture,
     build_set_yield_focus,
     build_verify_production,
+    parse_city_snapshot_response,
 )
 from civ_mcp.lua.diplomacy import (  # noqa: F401
     build_check_diplo_action_validity,

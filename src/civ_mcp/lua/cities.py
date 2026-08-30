@@ -8,8 +8,10 @@ from civ_mcp.lua._helpers import (
     SENTINEL,
     _bail,
     _bail_lua,
+    _int,
     _lua_get_city,
 )
+from civ_mcp.lua.models import CitySnapshot
 
 def build_city_attack(city_id: int, target_x: int, target_y: int) -> str:
     """InGame context: fire city ranged attack at a target tile."""
@@ -411,3 +413,36 @@ CityManager.RequestCommand(pCity, CityCommandTypes.SET_FOCUS, tParams)
 print("OK:FOCUS_SET|{yield_name}|favored")
 print("{SENTINEL}")
 """
+
+
+def parse_city_snapshot_response(lines: list[str]) -> list[CitySnapshot]:
+    """Parse ``CITY|`` lines from cities_snapshot.lua into CitySnapshot models.
+
+    Line format (see cities_snapshot.lua, which _take_snapshot in
+    game_state.py loads via load_lua_template)::
+
+        CITY|<id>|<name>|<population>|<producing>|<food_surplus>|<turns_to_grow>|<loyalty>|<loyalty_per_turn>
+
+    ``<producing>`` is a UNIT_/BUILDING_/DISTRICT_/PROJECT_ type name or
+    ``nothing``. Unrelated lines (unsolicited tuner prints) are skipped.
+    """
+    cities: list[CitySnapshot] = []
+    for line in lines:
+        if not line.startswith("CITY|"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 9:
+            continue
+        cities.append(
+            CitySnapshot(
+                city_id=_int(parts[1]),
+                name=parts[2],
+                population=_int(parts[3]),
+                currently_building=parts[4],
+                food_surplus=float(parts[5]),
+                turns_to_grow=_int(parts[6]),
+                loyalty=float(parts[7]),
+                loyalty_per_turn=float(parts[8]),
+            )
+        )
+    return cities
