@@ -97,7 +97,6 @@ from civ_mcp.lua.governance import (  # noqa: F401
     build_promote_unit,
     build_send_envoy,
     build_set_policies,
-    build_unit_upgrade_query,
     build_upgrade_unit,
     parse_city_states_response,
     parse_dedications_response,

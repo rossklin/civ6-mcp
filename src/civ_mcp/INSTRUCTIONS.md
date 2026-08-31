@@ -89,7 +89,6 @@ Units:
     exit_formation(unit_id)
     promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT. Available promotions (name, type, description) are shown per-unit in the Units section of get_full_game_state; add promote_unit to your command batch. Will heal the unit.
     upgrade_unit(unit_id)
-    check_unit_upgrade(unit_id) — returns upgrade cost/availability
 
 Settling & cities:
     found_city(unit_id) - must be at least 4 steps away from any other city

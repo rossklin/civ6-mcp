@@ -426,47 +426,6 @@ print("OK:ENVOY_SENT|" .. name)
 print("{SENTINEL}")
 """
 
-
-def build_unit_upgrade_query(unit_id: int) -> str:
-    """Check if a unit can upgrade and get cost/target info (InGame context)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-local info = GameInfo.Units[unit:GetType()]
-local ut = info and info.UnitType or "UNKNOWN"
-local params = {{}}
-local canUpgrade, upgradeResult = UnitManager.CanStartCommand(unit, UnitCommandTypes.UPGRADE, params, true)
-local upgCol = info.UpgradeUnitCollection
-local upgradeType = ""
-if upgCol and #upgCol > 0 then upgradeType = upgCol[1].UpgradeUnit or "" end
-if not canUpgrade then
-    local reasons = ""
-    if upgradeResult then
-        for _, v in pairs(upgradeResult) do
-            if type(v) == "table" then
-                for _, reason in pairs(v) do
-                    if type(reason) == "string" then
-                        local clean = reason:gsub("%[ICON_[^%]]*%]", ""):gsub("%s+", " ")
-                        reasons = reasons .. (reasons ~= "" and "; " or "") .. clean
-                    end
-                end
-            end
-        end
-    end
-    local suffix = upgradeType ~= "" and (" -> " .. upgradeType) or ""
-    local msg = ut .. suffix .. (reasons ~= "" and (" | " .. reasons) or " | cannot upgrade (missing tech, resources, gold, or no path)")
-    {_bail_lua('"ERR:CANNOT_UPGRADE|" .. msg')}
-end
-if upgradeType == "" then {_bail_lua('"ERR:NO_UPGRADE_PATH|" .. ut .. " has no upgrade"')} end
-local upInfo = GameInfo.Units[upgradeType]
-local upName = upInfo and Locale.Lookup(upInfo.Name) or upgradeType
-local gold = Players[me]:GetTreasury():GetGoldBalance()
-local cost = 0
-pcall(function() cost = unit:GetUpgradeCost() end)
-print("UPGRADE|" .. ut .. "|" .. upgradeType .. "|" .. upName:gsub("|","/") .. "|" .. math.floor(cost) .. "|" .. math.floor(gold))
-print("{SENTINEL}")
-"""
-
-
 def build_upgrade_unit(unit_id: int) -> str:
     """Execute unit upgrade (InGame context)."""
     return f"""

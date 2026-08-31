@@ -1049,11 +1049,6 @@ class GameState:
     # Unit upgrade methods (InGame context)
     # ------------------------------------------------------------------
 
-    async def check_unit_upgrade(self, unit_id: int) -> str:
-        lua = lq.build_unit_upgrade_query(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
     async def upgrade_unit(self, unit_id: int) -> str:
         lua = lq.build_upgrade_unit(unit_id)
         lines = await self.conn.execute_write(lua)

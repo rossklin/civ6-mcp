@@ -2268,7 +2268,6 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             "skip_remaining_units", "automate_explore", "heal_unit",
             "alert_unit", "sleep_unit", "delete_unit", "enter_formation",
             "exit_formation", "promote_unit", "upgrade_unit",
-            "check_unit_upgrade",
             # Settling & cities
             "found_city", "resolve_city_capture", "set_city_production",
             "purchase_item", "list_city_production", "set_city_focus",
