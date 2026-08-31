@@ -207,9 +207,10 @@ You can use the move_unit command to initiate movement to a target that is furth
 
 `get_pathing_estimate(unit_id, target_x, target_y)` returns the quickest path to a target, using the game's actual pathfinding and considering terrain and other movement modifiers. Reasoning about every step when moving to a distant target can be very difficult. Prefer calling this tool when moving more than a couple tiles. But beware that it may generate a weird path to avoid temporary blockage such as units or unexplored tiles.
 
+Since two units of the same class (military, civilian, religious or support) can't occupy the same tile, beware that moving one unit onto a tile occupied by another you own of the same class will cause them to switch places, if movement allows. So for example when moving units in the same direction in a line, you must move the units in front first to create space for the units behind them. 
+
 Common reasons unit movement does not go as expected:
 - failure to account for map features like crossing a river
-- miscalculated adjacency, eg (x+1, y+1) is adjacent to (x,y) but (x+2, y+2) is not adjacent to (x+1, y+1)
 - zone of control (ZOC): when your unit moves adjacent to an object which exerts ZOC, it can't move further that turn except to attack the ZOC object. Melee units (land and naval), cities, encampments and units with a ZOC promotion exert ZOC. However cavalry units ignore ZOC.
 
 ### Builder Management
@@ -291,6 +292,8 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 
 ## Combat Quick Reference
 
+- Ranged attack requires one movement point. Melee attack requires enough movement points to enter the defender's tile.
+- Attacking consumes all remaining movement.
 - Ranged attacks don't take damage; melee attacks do
 - Forests/mountains block ranged LOS — targets with blocked LOS are filtered from `get_units` attack lists
 - Fortified units: +4 defense
@@ -346,7 +349,7 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 - **City Capture**: conquered or disloyal city — `resolve_city_capture("keep"/"reject"/"raze"/"liberate_founder"/"liberate_previous")`
 - Move responses show the **target tile**, not arrival position (async pathfinding)
 
-Note that if any production, research or similar has 1 turn left, that is not a blocker. It will simply complete next turn.
+Note that if any production, research or similar has 1 turn left, that is not a blocker. It will simply complete next turn. You should never count on any of these things blocking the turn, usually the end turn will go through regardless.
 
 ## Diplomacy
 
