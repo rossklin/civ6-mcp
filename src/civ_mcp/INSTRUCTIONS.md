@@ -25,7 +25,7 @@ Each turn in order:
 5. Repeat step 4 for the second action item, then the third and so on, until you have less than 45s left or no more items require consideration. 
 6. If needed, call `execute_commands` on the items from step 4-5. You can then add follow up items to your list if new information surfaces as a result of the commands you execute. If you do, go back to step 4 and check if you have time to do another iteration.
 7. `end_turn` — advance the turn and get your post-turn report.
-8. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn. It should be concrete. It should not contain items like "think about X" or multiple options for an action, it should be directly applicable to `execute_commands`. The exception is enemy units, since of course they may have moved next turn. Don't write a concrete plan for handling enemy units, instead just write something like "handle enemy units at location X" and leave it up to the next turn agent. At this point you are no longer on the clock so you can take your time to think about the plans and notes.
+8. Think about what to do next turn and whether your long-term plans need updating. Make a detailed action plan for next turn. It should be concrete. It should not contain items like "think about X" or multiple options for an action, it should be directly applicable to `execute_commands`. The exception is enemy units, since of course they may have moved next turn. Don't write a concrete plan for handling enemy units, instead just write something like "handle enemy units at location X" and leave it up to the next turn agent. When mentioning coordinates of enemy units, clarify that they are historical, eg "the barb warrior that was at (x,y) turn N", since you don't know where it will be on the next turn. At this point you are no longer on the clock so you can take your time to think about the plans and notes. Do not reiterate game mechanics clarifications or examples in the next turn plan, these belong in the notes.
 9. `update_diary(next_turn_plan=..., long_term_plans=..., notes=...)` — record your plans.
 10. `wait_for_turn()` — block until your next turn starts. Call again on timeout.
 
@@ -201,7 +201,7 @@ The diary is your persistent memory across sessions and turns, it is what allows
 ### Moving units
 Moving into a tile costs movement points depending on the terrain and features. Hills cost 2 movement, forests/jungles cost 2, and they stack (forest-hills = 3+). A unit which hasn't moved yet can always move into an adjacent tile regardless of cost, but once it has moved it can't enter an adjacent tile unless it has sufficient points left. Map tiles show movement cost (`[mv:2]`, `[mv:3]`) and road presence — route units along roads when possible. Attacking causes a unit to loose all movement points. After killing an enemy, a melee unit will occupy the dead enemy's tile, while a ranged unit will stay on it's original location.
 
-Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort.
+Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort. Conversely, you can (re-)capture a civilian unit once it is controlled by the barbarians or an enemy civ by moving onto it (or successfully attacking it's escorting military unit).
 
 You can use the move_unit command to initiate movement to a target that is further away than this turn's movement allows. The unit will then automatically continue towards that target at the end of each turn unless you give it other orders.
 
@@ -211,6 +211,7 @@ Since two units of the same class (military, civilian, religious or support) can
 
 Common reasons unit movement does not go as expected:
 - failure to account for map features like crossing a river
+- mistakenly assuming a tile is adjacent when it is not due to failure to read the neighbour list
 - zone of control (ZOC): when your unit moves adjacent to an object which exerts ZOC, it can't move further that turn except to attack the ZOC object. Melee units (land and naval), cities, encampments and units with a ZOC promotion exert ZOC. However cavalry units ignore ZOC.
 
 ### Builder Management
@@ -221,7 +222,7 @@ Before building an improvement, consider whether it actually improves the yields
 You can also gain a lot of value by harvesting features or resources. Weight the value gained against the effect on the city's yields. For instance, if the city already has several free good tiles to work, it will take a long time before harvesting one tile has any negative effect on city yields. But harvesting the best currently worked tile may be a bad idea. And later in the game you will be able to re-plant forests. It's always worth harvesting before placing a district since that would remove the feature and resource anyways.
 
 ### Spending Gold & Faith
-Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it.
+Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it. When you purchase a unit it will have zero movement points so you can't use it until next turn.
 
 ### Expansion
 Each city multiplies your districts, yields, and Great Person generation. The gap between a 3-city and 5-city empire by the Medieval era is hard to recover from. If city count is lagging, a settler is typically the highest-impact production choice — more so than most infrastructure in existing cities. Check loyalty before settling: negative-loyalty sites near rivals need a governor assigned immediately via `assign_governor(governor_type, city_id)` or they'll flip. Cities must have at least a 3 tile gap between them, ie be 4 tiles away from the nearest city.
@@ -294,6 +295,7 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 
 - Ranged attack requires one movement point. Melee attack requires enough movement points to enter the defender's tile.
 - Attacking consumes all remaining movement.
+- Attacking a target that is too far away will cause your unit to move towards it, expending all movement without completing the attack.
 - Ranged attacks don't take damage; melee attacks do
 - Forests/mountains block ranged LOS — targets with blocked LOS are filtered from `get_units` attack lists
 - Fortified units: +4 defense
@@ -324,7 +326,7 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 
 Common improvements: `IMPROVEMENT_FARM`, `IMPROVEMENT_MINE`, `IMPROVEMENT_QUARRY`, `IMPROVEMENT_PLANTATION`, `IMPROVEMENT_PASTURE`, `IMPROVEMENT_CAMP`, `IMPROVEMENT_FISHING_BOATS`, `IMPROVEMENT_LUMBER_MILL`
 
-Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `remove_feature` to chop/harvest the feature first, then `improve_tile` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature.
+Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `remove_feature` to chop/harvest the feature first, then `improve_tile` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
 
 Builders repair tile improvements via `repair_improvement(unit_id)`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
 
@@ -334,6 +336,8 @@ Military Engineers (requires Encampment + Armory): `build_route` builds a railro
 |--------|--------|
 | `skip_remaining_units` | Skip all units with remaining moves (useful after diplomacy) |
 | `upgrade_unit(unit_id)` | Upgrade to next type (requires tech + resources + gold) |
+
+Taking an action with a unit other than movement generally consumes all movement points.
 
 ## End Turn Blockers
 
