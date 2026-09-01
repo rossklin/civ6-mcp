@@ -58,6 +58,9 @@ analysis = [
     "matplotlib>=3.10.8",
     "pandas>=2.3.3",
 ]
+profiling = [
+    "pyinstrument>=4.10",
+]
 publish = [
     "fsspec>=2024.6",
     "adlfs>=2024.7",

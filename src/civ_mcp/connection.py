@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 
 from civ_mcp import tuner_client
 from civ_mcp.lua._helpers import SENTINEL
@@ -20,6 +22,16 @@ log = logging.getLogger(__name__)
 
 # Every Lua builder spells the caller's own player exactly this way.
 LOCAL_PLAYER_EXPR = "Game.GetLocalPlayer()"
+
+# Lua commands whose engine round-trip exceeds this log at INFO instead of
+# DEBUG. The engine figure excludes the fixed per-command drain overhead
+# (~0.3s: stale + trailing drains in _locked_execute).
+_SLOW_ENGINE_SECONDS = 1.0
+
+# CIV_MCP_PROFILE — the same switch that turns on per-tool pyinstrument
+# profiling in server.py — promotes every command timing line to INFO for
+# the duration of a profiling session.
+_PROMOTE_LUA_TIMING = bool(os.environ.get("CIV_MCP_PROFILE"))
 
 
 class LuaError(Exception):
@@ -345,50 +357,78 @@ class GameConnection:
         assert self._reader is not None
         assert self._writer is not None
 
-        # Drain any stale messages — route through deal callbacks so
-        # MCPDEAL lines aren't lost between monitor poll cycles.
-        stale = await tuner_client.drain_messages(self._reader, timeout=0.1)
-        self._dispatch_unsolicited(stale)
-
-        await tuner_client.send_message(
-            self._writer, tuner_client.TAG_COMMAND, f"CMD:{state_index}:{lua_code}"
-        )
-
+        # Timing, reported via _log_lua_timing: `engine` is the send→(sentinel
+        # or give-up) round-trip, `total` additionally covers the fixed drain
+        # overhead and collection work. `timed_out` marks every break that
+        # isn't the sentinel (deadline expiry or silent socket).
+        start = time.perf_counter()
+        sent_at = 0.0
+        engine = 0.0
+        timed_out = False
+        error = False
         lines: list[str] = []
-        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            # Drain any stale messages — route through deal callbacks so
+            # MCPDEAL lines aren't lost between monitor poll cycles.
+            stale = await tuner_client.drain_messages(self._reader, timeout=0.1)
+            self._dispatch_unsolicited(stale)
 
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                break
-
-            msg = await tuner_client.recv_message_timeout(
-                self._reader, timeout=min(remaining, 2.0)
+            sent_at = time.perf_counter()
+            await tuner_client.send_message(
+                self._writer, tuner_client.TAG_COMMAND, f"CMD:{state_index}:{lua_code}"
             )
-            if msg is None:
-                break
 
-            if msg.payload.startswith("ERR:"):
-                raise LuaError(msg.payload)
+            deadline = asyncio.get_running_loop().time() + timeout
 
-            # An unsolicited shim print can interleave with this command's
-            # output — dispatch it as an event before treating it as a
-            # result line (see _dispatch_unsolicited).
-            self._dispatch_unsolicited([msg])
-
-            text = _parse_output(msg.payload)
-            if text is not None:
-                if text.strip() == SENTINEL:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    timed_out = True
                     break
-                lines.append(text)
-            # Ignore non-output messages (e.g. tag=3 empty ack)
 
-        # Drain any trailing unsolicited output — also route through deal
-        # callbacks in case the Lua code produced MCPDEAL lines.
-        trailing = await tuner_client.drain_messages(self._reader, timeout=0.2)
-        self._dispatch_unsolicited(trailing)
+                msg = await tuner_client.recv_message_timeout(
+                    self._reader, timeout=min(remaining, 2.0)
+                )
+                if msg is None:
+                    timed_out = True
+                    break
 
-        return lines
+                if msg.payload.startswith("ERR:"):
+                    raise LuaError(msg.payload)
+
+                # An unsolicited shim print can interleave with this command's
+                # output — dispatch it as an event before treating it as a
+                # result line (see _dispatch_unsolicited).
+                self._dispatch_unsolicited([msg])
+
+                text = _parse_output(msg.payload)
+                if text is not None:
+                    if text.strip() == SENTINEL:
+                        break
+                    lines.append(text)
+                # Ignore non-output messages (e.g. tag=3 empty ack)
+
+            engine = time.perf_counter() - sent_at
+
+            # Drain any trailing unsolicited output — also route through deal
+            # callbacks in case the Lua code produced MCPDEAL lines.
+            trailing = await tuner_client.drain_messages(self._reader, timeout=0.2)
+            self._dispatch_unsolicited(trailing)
+
+            return lines
+        except Exception:
+            error = True
+            raise
+        finally:
+            _log_lua_timing(
+                state_index,
+                lua_code,
+                engine=engine,
+                total=time.perf_counter() - start,
+                lines=lines,
+                timed_out=timed_out,
+                error=error,
+            )
 
 
 def _parse_output(payload: str) -> str | None:
@@ -407,6 +447,49 @@ def _parse_output(payload: str) -> str | None:
 
     # Fallback: strip the O and null byte prefix
     return payload.lstrip("O").lstrip("\x00").strip()
+
+
+def _log_lua_timing(
+    state_index: int,
+    lua_code: str,
+    engine: float,
+    total: float,
+    lines: list[str],
+    timed_out: bool,
+    error: bool,
+) -> None:
+    """Log per-command latency so slow tools are attributable.
+
+    Every FireTuner command funnels through _locked_execute, so this is the
+    one place that can say whether a slow tool was slow in the game engine
+    or on the Python side: ``engine`` is the send→sentinel round-trip,
+    ``total − engine`` is fixed drain overhead plus collection work here.
+    Python-side CPU hotspots beyond that show up in pyinstrument reports
+    (see CIV_MCP_PROFILE in server.py).
+    """
+    label = " ".join(lua_code.split())[:80]
+    result = f"{len(lines)} lines/{sum(len(l) for l in lines) // 1024}KB"
+    status = "TIMEOUT" if timed_out else ("ERROR" if error else "ok")
+    if _PROMOTE_LUA_TIMING or timed_out or error or engine >= _SLOW_ENGINE_SECONDS:
+        log.info(
+            "lua[%d] status=%s engine=%.0fms total=%.0fms out=%s | %s",
+            state_index,
+            status,
+            engine * 1000,
+            total * 1000,
+            result,
+            label,
+        )
+    else:
+        log.debug(
+            "lua[%d] status=%s engine=%.0fms total=%.0fms out=%s | %s",
+            state_index,
+            status,
+            engine * 1000,
+            total * 1000,
+            result,
+            label,
+        )
 
 
 # ---------------------------------------------------------------------------

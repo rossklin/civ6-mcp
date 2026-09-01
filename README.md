@@ -264,6 +264,13 @@ Civilization VI        <- Game is the TCP server
 
 The server maintains a persistent TCP connection to Civ 6 via the FireTuner debug protocol. It generates Lua code, executes it inside the game's two Lua VMs (GameCore for reading state, InGame for issuing commands), parses the output, and returns narrated text to the LLM.
 
+### Profiling slow tools
+
+To find out whether a slow tool is slow in the game engine or on the Python side, start the server with `CIV_MCP_PROFILE=1` (requires `pip install civ6-mcp[profiling]`, or plain `pyinstrument`). Two things happen:
+
+- Every tool call is profiled with [pyinstrument](https://pyinstrument.readthedocs.io/) (await-aware, so time blocked on the tuner socket is attributed to the tool that spent it) and written to `~/.civ6-mcp/profiles/<timestamp>-<n>-<tool>.html`. Set `CIV_MCP_PROFILE_DIR` to relocate.
+- Every Lua command logs its latency at INFO — `engine=` is the send→sentinel round-trip inside the game, `total − engine` is fixed protocol overhead. Without the flag these lines log at DEBUG, and only slow commands (>1s engine time) surface at INFO.
+
 The repo includes an [AGENTS.md](AGENTS.md) playbook (symlinked as `CLAUDE.md` for Claude Code) with detailed instructions for agents: turn loop, combat, diplomacy, common pitfalls. See the [devlog](docs/devlog/) for the full development story, including reverse-engineering the FireTuner protocol and the many API quirks discovered along the way.
 
 ## Requirements

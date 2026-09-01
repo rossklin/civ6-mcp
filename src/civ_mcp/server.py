@@ -5,6 +5,7 @@ to the running game via FireTuner protocol.
 """
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import uvicorn
+import mcp.types as mcp_types
 from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, handoff, heartbeat, seats as seats_mod
@@ -729,6 +731,67 @@ mcp = FastMCP(
     instructions=_INSTRUCTIONS,
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Tool-call profiling (CIV_MCP_PROFILE=1)
+# ---------------------------------------------------------------------------
+#
+# Wraps the low-level CallTool handler — the single choke point every tool
+# invocation passes through, on both the stdio and streamable-http
+# transports — in a per-call pyinstrument run. pyinstrument is await-aware,
+# so wall time spent blocked on the FireTuner socket is attributed to the
+# tool that spent it: the Python-side answer to "which tool, and was it the
+# Lua engine or us". Reports are self-contained HTML, one per call, written
+# to ~/.civ6-mcp/profiles/. pyinstrument is an optional extra
+# (pip install civ6-mcp[profiling]); without it the flag logs a warning and
+# the server runs unprofiled.
+
+PROFILE_ENABLED = bool(os.environ.get("CIV_MCP_PROFILE"))
+PROFILE_DIR = Path(
+    os.environ.get("CIV_MCP_PROFILE_DIR", Path.home() / ".civ6-mcp" / "profiles")
+)
+
+_profile_counter = itertools.count()
+
+
+def _install_tool_profiler() -> None:
+    """Wrap the registered CallTool request handler with pyinstrument."""
+    try:
+        from pyinstrument import Profiler
+    except ImportError:
+        log.warning(
+            "CIV_MCP_PROFILE is set but pyinstrument is not installed "
+            "(pip install civ6-mcp[profiling]) — tool profiling disabled"
+        )
+        return
+
+    request_type = mcp_types.CallToolRequest
+    original = mcp._mcp_server.request_handlers[request_type]
+
+    async def profiled(req):
+        profiler = Profiler(async_mode="enabled")
+        profiler.start()
+        try:
+            return await original(req)
+        finally:
+            profiler.stop()
+            try:
+                PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                seq = next(_profile_counter)
+                safe_name = re.sub(r"[^\w.-]", "_", req.params.name or "tool")
+                report = PROFILE_DIR / f"{stamp}-{seq:04d}-{safe_name}.html"
+                profiler.write_html(report)
+                log.info("Wrote profile for %s to %s", req.params.name, report)
+            except Exception:
+                log.warning("Failed to write profile report", exc_info=True)
+
+    # Note: with concurrent tool calls (HTTP handoff mode) overlapping
+    # profilers each record the whole sample stream, so reports may
+    # interleave — still fine for finding a single slow tool.
+    mcp._mcp_server.request_handlers[request_type] = profiled
+    log.info("Tool profiling enabled — reports in %s", PROFILE_DIR)
 
 
 def _app(ctx: Context) -> AppContext:
@@ -3596,6 +3659,9 @@ def main():
     if os.environ.get("CIV_MCP_DISABLE_LUA"):
         mcp._tool_manager.remove_tool("run_lua")
         log.info("Removed run_lua tool because CIV_MCP_DISABLE_LUA is set")
+
+    if PROFILE_ENABLED:
+        _install_tool_profiler()
 
     if not HANDOFF_CONFIG.enabled:
         for name in _HANDOFF_TOOLS:
