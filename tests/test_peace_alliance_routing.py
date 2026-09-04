@@ -419,7 +419,11 @@ def _make_ctx(agent_id=1, human_id=0, agent_ids=(1,)):
     reg = SeatRegistry(default=factory(human_id), agent_ids=agent_ids,
                        human_id=human_id, factory=factory)
     app = types.SimpleNamespace(
-        seats=reg, handoff_config=cfg, mailbox=object()
+        seats=reg, handoff_config=cfg, mailbox=object(),
+        popup_watcher=types.SimpleNamespace(
+            schedule_post_batch_dismiss=lambda: None,
+            schedule_turn_start_dismiss=lambda: None,
+        ),
     )
     ctx = types.SimpleNamespace(
         request_context=types.SimpleNamespace(lifespan_context=app),

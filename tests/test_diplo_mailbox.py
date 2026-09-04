@@ -253,6 +253,10 @@ def _make_ctx(agent_id=1, human_id=0, agent_ids=(1,)):
         handoff_config=cfg,
         mailbox=object(),
         diplo_mailbox=DiploMailbox(),
+        popup_watcher=types.SimpleNamespace(
+            schedule_post_batch_dismiss=lambda: None,
+            schedule_turn_start_dismiss=lambda: None,
+        ),
     )
     ctx = types.SimpleNamespace(
         request_context=types.SimpleNamespace(lifespan_context=app),

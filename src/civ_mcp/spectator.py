@@ -1,13 +1,14 @@
 """Spectator-mode background services for video recording.
 
-Two asyncio tasks that run alongside the agent and share the GameConnection:
+Two asyncio services that run alongside the agent and share the GameConnection:
 
 CameraController — hops the in-game camera to key locations as the agent acts.
   Tools push (x, y) events; the controller replays them at 1-second intervals.
   Pauses automatically when a diplomacy screen is active.
 
-PopupWatcher — polls for non-critical popups and auto-dismisses them after 1 second,
-  keeping the view uncluttered. Skips while diplomacy screens are showing.
+PopupWatcher — dismisses non-critical popups at two scheduled points in an
+  agent's turn (shortly after turn start, and shortly after a command batch),
+  never during the human's turn.
 """
 
 from __future__ import annotations
@@ -30,11 +31,14 @@ CAMERA_DWELL = 1.0
 # Maximum queued camera events — oldest dropped when full.
 CAMERA_QUEUE_MAX = 6
 
-# How often (seconds) the popup watcher polls for visible non-critical popups.
-POPUP_POLL_INTERVAL = 0.5
+# Delay (seconds) after a managed seat's turn starts before popups are
+# dismissed once. Rollover popups (civic complete, era change, ...) land
+# before the agent's first state read.
+POPUP_TURN_START_DELAY = 5.0
 
-# How long (seconds) a popup must be visible before it is auto-dismissed.
-POPUP_DISMISS_DELAY = 1.0
+# Delay (seconds) after an execute_commands batch completes before popups
+# are dismissed once. Never fires per command, only per batch.
+POPUP_POST_BATCH_DELAY = 2.0
 
 # Non-critical popups that will be auto-dismissed.
 _NONCRITICAL_POPUPS = [
@@ -179,35 +183,107 @@ class CameraController:
 
 
 class PopupWatcher:
-    """Auto-dismisses non-critical popups after POPUP_DISMISS_DELAY seconds.
+    """Dismisses non-critical popups at two scheduled points in an agent's turn.
 
-    Polls the InGame UI every POPUP_POLL_INTERVAL seconds. Pauses completely
-    while diplomacy screens are active (CRITICAL status).
+    Popup dismissal is a visual nicety, not a functional requirement, and
+    every dismissal competes for the single FireTuner connection lock — a
+    2 Hz polling watcher was measured stalling command batches for roughly
+    half their wall time.  So there is no polling: server.py schedules
+
+    - ``schedule_turn_start_dismiss()`` — once, POPUP_TURN_START_DELAY
+      seconds into a managed seat's turn (wait_for_turn / claim_seat).
+    - ``schedule_post_batch_dismiss()`` — once, POPUP_POST_BATCH_DELAY
+      seconds after an execute_commands batch completes.  A new batch
+      cancels the pending dismissal, so back-to-back batches only ever
+      queue one.
+
+    Both re-verify at fire time that a managed agent still holds the
+    local-player slot — never the human (their dialogs are theirs) and
+    never a processing built-in AI (InGame queries can stall it) — and
+    skip while a diplomacy screen is up.
     """
 
-    def __init__(self, conn: "GameConnection") -> None:
+    def __init__(self, conn: "GameConnection", handoff_config) -> None:
         self._conn = conn
-        self._task: asyncio.Task | None = None
-
-    def start(self) -> None:
-        self._task = asyncio.create_task(self._run(), name="popup-watcher")
+        self._cfg = handoff_config
+        self._turn_start_task: asyncio.Task | None = None
+        self._post_batch_task: asyncio.Task | None = None
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        """Cancel any pending dismissal (call during shutdown)."""
+        tasks = (self._turn_start_task, self._post_batch_task)
+        for task in tasks:
+            if task:
+                task.cancel()
+        for task in tasks:
+            if task:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._turn_start_task = None
+        self._post_batch_task = None
 
-    @staticmethod
-    async def _dismiss_crash_dialogs() -> None:
-        """Check for and dismiss Win32 crash reporter dialogs."""
-        from civ_mcp.game_launcher import dismiss_crash_dialogs
+    # -- scheduling API (sync, fire-and-forget) --
 
-        dismissed = await dismiss_crash_dialogs()
-        if dismissed:
-            log.warning("PopupWatcher: dismissed crash dialog: %s", dismissed)
+    def schedule_turn_start_dismiss(self) -> None:
+        """Dismiss popups once, POPUP_TURN_START_DELAY seconds from now."""
+        self._turn_start_task = self._reschedule(
+            self._turn_start_task, POPUP_TURN_START_DELAY, "turn-start"
+        )
+
+    def schedule_post_batch_dismiss(self) -> None:
+        """Dismiss popups once, POPUP_POST_BATCH_DELAY seconds from now."""
+        self._post_batch_task = self._reschedule(
+            self._post_batch_task, POPUP_POST_BATCH_DELAY, "post-batch"
+        )
+
+    def _reschedule(
+        self, old: asyncio.Task | None, delay: float, label: str
+    ) -> asyncio.Task:
+        if old and not old.done():
+            old.cancel()
+        return asyncio.create_task(
+            self._dismiss_after(delay, label), name=f"popup-dismiss-{label}"
+        )
+
+    async def _dismiss_after(self, delay: float, label: str) -> None:
+        await asyncio.sleep(delay)
+        try:
+            await self._dismiss_if_allowed(label)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("Popup dismissal (%s) failed", label, exc_info=True)
+
+    async def _dismiss_if_allowed(self, label: str) -> None:
+        from civ_mcp.game_lifecycle import dismiss_popup
+
+        if not await self._agent_on_clock():
+            return
+        # Skip while a diplomacy screen is up (CRITICAL) — dismissal only
+        # targets non-critical popups.
+        if await self._poll() == "CRITICAL":
+            return
+        result = await dismiss_popup(self._conn)
+        if "Dismissed" in result:
+            log.info("PopupWatcher: %s dismiss: %s", label, result)
+
+    async def _agent_on_clock(self) -> bool:
+        """True only while a managed agent holds the local-player slot.
+
+        Classic (non-handoff) mode has no human in the game — the agent is
+        the only player — so dismissal is always allowed there.
+        """
+        if not self._cfg.enabled:
+            return True
+        from civ_mcp import handoff
+
+        try:
+            own = await handoff.try_ownership(self._conn)
+        except Exception:
+            return False
+        return own.local_player is not None and own.local_player in self._cfg.agent_ids
 
     async def _poll(self) -> str:
         """Returns 'POPUP', 'CRITICAL', or 'CLEAR'."""
@@ -220,40 +296,3 @@ class PopupWatcher:
         except Exception:
             pass
         return "CLEAR"
-
-    async def _run(self) -> None:
-        from civ_mcp.game_lifecycle import dismiss_popup
-
-        first_seen: float | None = None
-        # Check for Win32 crash dialogs every N iterations (not every 0.5s)
-        _crash_check_interval = 6  # every ~3 seconds
-        _iteration = 0
-
-        while True:
-            await asyncio.sleep(POPUP_POLL_INTERVAL)
-            _iteration += 1
-            try:
-                status = await self._poll()
-                now = asyncio.get_running_loop().time()
-
-                if status == "POPUP":
-                    if first_seen is None:
-                        first_seen = now
-                    elif now - first_seen >= POPUP_DISMISS_DELAY:
-                        log.debug(
-                            "PopupWatcher: dismissing popup after %.1fs",
-                            now - first_seen,
-                        )
-                        await dismiss_popup(self._conn)
-                        first_seen = None
-                else:
-                    # CRITICAL or CLEAR — reset timer
-                    first_seen = None
-
-            except Exception:
-                first_seen = None
-
-            # Periodically check for Win32 crash reporter dialogs.
-            # These are OS-level dialogs outside the game's Lua layer.
-            if _iteration % _crash_check_interval == 0:
-                await self._dismiss_crash_dialogs()

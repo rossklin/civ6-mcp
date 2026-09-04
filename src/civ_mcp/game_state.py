@@ -153,11 +153,6 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def move_unit(self, unit_id: int, target_x: int, target_y: int) -> str:
-        # Pre-dismiss any blocking popups that would silently eat the move
-        try:
-            await self.dismiss_popup()
-        except Exception:
-            pass
         # Pre-move: install the tribal-village (goody hut) reward listener and
         # snapshot the reward sequence. Best-effort — never blocks the move.
         # The listener is idempotent and re-installs after a save load, so this
@@ -286,11 +281,6 @@ class GameState:
         return result
 
     async def attack_unit(self, unit_id: int, target_x: int, target_y: int) -> str:
-        # Pre-attack: dismiss any blocking popups that would silently eat the attack
-        try:
-            await self.dismiss_popup()
-        except Exception:
-            pass
         lua = lq.build_attack_unit(unit_id, target_x, target_y)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
@@ -390,12 +380,6 @@ class GameState:
         return _action_result(lines)
 
     async def found_city(self, unit_id: int) -> str:
-        # Pre-dismiss any blocking popups (tech completion, era change, etc.)
-        try:
-            await self.dismiss_popup()
-        except Exception:
-            pass
-
         lua = lq.build_found_city(unit_id)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)

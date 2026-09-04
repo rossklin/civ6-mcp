@@ -423,11 +423,12 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
     # In handoff mode the human owns the camera — hopping it to whatever an
     # agent is looking at would make their game unplayable.
     camera = CameraController(conn)
-    popup_watcher = PopupWatcher(conn)
+    # PopupWatcher has no background task — it only schedules dismissals
+    # on demand (see spectator.PopupWatcher); stop() cancels pending ones.
+    popup_watcher = PopupWatcher(conn, HANDOFF_CONFIG)
     watchdog = GameOverWatchdog(gs, logger)
     if not cfg.enabled:
         camera.start()
-    popup_watcher.start()
     watchdog.start()
 
     keeper: HandoffKeeper | None = None
@@ -2621,6 +2622,10 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         return "\n".join(results) if results else "No commands to execute."
 
     result = await _logged(ctx, "execute_commands", {}, _run)
+    # Dismiss any popups the batch produced — once, shortly after the batch
+    # (never per command). The fire-time guard no-ops unless a managed
+    # agent is on the clock.
+    app.popup_watcher.schedule_post_batch_dismiss()
     # Over-budget turns get a yellow card appended — a warning only, the
     # commands above were executed regardless.
     warning = await _turn_timer_warning(seat, gs.conn)
@@ -2755,6 +2760,10 @@ async def claim_seat(ctx: Context, player_id: int) -> str:
     else:
         who = f"P{player_id} (the game is not reachable yet, so its civ is unknown)"
     own = await handoff.try_ownership(app.game.conn)
+    if own.local_player == player_id:
+        # Claimed straight onto the clock — treat it as a turn start for
+        # the (delayed, guarded) popup dismissal.
+        app.popup_watcher.schedule_turn_start_dismiss()
     return (
         f"You are playing {who}.\n"
         f"{handoff.describe_ownership(own, app.handoff_config, player_id)}\n"
@@ -2847,12 +2856,17 @@ async def wait_for_turn(ctx: Context, timeout_seconds: float = 90.0) -> str:
                     )
         return report
 
-    return await _logged(
+    report = await _logged(
         ctx,
         "wait_for_turn",
         {"timeout_seconds": timeout},
         _wait_and_drain,
     )
+    # Turn-start popup dismissal (single, delayed). Scheduled on every
+    # return — timeout or not — and the fire-time guard no-ops unless this
+    # seat is actually on the clock 5s later.
+    app.popup_watcher.schedule_turn_start_dismiss()
+    return report
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_pathing_estimate(
