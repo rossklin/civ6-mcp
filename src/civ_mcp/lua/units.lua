@@ -5,10 +5,23 @@
 -- (NOT narrated prose) because the structured UnitInfo is consumed by the
 -- turn-snapshot functions in game_state.py.
 --
--- Attack-target estimates use the engine's own combat estimator
--- (CombatManager.SimulateAttackInto — the same call the UI combat preview
--- uses), which is authoritative for damage, modifiers, and combat type.
+-- Attack targets are classified by effective occupancy class (the shared
+-- occupancyClass helper, injected from _helpers.py's _LUA_OCCUPANCY_CLASS
+-- snippet) and gated by the engine's own CanStartOperation with the same
+-- operation the UI's move chain would use (RANGE_ATTACK for ranged fire at
+-- distance; the MOVE_TO attack-move otherwise - there is no dedicated
+-- theological operation, the engine resolves religious-vs-religious as
+-- theological combat, needs no war, and only apostles/inquisitors may
+-- initiate it). Classification: military
+-- targets carry an engine damage estimate (CombatManager.SimulateAttackInto -
+-- the same call the UI combat preview uses, authoritative for damage,
+-- modifiers, and combat type); an unescorted civilian adjacent to a
+-- melee-capable attacker is a CAPTURE target (move onto the tile - civilians
+-- are never valid ranged targets); religious targets appear only for
+-- religious attackers (theological combat - the simulator reports
+-- CombatTypes.RELIGIOUS; military units cannot attack religious units).
 
+__LUA_OCCUPANCY_CLASS__
 local id = Game.GetLocalPlayer()
 local tileUnits = {}
 for i, u in Players[id]:GetUnits():Members() do
@@ -50,9 +63,10 @@ for i, u in Players[id]:GetUnits():Members() do
                 if row.Index == rIdx then relName = row.ReligionType; break end
             end
         end
-        -- Scan for attackable enemies if unit has moves
+        -- Attack-target scan (classified by occupancy class, see header).
         local targets = ""
-        if u:GetMovesRemaining() > 0 and (cs > 0 or rs > 0) then
+        local aIsReligious = occupancyClass(entry) == "RELIGIOUS"
+        if u:GetMovesRemaining() > 0 and (cs > 0 or rs > 0 or aIsReligious) then
             local rng = (rs > 0) and (entry and entry.Range or 1) or 1
             local tgtList = {}
             for dy = -rng, rng do
@@ -62,80 +76,153 @@ for i, u in Players[id]:GetUnits():Members() do
                     if d >= 1 and d <= rng then
                         local plotUnits = Map.GetUnitsAt(tx, ty)
                         if plotUnits then
+                            -- Classify the tile's hostile units. Occupancy
+                            -- rules allow one military defender plus one
+                            -- civilian (and religious units) per tile; combat
+                            -- always targets the military defender.
+                            local def, defHP = nil, 0
+                            local civ, civHP = nil, 0
+                            local rel, relHP = nil, 0
                             for other in plotUnits:Units() do
                                 local otherOwner = other:GetOwner()
-                                if otherOwner ~= id and (otherOwner >= 62 or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)) then
-                                    -- LOS check for ranged units (d>1): verify the
-                                    -- game engine agrees we can actually fire there.
-                                    -- Melee (d==1) doesn't need LOS.
-                                    local losOK = true
-                                    if rs > 0 and d > 1 then
-                                        local lp = {}
-                                        lp[UnitOperationTypes.PARAM_X] = tx
-                                        lp[UnitOperationTypes.PARAM_Y] = ty
-                                        losOK = UnitManager.CanStartOperation(u, UnitOperationTypes.RANGE_ATTACK, nil, lp)
+                                if otherOwner ~= id then
+                                    local oInfo = GameInfo.Units[other:GetType()]
+                                    local oClass = occupancyClass(oInfo)
+                                    -- Theological combat needs no war (and no
+                                    -- barbarian); military interactions keep the
+                                    -- war/barbarian gate.
+                                    local isHostile = otherOwner >= 62
+                                        or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)
+                                        or (aIsReligious and oClass == "RELIGIOUS")
+                                    if isHostile then
+                                        local oName = oInfo and oInfo.UnitType or "UNKNOWN"
+                                        local oHP = other:GetMaxDamage() - other:GetDamage()
+                                        if oClass == "RELIGIOUS" then
+                                            if rel == nil then rel, relHP = oName, oHP end
+                                        elseif oClass == "FORMATION_CLASS_CIVILIAN" then
+                                            if civ == nil then civ, civHP = oName, oHP end
+                                        elseif def == nil then
+                                            def, defHP = oName, oHP
+                                        end
                                     end
-                                    if losOK then
-                                        local eInfo = GameInfo.Units[other:GetType()]
-                                        local eName = eInfo and eInfo.UnitType or "UNKNOWN"
-                                        local eHP = other:GetMaxDamage() - other:GetDamage()
-                                        -- Engine combat estimate: same call the UI
-                                        -- combat preview uses. Returns nil if the
-                                        -- engine can't evaluate (busy/invalid); we
-                                        -- then emit a target with zeroed estimate.
-                                        local eCombatType = nil
-                                        if rs > 0 and d > 1 then eCombatType = CombatTypes.RANGED end
-                                        local eDD, eDA, eR, eMods = 0, 0, false, nil
-                                        pcall(function()
-                                            local sim = CombatManager.SimulateAttackInto(u:GetComponentID(), eCombatType, tx, ty)
-                                            if sim then
-                                                local att = sim[CombatResultParameters.ATTACKER]
-                                                local def = sim[CombatResultParameters.DEFENDER]
-                                                if def then eDD = def[CombatResultParameters.DAMAGE_TO] or 0 end
-                                                if att then eDA = att[CombatResultParameters.DAMAGE_TO] or 0 end
-                                                local ct = sim[CombatResultParameters.COMBAT_TYPE]
-                                                eR = (ct == CombatTypes.RANGED or ct == CombatTypes.BOMBARD)
-                                                -- Collect the human-readable modifier
-                                                -- descriptions the engine produces for
-                                                -- each combatant (terrain, flanking,
-                                                -- promotion, defenses, ...).
-                                                local ptKeys = {
-                                                    "PREVIEW_TEXT_TERRAIN", "PREVIEW_TEXT_ASSIST",
-                                                    "PREVIEW_TEXT_PROMOTION", "PREVIEW_TEXT_DEFENSES",
-                                                    "PREVIEW_TEXT_HEALTH", "PREVIEW_TEXT_OPPONENT",
-                                                    "PREVIEW_TEXT_MODIFIER", "PREVIEW_TEXT_RESOURCES",
-                                                    "PREVIEW_TEXT_INTERCEPTOR", "PREVIEW_TEXT_ANTI_AIR",
-                                                }
-                                                local mods = {}
-                                                for _, c in ipairs({att, def}) do
-                                                    if c then
-                                                        for _, pk in ipairs(ptKeys) do
-                                                            local arr = c[CombatResultParameters[pk]]
-                                                            if arr then
-                                                                for _, s in ipairs(arr) do
-                                                                    local txt = tostring(s)
-                                                                    pcall(function() txt = tostring(Locale.Lookup(s)) end)
-                                                                    -- strip control tags ([COLOR_..]/[ENDCOLOR]/
-                                                                    -- [ICON_..]/[NEWLINE]) and the delimiters
-                                                                    -- used by the token format
-                                                                    txt = txt:gsub("%b[]", "")
-                                                                              :gsub("[,;~|]", " ")
-                                                                              :gsub("%s+", " ")
-                                                                              :gsub("^%s", "")
-                                                                              :gsub("%s$", "")
-                                                                    if txt ~= "" then table.insert(mods, txt) end
-                                                                end
+                                end
+                            end
+                            -- What does THIS attacker interact with on the tile?
+                            local simName, simHP = nil, 0
+                            if def ~= nil and not aIsReligious then
+                                simName, simHP = def, defHP
+                            elseif rel ~= nil and aIsReligious then
+                                simName, simHP = rel, relHP
+                            end
+                            -- Engine validity gate - the same operation the
+                            -- UI's own move chain (Civ6Common.RequestMoveOperation)
+                            -- would use: RANGE_ATTACK for ranged fire at
+                            -- distance, otherwise the MOVE_TO attack-move
+                            -- (there is no dedicated theological operation -
+                            -- the engine resolves religious-vs-religious as
+                            -- theological combat). CanStartOperation is the
+                            -- engine's authority on attacker capability (only
+                            -- apostles and inquisitors may initiate
+                            -- theological combat) and on ranged LOS.
+                            local engOK = true
+                            if rs > 0 and d > 1 then
+                                local lp = {}
+                                lp[UnitOperationTypes.PARAM_X] = tx
+                                lp[UnitOperationTypes.PARAM_Y] = ty
+                                engOK = UnitManager.CanStartOperation(u, UnitOperationTypes.RANGE_ATTACK, nil, lp)
+                            elseif simName ~= nil or civ ~= nil then
+                                local ap = {}
+                                ap[UnitOperationTypes.PARAM_X] = tx
+                                ap[UnitOperationTypes.PARAM_Y] = ty
+                                ap[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
+                                    + UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION
+                                engOK = UnitManager.CanStartOperation(u, UnitOperationTypes.MOVE_TO, nil, ap)
+                            end
+                            if engOK then
+                                if simName ~= nil then
+                                    -- Engine combat estimate: same call the UI
+                                    -- combat preview uses. eCombatType nil lets
+                                    -- the engine pick the combat type - melee
+                                    -- and theological sims come back with their
+                                    -- COMBAT_TYPE filled in (CombatTypes.MELEE
+                                    -- / RELIGIOUS / ...). Returns nil if the
+                                    -- engine can't evaluate (busy/invalid); we
+                                    -- then emit a target with zeroed estimate.
+                                    local eCombatType = nil
+                                    if rs > 0 and d > 1 then eCombatType = CombatTypes.RANGED end
+                                    local eDD, eDA, eR, eTheo, eMods = 0, 0, false, false, nil
+                                    pcall(function()
+                                        local sim = CombatManager.SimulateAttackInto(u:GetComponentID(), eCombatType, tx, ty)
+                                        if sim then
+                                            local simAtt = sim[CombatResultParameters.ATTACKER]
+                                            local simDef = sim[CombatResultParameters.DEFENDER]
+                                            if simDef then eDD = simDef[CombatResultParameters.DAMAGE_TO] or 0 end
+                                            if simAtt then eDA = simAtt[CombatResultParameters.DAMAGE_TO] or 0 end
+                                            local ct = sim[CombatResultParameters.COMBAT_TYPE]
+                                            eR = (ct == CombatTypes.RANGED or ct == CombatTypes.BOMBARD)
+                                            eTheo = (ct == CombatTypes.RELIGIOUS)
+                                            -- Collect the human-readable modifier
+                                            -- descriptions the engine produces for
+                                            -- each combatant (terrain, flanking,
+                                            -- promotion, defenses, ...).
+                                            local ptKeys = {
+                                                "PREVIEW_TEXT_TERRAIN", "PREVIEW_TEXT_ASSIST",
+                                                "PREVIEW_TEXT_PROMOTION", "PREVIEW_TEXT_DEFENSES",
+                                                "PREVIEW_TEXT_HEALTH", "PREVIEW_TEXT_OPPONENT",
+                                                "PREVIEW_TEXT_MODIFIER", "PREVIEW_TEXT_RESOURCES",
+                                                "PREVIEW_TEXT_INTERCEPTOR", "PREVIEW_TEXT_ANTI_AIR",
+                                            }
+                                            local mods = {}
+                                            for _, c in ipairs({simAtt, simDef}) do
+                                                if c then
+                                                    for _, pk in ipairs(ptKeys) do
+                                                        local arr = c[CombatResultParameters[pk]]
+                                                        if arr then
+                                                            for _, s in ipairs(arr) do
+                                                                local txt = tostring(s)
+                                                                pcall(function() txt = tostring(Locale.Lookup(s)) end)
+                                                                -- strip control tags ([COLOR_..]/[ENDCOLOR]/
+                                                                -- [ICON_..]/[NEWLINE]) and the delimiters
+                                                                -- used by the token format
+                                                                txt = txt:gsub("%b[]", "")
+                                                                          :gsub("[,;~|]", " ")
+                                                                          :gsub("%s+", " ")
+                                                                          :gsub("^%s", "")
+                                                                          :gsub("%s$", "")
+                                                                if txt ~= "" then table.insert(mods, txt) end
                                                             end
                                                         end
                                                     end
                                                 end
-                                                if #mods > 0 then eMods = mods end
                                             end
-                                        end)
+                                            if #mods > 0 then eMods = mods end
+                                        end
+                                    end)
+                                    -- A religious attacker's target must resolve
+                                    -- as THEOLOGICAL combat in the engine's own
+                                    -- simulation; anything else (e.g. a
+                                    -- non-combat religious unit that slipped the
+                                    -- capability check above, or a busy engine)
+                                    -- is not emitted.
+                                    if not aIsReligious or eTheo then
+                                        local kindStr = eTheo and "~kind:theological" or ""
+                                        -- A civilian stacked with the defender is
+                                        -- captured when a MELEE attack kills the
+                                        -- escort (ranged kills do not capture).
+                                        local capStr = ""
+                                        if civ ~= nil and cs > 0 and d == 1 then
+                                            capStr = "~captures:" .. civ
+                                        end
                                         local modStr = ""
                                         if eMods and #eMods > 0 then modStr = "~m:" .. table.concat(eMods, ",") end
-                                        table.insert(tgtList, eName .. "@" .. tx .. "," .. ty .. "~hp:" .. eHP .. "~dd:" .. eDD .. "~da:" .. eDA .. "~r:" .. (eR and "1" or "0") .. modStr)
+                                        table.insert(tgtList, simName .. "@" .. tx .. "," .. ty .. "~hp:" .. simHP .. "~dd:" .. eDD .. "~da:" .. eDA .. "~r:" .. (eR and "1" or "0") .. kindStr .. capStr .. modStr)
                                     end
+                                elseif civ ~= nil and cs > 0 and d == 1 then
+                                    -- Unescorted civilian adjacent to a melee-capable
+                                    -- attacker: move onto the tile to capture it.
+                                    -- No damage simulation - civilians aren't damage
+                                    -- targets, and ranged units cannot target them.
+                                    table.insert(tgtList, civ .. "@" .. tx .. "," .. ty .. "~hp:" .. civHP .. "~kind:capture")
                                 end
                             end
                         end

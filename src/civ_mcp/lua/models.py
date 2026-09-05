@@ -206,6 +206,13 @@ class AttackTarget:
     Populated in the units query so estimates are visible in the game state
     *before* attacking. The legacy bare ``"x,y"`` string form (no estimate)
     is still parsed: only ``x``/``y`` are set and the estimate fields stay 0.
+
+    ``kind`` classifies the interaction: ``attack`` (default — military
+    target with a damage estimate), ``capture`` (unescorted civilian; moving
+    onto the tile captures it, no damage fields), or ``theological``
+    (religious combat; dd/da are theological damage). ``captures`` names a
+    civilian stacked with the defender — a melee kill of the escort
+    captures it.
     """
 
     unit_type: str
@@ -217,6 +224,8 @@ class AttackTarget:
     is_ranged: bool = False
     is_kill: bool = False
     modifiers: list[str] = field(default_factory=list)
+    kind: str = "attack"
+    captures: str = ""
 
 
 @dataclass

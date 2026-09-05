@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
+    _LUA_OCCUPANCY_CLASS,
     _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
@@ -29,11 +30,19 @@ def build_units_query() -> str:
     The Lua lives in ``units.lua`` (loaded via ``load_lua_template``) and emits
     pipe-delimited lines for :func:`parse_units_response` — not narrated prose
     — because the structured :class:`UnitInfo` is consumed by the turn-snapshot
-    functions in ``game_state.py``. Attack-target estimates come from the
-    engine's own ``CombatManager.SimulateAttackInto`` (the UI combat preview
-    call), which is authoritative for damage and modifiers.
+    functions in ``game_state.py``. Attack targets are classified by effective
+    occupancy class (shared ``occupancyClass`` helper) and gated by the
+    engine's own ``CanStartOperation`` (the same op the UI's move chain uses):
+    military targets carry an engine damage estimate
+    (``CombatManager.SimulateAttackInto`` — the UI combat preview call),
+    unescorted civilians are listed as melee capture targets, and religious
+    targets appear only for religious attackers — theological combat needs no
+    war, only apostles/inquisitors may initiate it, and the target must
+    resolve as ``CombatTypes.RELIGIOUS`` in the simulation.
     """
-    return load_lua_template("units.lua").replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    return load_lua_template("units.lua").replace(
+        "__LUA_OCCUPANCY_CLASS__", _LUA_OCCUPANCY_CLASS
+    ).replace("__MCP_SENTINEL_TAG__", SENTINEL)
 
 
 
@@ -66,6 +75,7 @@ def build_move_unit(unit_id: int, target_x: int, target_y: int) -> str:
     """
     return (
         load_lua_template("build_move_unit.lua")
+        .replace("__LUA_OCCUPANCY_CLASS__", _LUA_OCCUPANCY_CLASS)
         .replace("__UNIT_ID__", str(unit_id))
         .replace("__TARGET_X__", str(target_x))
         .replace("__TARGET_Y__", str(target_y))
@@ -1199,9 +1209,13 @@ def _parse_attack_target(token: str) -> AttackTarget:
     """Parse one target token from the units query into an AttackTarget.
 
     Formats (most-derived first):
-      new:   ``eName@tx,ty~hp:EHP~dd:N~da:N~r:0~m:mod1,mod2``
+      new:   ``eName@tx,ty~hp:EHP~dd:N~da:N~r:0~kind:K~captures:NAME~m:mod1,mod2``
              dd/da are the engine's predicted damage to the defender/attacker
              (from CombatManager.SimulateAttackInto), carried verbatim.
+             kind: attack (default) | capture (unescorted civilian — move
+             onto the tile; no damage fields) | theological (religious
+             combat; dd/da are theological damage). captures names a
+             civilian escorted by the defender (melee kill captures it).
       old:   ``eName@tx,ty(EHP hp)``
       legacy:``tx,ty``  (bare — tests only; no estimate)
     """
@@ -1238,6 +1252,8 @@ def _parse_attack_target(token: str) -> AttackTarget:
             is_ranged=is_ranged,
             is_kill=dmg_def >= hp if hp > 0 else False,
             modifiers=mods,
+            kind=fields.get("kind", "attack") or "attack",
+            captures=fields.get("captures", "") or "",
         )
     # Old format: eName@tx,ty(EHP hp)
     if "@" in token:

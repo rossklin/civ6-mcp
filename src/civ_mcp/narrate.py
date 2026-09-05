@@ -115,12 +115,21 @@ def _format_attack_target(t: lq.AttackTarget) -> str:
     """Format one attackable target with its combat estimate.
 
     Full detail: damage to defender, kill flag, counter-damage (melee only),
-    and key modifiers. Legacy bare ``x,y`` targets (no estimate) render plain.
+    and key modifiers. Capture targets (unescorted civilians) render as a
+    move-onto instruction; theological targets are labelled as religious
+    combat. Legacy bare ``x,y`` targets (no estimate) render plain.
     """
     # Legacy bare target (only x,y populated, no unit_type/estimate)
     if not t.unit_type and t.est_damage_to_defender == 0 and t.hp == 0:
         return f"    >> CAN ATTACK: {t.x},{t.y}"
-    parts = [f"    >> CAN ATTACK: {t.unit_type} at ({t.x},{t.y})"]
+    if t.kind == "capture":
+        parts = [f"    >> CAN CAPTURE: {t.unit_type} at ({t.x},{t.y})"]
+        if t.hp > 0:
+            parts.append(f" HP:{t.hp}")
+        parts.append(" (move onto the tile)")
+        return "".join(parts)
+    label = "THEOLOGICAL" if t.kind == "theological" else "CAN ATTACK"
+    parts = [f"    >> {label}: {t.unit_type} at ({t.x},{t.y})"]
     if t.hp > 0:
         parts.append(f" HP:{t.hp}")
     if t.est_damage_to_defender > 0:
@@ -131,6 +140,8 @@ def _format_attack_target(t: lq.AttackTarget) -> str:
             parts.append(" (ranged)")
         elif t.est_damage_to_attacker > 0:
             parts.append(f", take ~{t.est_damage_to_attacker}")
+    if t.captures:
+        parts.append(f" [kill escort to capture {t.captures}]")
     if t.modifiers:
         parts.append(f" ({', '.join(t.modifiers)})")
     return "".join(parts)

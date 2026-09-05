@@ -75,15 +75,14 @@ params[UnitOperationTypes.PARAM_Y] = targetY
 params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
     + UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION
 
--- Occupancy scan. Effective occupancy class: "RELIGIOUS" for religious
--- units (ReligiousStrength > 0 in GameInfo - same test the game's UI uses),
--- otherwise the FormationClass. An occupant blocks the mover iff effective
--- classes match (see header note). Any non-local unit at the destination
--- makes the order an attack-move (tag only - the ATTACK modifier above is
--- what actually arms it).
-local moverInfo = GameInfo.Units[unit:GetType()]
-local moverClass = (moverInfo and (moverInfo.ReligiousStrength or 0) > 0)
-    and "RELIGIOUS" or moverInfo.FormationClass
+-- Occupancy scan. An occupant blocks the mover iff effective occupancy
+-- classes match (see header note). The class test lives in the shared
+-- occupancyClass helper (injected from _helpers.py's _LUA_OCCUPANCY_CLASS
+-- snippet, also used by units.lua). Any non-local unit at the
+-- destination makes the order an attack-move (tag only - the ATTACK
+-- modifier above is what actually arms it).
+__LUA_OCCUPANCY_CLASS__
+local moverClass = occupancyClass(GameInfo.Units[unit:GetType()])
 local blockedBy = nil
 local hasHostile = false
 local tgtUnits = Map.GetUnitsAt(targetX, targetY)
@@ -91,9 +90,7 @@ if tgtUnits then
     for other in tgtUnits:Units() do
         if other:GetOwner() == me then
             local info = GameInfo.Units[other:GetType()]
-            local otherClass = (info and (info.ReligiousStrength or 0) > 0)
-                and "RELIGIOUS" or (info and info.FormationClass or nil)
-            if moverClass ~= nil and otherClass == moverClass then
+            if moverClass ~= nil and occupancyClass(info) == moverClass then
                 blockedBy = info.UnitType
             end
         else

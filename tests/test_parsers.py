@@ -200,6 +200,40 @@ class TestParseUnits:
         assert t.est_damage_to_defender >= 20
         assert t.is_kill is True
 
+    def test_target_capture_kind(self):
+        # Unescorted civilian: capture target, no damage fields.
+        tgt = "UNIT_BUILDER@14,6~hp:100~kind:capture"
+        line = f"2|Warrior|UNIT_WARRIOR|5,5|2.0/2.0|100/100|20|0|0|{tgt}|0|0|||"
+        units = parse_units_response([line])
+        t = units[0].targets[0]
+        assert t.kind == "capture"
+        assert t.unit_type == "UNIT_BUILDER"
+        assert t.hp == 100
+        assert t.est_damage_to_defender == 0
+        assert t.is_kill is False
+
+    def test_target_theological_and_captures(self):
+        # Theological combat estimate + escort-capture annotation on a
+        # military target.
+        tgt = (
+            "UNIT_APOSTLE@14,6~hp:100~dd:40~da:22~r:0~kind:theological~m:"
+            "def Cross-Cultural Dialogue +5"
+        )
+        line = f"2|Apostle|UNIT_APOSTLE|5,5|2.0/2.0|100/100|0|0|3|{tgt}|0|0|||"
+        units = parse_units_response([line])
+        t = units[0].targets[0]
+        assert t.kind == "theological"
+        assert t.est_damage_to_defender == 40
+        assert t.est_damage_to_attacker == 22
+        assert "def Cross-Cultural Dialogue +5" in t.modifiers
+
+        tgt2 = "UNIT_BARBARIAN_WARRIOR@15,7~hp:60~dd:55~da:10~r:0~captures:UNIT_SETTLER"
+        line2 = f"2|Warrior|UNIT_WARRIOR|5,5|2.0/2.0|100/100|20|0|0|{tgt2}|0|0|||"
+        units2 = parse_units_response([line2])
+        t2 = units2[0].targets[0]
+        assert t2.kind == "attack"  # default when kind absent
+        assert t2.captures == "UNIT_SETTLER"
+
 
 # ---------------------------------------------------------------------------
 # parse_attack_outcome

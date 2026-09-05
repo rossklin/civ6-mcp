@@ -155,6 +155,19 @@ local function resVisible(resEntry)
     return t and pTech:HasTech(t.Index)
 end"""
 
+# Effective occupancy class — shared by build_move_unit.lua and units.lua via
+# the __LUA_OCCUPANCY_CLASS__ token so the rule is defined once. Religious
+# units are FORMATION_CLASS_CIVILIAN in the data but are treated as their own
+# class: they co-locate with civilians and military but conflict with each
+# other. Detection (ReligiousStrength > 0) mirrors the game's own UI test
+# (UnitFlagManager.lua). Units may share a tile iff classes differ.
+_LUA_OCCUPANCY_CLASS = """\
+local function occupancyClass(info)
+    if info == nil then return nil end
+    if (info.ReligiousStrength or 0) > 0 then return "RELIGIOUS" end
+    return info.FormationClass
+end"""
+
 # Victory-enabled check — prints VENABLED| lines for each enabled victory type.
 # Yield label table + formatters for trade route yield display.
 # fmtY: format array of {YieldIndex, Amount} objects (from GetOutgoingRoutes).
