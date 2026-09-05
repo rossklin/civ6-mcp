@@ -38,49 +38,39 @@ def build_units_query() -> str:
 
 
 def build_move_unit(unit_id: int, target_x: int, target_y: int) -> str:
-    return f"""
-{_lua_get_unit(unit_id)}
-if unit:GetMovesRemaining() <= 0 then
-    {_bail("ERR:NO_MOVES|Unit has no movement points remaining this turn. Use skip or wait until next turn.")}
-end
-if not UnitManager.CanStartOperation(unit, UnitOperationTypes.MOVE_TO, nil, true) then
-    {_bail("ERR:CANNOT_MOVE|Unit cannot move (invalid state)")}
-end
--- Pre-check: stacking conflict at target tile
-local unitInfo = GameInfo.Units[unit:GetType()]
-local isCivilian = (unitInfo and unitInfo.FormationClass == "FORMATION_CLASS_CIVILIAN")
-local tgtUnits = Map.GetUnitsAt({target_x}, {target_y})
-if tgtUnits then
-    for other in tgtUnits:Units() do
-        if other:GetOwner() == me then
-            local otherInfo = GameInfo.Units[other:GetType()]
-            local otherCivilian = (otherInfo and otherInfo.FormationClass == "FORMATION_CLASS_CIVILIAN")
-            if isCivilian == otherCivilian then
-                local otherName = otherInfo and otherInfo.UnitType or "unit"
-                {_bail_lua(f'"ERR:STACKING_CONFLICT|Friendly " .. otherName .. " already on ({target_x},{target_y}). Cannot stack same formation class."')}
-            end
-        end
-    end
-end
-local fromX, fromY = unit:GetX(), unit:GetY()
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = {target_x}
-params[UnitOperationTypes.PARAM_Y] = {target_y}
--- Add ATTACK modifier if hostile unit on target tile (needed for civilian capture)
-local hasHostile = false
-if tgtUnits then
-    for other in tgtUnits:Units() do
-        if other:GetOwner() ~= me then hasHostile = true end
-    end
-end
-if hasHostile then
-    params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
-end
-UnitManager.RequestOperation(unit, UnitOperationTypes.MOVE_TO, params)
-local tag = hasHostile and "OK:CAPTURE_MOVE|" or "OK:MOVING_TO|"
-print(tag .. {target_x} .. "," .. {target_y} .. "|from:" .. fromX .. "," .. fromY)
-print("{SENTINEL}")
-"""
+    """InGame context: move a unit to a tile, mirroring the UI's move pipeline.
+
+    The Lua lives in ``build_move_unit.lua`` (loaded via ``load_lua_template``)
+    and ports Civ6Common.RequestMoveOperation — the code behind a human
+    click/drag move:
+
+    * ``PARAM_MODIFIERS = ATTACK + MOVE_IGNORE_UNEXPLORED_DESTINATION`` is
+      always set. The UI never issues ``MOVE_TO`` with a bare ``{X, Y}``
+      table, and a bare-params ``CanStartOperation(MOVE_TO)`` immediately
+      before an equally bare ``RequestOperation`` left the engine rejecting
+      the op while still charging movement (devlog game_004 signature).
+    * Swapping places with another owned unit is the dedicated
+      ``SWAP_UNITS`` operation, attempted when the destination's occupant
+      blocks the mover — the engine is the authority on the other unit's
+      movement.
+    * Stacking rule (no engine query exists; the UI never checks): the
+      effective occupancy class is ``RELIGIOUS`` for religious units
+      (``ReligiousStrength > 0`` — same test the game's UI uses), otherwise
+      the ``FormationClass``; an occupant blocks the mover iff effective
+      classes match. Religious units co-locate with civilians and military
+      but conflict with each other (religious behavior unverified — flagged
+      in the template for live confirmation).
+    * ``MOVE_TO`` itself is fire-and-forget like the UI; move_unit's GameCore
+      position readback verifies (a rejected request charges no movement,
+      verified live).
+    """
+    return (
+        load_lua_template("build_move_unit.lua")
+        .replace("__UNIT_ID__", str(unit_id))
+        .replace("__TARGET_X__", str(target_x))
+        .replace("__TARGET_Y__", str(target_y))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 # ── Tribal village (goody hut) reward capture ─────────────────────────────

@@ -175,7 +175,7 @@ class GameState:
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
         # Post-move: read actual position from GameCore (move is async in InGame)
-        if result.startswith("MOVING_TO") or result.startswith("CAPTURE_MOVE"):
+        if result.startswith(("MOVING_TO", "CAPTURE_MOVE", "SWAPPING")):
             try:
                 pos_lines = await self.conn.execute_read(
                     lq.build_unit_position_query(
@@ -203,7 +203,8 @@ class GameState:
                                 )  # positive dy = south (higher Y = south in Civ 6)
                                 result += f"|(moved dx:{dx:+d} dy:{dy:+d})"
                                 tgt_match = re.search(
-                                    r"(?:MOVING_TO|CAPTURE_MOVE)\|(\d+),(\d+)", result
+                                    r"(?:MOVING_TO|CAPTURE_MOVE|SWAPPING)\|(\d+),(\d+)",
+                                    result,
                                 )
                                 if tgt_match:
                                     tx, ty = (
@@ -221,7 +222,7 @@ class GameState:
         # event fires during sim resolution and can lag the position read by a
         # frame, so when the unit moved onto a known goody hut we poll briefly.
         if goody_before_seq >= 0 and "|BLOCKED" not in result and (
-            result.startswith("MOVING_TO") or result.startswith("CAPTURE_MOVE")
+            result.startswith(("MOVING_TO", "CAPTURE_MOVE", "SWAPPING"))
         ):
             try:
                 rewards: list[lq.GoodyReward] = []
