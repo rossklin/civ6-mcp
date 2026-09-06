@@ -2327,18 +2327,16 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
         # nothing executes — so an unknown/typo'd action can never reach the
         # engine.
         _ALLOWED_ACTIONS = frozenset({
-            # Units
-            "move_unit", "attack_unit", "fortify_unit", "skip_unit",
-            "skip_remaining_units", "automate_explore", "heal_unit",
-            "alert_unit", "sleep_unit", "delete_unit", "enter_formation",
-            "exit_formation", "promote_unit", "upgrade_unit",
+            # Units.  Everything beyond move/attack/skip goes through the
+            # generic unit_action command (fortify, heal, sleep, alert,
+            # automate, delete, formations, promote, upgrade, builder ops,
+            # spread religion, trader teleport, spy travel/missions, ...).
+            "move_unit", "attack_unit", "unit_action",
+            "skip_unit", "skip_remaining_units",
             # Settling & cities
             "found_city", "resolve_city_capture", "set_city_production",
             "purchase_item", "list_city_production", "set_city_focus",
             "purchase_tile", "city_attack",
-            # Builders & improvements
-            "improve_tile", "remove_feature", "repair_improvement",
-            "remove_improvement", "build_route", "sacrifice_builder_charges",
             # Research & civics
             "set_research", "set_civic",
             # Diplomacy & trade.  No diplomacy_respond/get_diplomacy_sessions
@@ -2357,10 +2355,8 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             # Religion & Great People
             "choose_pantheon", "found_religion", "recruit_great_person",
             "patronize_great_person", "reject_great_person",
-            "activate_great_person", "spread_religion",
-            # Trade routes & spies
-            "make_trade_route", "teleport_to_city", "spy_travel",
-            "spy_mission",
+            # Trade routes
+            "make_trade_route",
             # World Congress
             "queue_wc_votes", "vote_world_congress", "submit_congress",
         })

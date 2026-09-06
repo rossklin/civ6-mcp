@@ -136,18 +136,6 @@ class GameState:
             log.debug("Game-over check failed in GameCore too", exc_info=True)
             return None
 
-    async def spy_travel(self, unit_id: int, target_x: int, target_y: int) -> str:
-        lua = lq.build_spy_travel(unit_id, target_x, target_y)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def spy_mission(
-        self, unit_id: int, mission_type: str, target_x: int, target_y: int
-    ) -> str:
-        lua = lq.build_spy_mission(unit_id, mission_type, target_x, target_y)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
     # ------------------------------------------------------------------
     # Action methods (run in InGame context for UnitManager access)
     # ------------------------------------------------------------------
@@ -450,27 +438,40 @@ class GameState:
         lines = await self.conn.execute_read(lua)
         return lq.parse_settle_advisor_response(lines)
 
-    async def fortify_unit(self, unit_id: int) -> str:
-        lua = lq.build_fortify_unit(unit_id)
+    async def unit_action(
+        self,
+        unit_id: int,
+        unit_action: str,
+        target_x: int | None = None,
+        target_y: int | None = None,
+        target_unit_id: int | None = None,
+        improvement: str | None = None,
+        promotion_type: str | None = None,
+        wmd_type: str | None = None,
+    ) -> str:
+        """Generic unit action executor (InGame context).
+
+        Executes any UnitCommand/UnitOperation by DB action id — the same ids
+        shown in the unit's ``unit_action`` list in get_full_game_state — via
+        the game UI's own generic path. See :func:`build_unit_action` for the
+        per-action params and the deny-list of dedicated commands.
+        """
+        lua = lq.build_unit_action(
+            unit_id,
+            unit_action,
+            target_x=target_x,
+            target_y=target_y,
+            target_unit_id=target_unit_id,
+            improvement=improvement,
+            promotion_type=promotion_type,
+            wmd_type=wmd_type,
+        )
         lines = await self.conn.execute_write(lua)
-        result = _action_result(lines)
-        if result.startswith("SLEEPING"):
-            return "Unit is sleeping (this unit type cannot fortify)"
-        return result
+        return _action_result(lines)
 
     async def skip_unit(self, unit_id: int) -> str:
         lua = lq.build_skip_unit(unit_id)
         lines = await self.conn.execute_read(lua)
-        return _action_result(lines)
-
-    async def exit_formation(self, unit_id: int) -> str:
-        lua = lq.build_exit_formation(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def enter_formation(self, unit_id: int, target_unit_id: int) -> str:
-        lua = lq.build_enter_formation(unit_id, target_unit_id)
-        lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
     async def skip_remaining_units(self) -> str:
@@ -489,61 +490,6 @@ class GameState:
         if fortify_result and not fortify_result.startswith("Error"):
             return f"{fortify_result}\n{skip_result}"
         return skip_result
-
-    async def automate_explore(self, unit_id: int) -> str:
-        lua = lq.build_automate_explore(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def heal_unit(self, unit_id: int) -> str:
-        lua = lq.build_heal_unit(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def alert_unit(self, unit_id: int) -> str:
-        lua = lq.build_alert_unit(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def sleep_unit(self, unit_id: int) -> str:
-        lua = lq.build_sleep_unit(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def delete_unit(self, unit_id: int) -> str:
-        lua = lq.build_delete_unit(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def improve_tile(self, unit_id: int, improvement_name: str) -> str:
-        lua = lq.build_improve_tile(unit_id, improvement_name)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def remove_feature(self, unit_id: int) -> str:
-        lua = lq.build_remove_feature(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def repair_improvement(self, unit_id: int) -> str:
-        lua = lq.build_repair_improvement(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def remove_improvement(self, unit_id: int) -> str:
-        lua = lq.build_remove_improvement(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def sacrifice_builder_charges(self, unit_id: int) -> str:
-        lua = lq.build_sacrifice_builder_charges(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def build_route(self, unit_id: int) -> str:
-        lua = lq.build_build_route(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
 
     async def set_city_production(
         self,
@@ -968,15 +914,6 @@ class GameState:
         return result
 
     # ------------------------------------------------------------------
-    # Promotion methods
-    # ------------------------------------------------------------------
-
-    async def promote_unit(self, unit_id: int, promotion_type: str) -> str:
-        lua = lq.build_promote_unit(unit_id, promotion_type)
-        lines = await self.conn.execute_write(lua)  # InGame context
-        return _action_result(lines)
-
-    # ------------------------------------------------------------------
     # City-state / Envoy methods (InGame context)
     # ------------------------------------------------------------------
 
@@ -1027,15 +964,6 @@ class GameState:
         self, religion_type: str, follower_belief: str, founder_belief: str
     ) -> str:
         lua = lq.build_found_religion(religion_type, follower_belief, founder_belief)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    # ------------------------------------------------------------------
-    # Unit upgrade methods (InGame context)
-    # ------------------------------------------------------------------
-
-    async def upgrade_unit(self, unit_id: int) -> str:
-        lua = lq.build_upgrade_unit(unit_id)
         lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
@@ -1174,26 +1102,9 @@ class GameState:
     # Great Person activation (InGame context)
     # ------------------------------------------------------------------
 
-    async def activate_great_person(self, unit_id: int) -> str:
-        lua = lq.build_activate_great_person(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    async def spread_religion(self, unit_id: int) -> str:
-        lua = lq.build_spread_religion(unit_id)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
-
-    # ------------------------------------------------------------------
-    # Trader teleport (InGame context)
-    # ------------------------------------------------------------------
-
-    async def teleport_to_city(
-        self, unit_id: int, target_x: int, target_y: int
-    ) -> str:
-        lua = lq.build_teleport_to_city(unit_id, target_x, target_y)
-        lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
+    # activate_great_person folded into unit_action (UNITCOMMAND_
+    # ACTIVATE_GREAT_PERSON); Great Prophets found religions via
+    # found_religion, which now triggers the prophet operation itself.
 
     # ------------------------------------------------------------------
     # World Congress (InGame context)

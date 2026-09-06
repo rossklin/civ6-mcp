@@ -1004,7 +1004,7 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                 # --- Unit promotion notifications (non-blocking) ---
                 # Available promotions are surfaced per-unit in the ## Units
                 # section of get_full_game_state (build_units_query), and the
-                # agent applies them via promote_unit (InGame RequestCommand,
+                # agent applies them via unit_action (InGame RequestCommand,
                 # which advances the level counter correctly). The engine does
                 # not hard-block end_turn on an available promotion, but if it
                 # does generate this notification, dismiss it so the turn

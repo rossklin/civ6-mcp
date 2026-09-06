@@ -317,56 +317,6 @@ print("{SENTINEL}")
 """
 
 
-def build_promote_unit(unit_id: int, promotion_type: str) -> str:
-    """Apply a promotion to a unit (InGame context).
-
-    Uses ``UnitManager.RequestCommand(PROMOTE)`` — the same path the game's
-    own UI takes (see UnitPromotionPopup.lua). Unlike the old GameCore
-    ``SetPromotion`` approach, this advances the unit's level counter (so
-    ``GetExperienceForNextLevel`` increases and the unit cannot be
-    re-promoted until it earns more XP) and consumes no XP (correct — Civ 6
-    XP is cumulative, gated by the level counter).
-
-    ``RequestCommand`` is asynchronous: it queues the command and returns
-    immediately, so the promotion is reflected on the next state read, not
-    within this call.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local x, y = unit:GetX(), unit:GetY()
-if x == -9999 then {_bail("ERR:UNIT_CONSUMED")} end
-local promo = GameInfo.UnitPromotions["{promotion_type}"]
-if promo == nil then {_bail(f"ERR:PROMOTION_NOT_FOUND|{promotion_type}")} end
-local exp = unit:GetExperience()
-if exp == nil then {_bail("ERR:NO_EXPERIENCE|Unit has no experience object")} end
-if exp:HasPromotion(promo.Index) then {_bail(f"ERR:ALREADY_HAS_PROMOTION|{promotion_type}")} end
--- Authoritative availability gate: the engine knows the unit's true level
--- and prereqs. CanStartCommand returns the promotions the unit may take now.
-local canStart = false
-local availIdxs = nil
-pcall(function()
-    local bCan, tRes = UnitManager.CanStartCommand(unit, UnitCommandTypes.PROMOTE, true, true)
-    canStart = bCan == true
-    if tRes then availIdxs = tRes[UnitCommandResults.PROMOTIONS] end
-end)
-local allowed = false
-if availIdxs then
-    for _, pidx in pairs(availIdxs) do
-        if pidx == promo.Index then allowed = true; break end
-    end
-end
-if not (canStart and allowed) then
-    {_bail_lua('"ERR:CANNOT_PROMOTE|Unit cannot receive " .. promo.UnitPromotionType .. " ( no movement points, insufficient XP, wrong class, missing prereq, or already at max level)"')}
-end
-local tParameters = {{}}
-tParameters[UnitCommandTypes.PARAM_PROMOTION_TYPE] = promo.Index
-UnitManager.RequestCommand(unit, UnitCommandTypes.PROMOTE, tParameters)
-local promoName = Locale.Lookup(promo.Name)
-print("OK:PROMOTED|" .. promoName .. "|async:verify next state read")
-print("{SENTINEL}")
-"""
-
-
 def build_city_states_query() -> str:
     """List known city-states with envoy info (InGame context)."""
     return """
@@ -425,44 +375,6 @@ local name = cfg and Locale.Lookup(cfg:GetPlayerName()) or "Unknown"
 print("OK:ENVOY_SENT|" .. name)
 print("{SENTINEL}")
 """
-
-def build_upgrade_unit(unit_id: int) -> str:
-    """Execute unit upgrade (InGame context)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-local info = GameInfo.Units[unit:GetType()]
-local ut = info and info.UnitType or "UNKNOWN"
-local upgCol = info and info.UpgradeUnitCollection
-local upType = (upgCol and #upgCol > 0) and upgCol[1].UpgradeUnit or ""
-local params = {{}}
-local canUpgrade, upgradeResult = UnitManager.CanStartCommand(unit, UnitCommandTypes.UPGRADE, params, true)
-if not canUpgrade then
-    local cost = 0
-    pcall(function() cost = unit:GetUpgradeCost() end)
-    local gold = Players[me]:GetTreasury():GetGoldBalance()
-    local detail = ut
-    if upType ~= "" then detail = detail .. " -> " .. upType end
-    detail = detail .. " | cost:" .. math.floor(cost) .. "g have:" .. math.floor(gold) .. "g"
-    if upgradeResult then
-        for _, v in pairs(upgradeResult) do
-            if type(v) == "table" then
-                for _, reason in pairs(v) do
-                    if type(reason) == "string" then
-                        local clean = reason:gsub("%[ICON_[^%]]*%]", ""):gsub("%s+", " ")
-                        detail = detail .. " | " .. clean
-                    end
-                end
-            end
-        end
-    end
-    {_bail_lua('"ERR:CANNOT_UPGRADE|" .. detail')}
-end
-if upType == "" then upType = "UNKNOWN" end
-UnitManager.RequestCommand(unit, UnitCommandTypes.UPGRADE, params)
-print("OK:UPGRADED|" .. ut .. " -> " .. upType)
-print("{SENTINEL}")
-"""
-
 
 def build_dedications_query() -> str:
     """Read current era age, available dedications, and active ones."""

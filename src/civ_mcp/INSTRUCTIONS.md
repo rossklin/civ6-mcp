@@ -77,18 +77,22 @@ Command reference (params in parentheses; ``?`` = optional):
 Units:
     move_unit(unit_id, target_x, target_y) — move toward a tile (can target tiles beyond this turn's movement range)
     attack_unit(unit_id, target_x, target_y) — attack enemy at tile
-    fortify_unit(unit_id)
+    unit_action(unit_id, unit_action, target_x?, target_y?, target_unit_id?,
+                improvement?, promotion_type?, wmd_type?) — generic executor
+        for any action shown in the unit's ">> unit_action:" list in the
+        Units section (e.g. UNITCOMMAND_CONDEMN_HERETIC,
+        UNITOPERATION_PLUNDER_TRADE_ROUTE, UNITOPERATION_COASTAL_RAID).
+        ``unit_action`` (param) is the full action id exactly as listed. The
+        suffix in the list tells you which params it needs: ``(x,y)`` ->
+        target_x/target_y; ``(target_unit_id)`` -> the partner unit
+        (formations, corps/army — valid partner ids are in [partners:..]);
+        ``(improvement)`` -> improvement=IMPROVEMENT_X (types shown in the
+        unit's "Can build" list); ``(promotion_type)`` -> promotion_type=
+        PROMOTION_X (options shown as CAN PROMOTE); ``(wmd_type,x,y)`` ->
+        wmd_type (WMD_NUCLEAR_DEVICE | WMD_THERMONUCLEAR_DEVICE, types shown
+        in [types:..]) plus the target tile. No suffix -> no extra params.
     skip_unit(unit_id)
     skip_remaining_units() — fortify combat units, then skip the rest
-    automate_explore(unit_id)
-    heal_unit(unit_id)
-    alert_unit(unit_id)
-    sleep_unit(unit_id)
-    delete_unit(unit_id)
-    enter_formation(unit_id, target_unit_id) — join escort formation
-    exit_formation(unit_id)
-    promote_unit(unit_id, promotion_type) — e.g. PROMOTION_CITY_ASSAULT. Available promotions (name, type, description) are shown per-unit in the Units section of get_full_game_state; add promote_unit to your command batch. Will heal the unit.
-    upgrade_unit(unit_id)
 
 Settling & cities:
     found_city(unit_id) - must be at least 4 steps away from any other city
@@ -107,12 +111,15 @@ Settling & cities:
     city_attack(city_id, target_x, target_y) — ranged attack from a city (must build walls in city center first)
 
 Builders & improvements:
-    improve_tile(unit_id, improvement_name) — e.g. IMPROVEMENT_MINE
-    remove_feature(unit_id)
-    repair_improvement(unit_id)
-    remove_improvement(unit_id)
-    build_route(unit_id)
-    sacrifice_builder_charges(unit_id)
+    All builder actions go through unit_action with the ids shown in the
+    unit's ">> unit_action:" list, e.g.:
+    unit_action(unit_id, UNITOPERATION_BUILD_IMPROVEMENT, improvement=IMPROVEMENT_MINE)
+    unit_action(unit_id, UNITOPERATION_REMOVE_FEATURE) — chop/harvest
+    unit_action(unit_id, UNITOPERATION_REPAIR) — repair pillaged improvement
+    unit_action(unit_id, UNITOPERATION_REMOVE_IMPROVEMENT) — demolish
+    unit_action(unit_id, UNITOPERATION_BUILD_ROUTE) — Military Engineer road/railroad
+    unit_action(unit_id, UNITCOMMAND_PROJECT_PRODUCTION) — sacrifice builder
+        charges into a district project (Royal Society)
 
 Research & civics: you should only set those that are listed as available to research.
     set_research(tech_name) — e.g. TECH_IRON_WORKING
@@ -168,18 +175,25 @@ Religion & Great People:
     recruit_great_person(individual_id)
     patronize_great_person(individual_id, yield_type="YIELD_GOLD")
     reject_great_person(individual_id)
-    activate_great_person(unit_id)
-    spread_religion(unit_id)
+    found_religion covers the whole founding flow — it activates the Great
+    Prophet (who must be on a completed Holy Site with movement) and picks
+    the religion and both beliefs in one call.
+    Other Great People activate via unit_action(unit_id,
+    UNITCOMMAND_ACTIVATE_GREAT_PERSON) when standing on their matching
+    district. Religious unit actions (spread religion, remove heresy,
+    launch inquisition, ...) also go through unit_action with the ids
+    shown in the unit's ">> unit_action:" list, e.g.
+    unit_action(unit_id, UNITOPERATION_SPREAD_RELIGION).
 
 Trade routes & spies:
     make_trade_route(unit_id, target_x, target_y)
-    teleport_to_city(unit_id, target_x, target_y) — relocate a trader
-    spy_travel(unit_id, target_x, target_y)
-    spy_mission(unit_id, mission_type, target_x, target_y) — mission_type:
-        COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST
-        | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS
-        | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL (offensive missions need
-        the spy in the target city first)
+    Spies: unit_action(unit_id, UNITOPERATION_SPY_TRAVEL_NEW_CITY, x, y) to
+        reposition, unit_action(unit_id, UNITOPERATION_SPY_<OP>, x, y) to run
+        a mission (OP is one of the ops listed for the spy in the Spies
+        section: COUNTERSPY, GAIN_SOURCES, SIPHON_FUNDS, STEAL_TECH_BOOST,
+        SABOTAGE_PRODUCTION, GREAT_WORK_HEIST, RECRUIT_PARTISANS,
+        NEUTRALIZE_GOVERNOR, FABRICATE_SCANDAL). Offensive missions need the
+        spy in the target city first.
 
 World Congress:
     queue_wc_votes(votes) — votes: list of {hash, option (1=A|2=B), target,
@@ -231,7 +245,7 @@ Each city multiplies your districts, yields, and Great Person generation. The ga
 Stagnant cities fall behind exponentially. If any city has food surplus ≤ 0, that's worth fixing this turn (Farm, Granary, domestic Trade Route, or `set_city_focus(city_id, "FOOD")`). Turns-to-growth over 15 is a signal the city needs food or housing.
 
 ### Exploration
-You can't settle what you can't see, and you can't counter threats you don't know exist. A scout set to `automate_explore` is one of the best investments in the early game. If a scout is lost or stuck, replacing it early keeps the information flow going.
+You can't settle what you can't see, and you can't counter threats you don't know exist. A scout set to auto-explore (`unit_action(unit_id, UNITOPERATION_AUTOMATE_EXPLORE)`) is one of the best investments in the early game. If a scout is lost or stuck, replacing it early keeps the information flow going.
 
 ### Diplomacy
 Diplomatic and trade actions are issued through `execute_commands`; see the Diplomacy reference section for the full action list. In shared (handoff) games, proposals to managed civs are routed through a mailbox so the built-in AI does not auto-answer them. You can also use the send_message command to strategize, cooperate with or manipulate your opponents.
@@ -248,7 +262,7 @@ War declarations take effect for diplomacy immediately but the **combat engine d
 Cities with walls can fire at enemies via `city_attack(city_id, target_x, target_y)` (range 2). You must build the walls in the city center (or research the steel technology). Cities that fall are expensive to recover — when you capture a city, `resolve_city_capture(action)` with `keep`, `reject`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(other_player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
 
 ### Military Readiness
-Keep an eye on opponents' military strength. A neighbor at 2x+ your strength who isn't a friend or ally is a risk worth taking seriously. Make sure you have a plan to handle if your opponent becomes aggressive. Units become progressively weaker relative to rivals if not upgraded (Slinger→Archer with Archery, Warrior→Swordsman with Iron Working) — use `upgrade_unit`.
+Keep an eye on opponents' military strength. A neighbor at 2x+ your strength who isn't a friend or ally is a risk worth taking seriously. Make sure you have a plan to handle if your opponent becomes aggressive. Units become progressively weaker relative to rivals if not upgraded (Slinger→Archer with Archery, Warrior→Swordsman with Iron Working) — use `unit_action(unit_id, UNITCOMMAND_UPGRADE)`.
 
 ### Barbarian Camps
 Camps upgrade with the era — an Ancient-era camp spawns Warriors; the same camp in the Medieval era spawns Man-at-Arms. Clearing a camp within a few turns of finding it is almost always easier than fighting the units it produces over many turns.
@@ -308,34 +322,23 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 |--------|--------|-------|
 | `move_unit` | Move to tile | unit_id, target_x, target_y required |
 | `attack_unit` | Attack enemy | unit_id, target_x, target_y; shows actual post-combat outcome (estimates are shown in the game state units section); melee/ranged auto-detected |
-| `fortify_unit` | +4 defense, heals | Military only |
-| `heal_unit` | Fortify until full HP | Auto-wakes at full HP |
-| `alert_unit` | Sleep, wake on enemy | Sentry use |
-| `sleep_unit` | Sleep indefinitely | Manual wake required |
+| `unit_action` | Any other unit action | Executes the actions listed per-unit as ">> unit_action:" in the Units section (fortify, heal, sleep, alert, auto-explore, disband, formations, promote, upgrade, builder ops, religious ops, coastal raid, plunder trade route, condemn heretic, corps/army, airlift, rebase/deploy, spy ops, activate great people, ...). The ">> not yet possible:" line lists actions the unit could perform once their stated requirement is met — the reason shown is the engine's own (e.g. `FORM_CORPS — requires Nationalism`) |
 | `skip_unit` | End unit's turn | Always works |
-| `automate_explore` | Auto-explore | Scouts only |
-| `delete_unit` | Disband unit | Removes maintenance |
 | `found_city` | Settle | Settlers only |
-| `improve_tile` | Build improvement | Builders and Military Engineers; see improvements below |
-| `remove_feature` | Chop/harvest feature | Builders only; removes forest, jungle, or marsh from tile |
-| `build_route` | Build road/railroad | Military Engineers only; on current tile; no charges used |
 | `make_trade_route` | Start route | Traders; target_x/y of destination city |
-| `teleport_to_city` | Move idle trader | Traders only; target_x/y of city |
-| `activate_great_person` | Use Great Person | Must be on completed matching district |
-| `spread_religion` | Spread religion | Missionaries/Apostles |
 
 Common improvements: `IMPROVEMENT_FARM`, `IMPROVEMENT_MINE`, `IMPROVEMENT_QUARRY`, `IMPROVEMENT_PLANTATION`, `IMPROVEMENT_PASTURE`, `IMPROVEMENT_CAMP`, `IMPROVEMENT_FISHING_BOATS`, `IMPROVEMENT_LUMBER_MILL`
 
-Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `remove_feature` to chop/harvest the feature first, then `improve_tile` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
+Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `unit_action(unit_id, UNITOPERATION_REMOVE_FEATURE)` to chop/harvest the feature first, then `unit_action(unit_id, UNITOPERATION_BUILD_IMPROVEMENT, improvement=...)` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
 
-Builders repair tile improvements via `repair_improvement(unit_id)`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
+Builders repair tile improvements via `unit_action(unit_id, UNITOPERATION_REPAIR)`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
 
-Military Engineers (requires Encampment + Armory): `build_route` builds a railroad on the current tile (no charges consumed; costs 1 Iron + 1 Coal per tile). `improve_tile` with `IMPROVEMENT_FORT` or `IMPROVEMENT_AIRSTRIP` uses charges. Building a railroad consumes all movement — one tile per engineer per turn.
+Military Engineers (requires Encampment + Armory): `unit_action(unit_id, UNITOPERATION_BUILD_ROUTE)` builds a railroad on the current tile (no charges consumed; costs 1 Iron + 1 Coal per tile). `unit_action` with `IMPROVEMENT_FORT` or `IMPROVEMENT_AIRSTRIP` uses charges. Building a railroad consumes all movement — one tile per engineer per turn.
 
 | Other unit tools | |
 |--------|--------|
 | `skip_remaining_units` | Skip all units with remaining moves (useful after diplomacy) |
-| `upgrade_unit(unit_id)` | Upgrade to next type (requires tech + resources + gold) |
+| `unit_action(unit_id, UNITCOMMAND_UPGRADE)` | Upgrade to next type (requires tech + resources + gold) |
 
 Taking an action with a unit other than movement generally consumes all movement points.
 
@@ -373,7 +376,7 @@ tool for replying to an AI leader dialogue — do not look for one.
 - Check the diplomacy section of `get_full_game_state` for defensive pacts before declaring war.
 - Leader agendas appear in the diplomacy section of `get_full_game_state` — historical agendas are always visible; random agendas require Secret diplomatic visibility (spy in their capital or alliance). Use agendas to predict AI behavior and avoid relationship penalties.
 
-**Espionage:** `spy_travel(unit_id, target_x, target_y)` to a city first, then `spy_mission(unit_id, mission_type, target_x, target_y)` to run operations. mission_type: COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL. Offensive missions only work after the spy arrives.
+**Espionage:** `unit_action(unit_id, UNITOPERATION_SPY_TRAVEL_NEW_CITY, target_x, target_y)` to a city first, then `unit_action(unit_id, UNITOPERATION_SPY_<OP>, target_x, target_y)` to run operations. OP: COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL. Offensive missions only work after the spy arrives.
 
 **City-states:** `send_envoy(city_state_player_id)`. Suzerainty = +1 favor/turn. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic.
 
@@ -424,8 +427,9 @@ In addition, there is a general +1 per 2 adjacent districts, and the government 
 - `patronize_great_person(individual_id)` — buy instantly with gold or faith
 - `reject_great_person(individual_id)` — pass, advance to next candidate in that class
 - Rivals will recruit what you pass on — recruiting quickly tends to be worth it
-- Once recruited, move the GP to its matching completed district; `activate_great_person(unit_id)`
-- If activation fails, the error message includes the requirements (district type, buildings needed)
+- Once recruited, move the GP to its matching completed district; activate with `unit_action(unit_id, UNITCOMMAND_ACTIVATE_GREAT_PERSON)`
+- Great Prophets are the exception: they found religions via `found_religion` on a completed Holy Site (one command does the whole flow)
+- The unit's "not yet possible" line shows the activation requirement (e.g. matching district) before the GP is in position
 - Don't delete GPs — they show 0 builder charges but that's a different system; they're not consumed until activated
 
 ## World Congress

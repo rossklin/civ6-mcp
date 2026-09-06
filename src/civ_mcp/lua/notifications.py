@@ -158,7 +158,7 @@ NOTIFICATION_TOOL_MAP: dict[str, str] = {
     "NOTIFICATION_CHOOSE_RELIGION": "get_religion_beliefs() then found_religion(religion_type=..., follower_belief=..., founder_belief=...)",
     "NOTIFICATION_CHOOSE_BELIEF": "get_religion_beliefs() then found_religion(religion_type=..., follower_belief=..., founder_belief=...)",
     "NOTIFICATION_DIPLOMACY_SESSION": "respond_to_diplomacy()",
-    "NOTIFICATION_UNIT_PROMOTION_AVAILABLE": "promote_unit(unit_id, promotion_type)",
+    "NOTIFICATION_UNIT_PROMOTION_AVAILABLE": "unit_action(unit_id, UNITCOMMAND_PROMOTE, promotion_type=...)",
     "NOTIFICATION_CLAIM_GREAT_PERSON": "recruit_great_person(individual_id=...) or patronize_great_person(individual_id=..., yield_type=...) or reject_great_person(individual_id=...)",
     "NOTIFICATION_GIVE_INFLUENCE_TOKEN": "send_envoy(player_id=...)",
     "NOTIFICATION_GOVERNOR_APPOINTMENT_AVAILABLE": "get_available_governors() then appoint_governor()",
@@ -188,7 +188,7 @@ _ACTION_KEYWORDS = (
 
 BLOCKING_TOOL_MAP: dict[str, str] = {
     "ENDTURN_BLOCKING_GOVERNOR_APPOINTMENT": "Use get_governors() then appoint_governor()",
-    "ENDTURN_BLOCKING_UNIT_PROMOTION": "Available promotions are shown in the Units section — use promote_unit(unit_id, promotion_type)",
+    "ENDTURN_BLOCKING_UNIT_PROMOTION": "Available promotions are shown in the Units section — use unit_action(unit_id, UNITCOMMAND_PROMOTE, promotion_type=...)",
     "ENDTURN_BLOCKING_FILL_CIVIC_SLOT": "Use get_policies() then set_policies()",
     "ENDTURN_BLOCKING_PRODUCTION": "Use set_city_production()",
     "ENDTURN_BLOCKING_RESEARCH": "Use set_research()",

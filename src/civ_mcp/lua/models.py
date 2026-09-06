@@ -260,6 +260,25 @@ class GoodyReward:
 
 
 @dataclass
+class UnitActionInfo:
+    """A unit action (UnitCommand/UnitOperation) the unit could perform.
+
+    Emitted by the UACTION| lines of units.lua; consumed by narrate_units
+    and the generic unit_action executor. ``disabled`` mirrors the UI's
+    greyed-out buttons: the action is listed because the unit could ever
+    do it, and ``reasons`` carries the engine's own failure strings (the
+    greyed-button tooltip) explaining what prerequisite is missing.
+    """
+
+    action_id: str  # full DB id, e.g. "UNITCOMMAND_CONDEMN_HERETIC"
+    category: str  # CategoryInUI: SPECIFIC, INPLACE, MOVE, BUILD, ATTACK, ...
+    needs: str  # none | plot | unit | improvement | promotion | wmd
+    detail: str = ""  # extras: "partners:<ids>" or "types:<wmd types>"
+    disabled: bool = False
+    reasons: list[str] = field(default_factory=list)
+
+
+@dataclass
 class UnitInfo:
     unit_id: int  # engine per-player unit ID (u:GetID()); owner is the local player
     name: str
@@ -278,6 +297,7 @@ class UnitInfo:
     upgrade_target: str = ""
     upgrade_cost: int = 0
     valid_improvements: list[str] = field(default_factory=list)
+    available_actions: list[UnitActionInfo] = field(default_factory=list)
     religion: str = ""
     formation_linked_to: int | None = (
         None  # unit_id of the other unit in the formation, if any

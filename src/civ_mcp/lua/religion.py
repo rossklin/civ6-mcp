@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import SENTINEL, _bail, _bail_lua, _lua_get_unit
+from civ_mcp.lua._helpers import SENTINEL, _bail
 from civ_mcp.lua.models import (
     BeliefInfo,
     CityReligionInfo,
@@ -184,7 +184,14 @@ def build_found_religion(
 ) -> str:
     """Found a religion with chosen name and beliefs (InGame context).
 
-    Requires Great Prophet already activated on Holy Site (UNITOPERATION_FOUND_RELIGION).
+    Covers the whole flow in one command: first the Great Prophet's
+    unit-level UNITOPERATION_FOUND_RELIGION request (what the game sends
+    when the prophet's Found Religion button is pressed — the prophet must
+    be on a completed Holy Site with movement), then the PlayerOperations
+    that pick the religion and its two beliefs (the requests the game's
+    own ReligionScreen sends on confirm). Complete the founding in a single
+    call: the prophet check refuses if the operation was already requested
+    earlier this turn.
     """
     return f"""
 local me = Game.GetLocalPlayer()
@@ -198,6 +205,35 @@ local follower = GameInfo.Beliefs["{follower_belief}"]
 if not follower then {_bail(f"ERR:BELIEF_NOT_FOUND|{follower_belief}")} end
 local founder = GameInfo.Beliefs["{founder_belief}"]
 if not founder then {_bail(f"ERR:BELIEF_NOT_FOUND|{founder_belief}")} end
+
+-- Step 0: activate the Great Prophet (unit-level FOUND_RELIGION). Find an
+-- owned prophet whose operation can start now — same validation the old
+-- activate_great_person prophet branch used.
+local frOp = GameInfo.UnitOperations["UNITOPERATION_FOUND_RELIGION"]
+if not frOp then {_bail("ERR:CANNOT_FOUND|UNITOPERATION_FOUND_RELIGION not found in GameInfo")} end
+local prophet = nil
+for _, pu in Players[me]:GetUnits():Members() do
+    local px = pu:GetX()
+    if px ~= -9999 then
+        local pe = GameInfo.Units[pu:GetType()]
+        if pe and pe.UnitType == "UNIT_GREAT_PROPHET" then
+            local fp = {{}}
+            fp[UnitOperationTypes.PARAM_X] = px
+            fp[UnitOperationTypes.PARAM_Y] = pu:GetY()
+            local okP, canP = pcall(function()
+                return UnitManager.CanStartOperation(pu, frOp.Hash, nil, fp, true)
+            end)
+            if okP and canP then prophet = pu; break end
+        end
+    end
+end
+if prophet == nil then
+    {_bail("ERR:NO_PROPHET_READY|No Great Prophet on a completed Holy Site with movement remaining. Move the prophet onto a Holy Site, then call found_religion in the same turn.")}
+end
+local fparams = {{}}
+fparams[UnitOperationTypes.PARAM_X] = prophet:GetX()
+fparams[UnitOperationTypes.PARAM_Y] = prophet:GetY()
+UnitManager.RequestOperation(prophet, frOp.Hash, fparams)
 
 -- Step 1: Found religion with chosen type
 local params = {{}}
@@ -215,39 +251,6 @@ p3[PlayerOperations.PARAM_BELIEF_TYPE] = founder.Hash
 UI.RequestPlayerOperation(me, PlayerOperations.ADD_BELIEF, p3)
 
 print("OK:RELIGION_FOUNDED|" .. Locale.Lookup(relRow.Name) .. "|" .. Locale.Lookup(follower.Name) .. "|" .. Locale.Lookup(founder.Name))
-print("{SENTINEL}")
-"""
-
-
-def build_spread_religion(unit_id: int) -> str:
-    """Spread religion at the current tile (InGame context).
-
-    Works for Missionaries and Apostles. Consumes a spread charge.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local ux, uy = unit:GetX(), unit:GetY()
-local uInfo = GameInfo.Units[unit:GetType()]
-local uName = uInfo and uInfo.UnitType or "UNKNOWN"
-local charges = unit:GetSpreadCharges()
-if charges <= 0 then
-    {_bail_lua('"ERR:NO_CHARGES|" .. uName .. " has no spread charges remaining"')}
-end
-if unit:GetMovesRemaining() <= 0 then
-    {_bail_lua('"ERR:NO_MOVES|" .. uName .. " has no moves remaining — wait until next turn"')}
-end
-local opRow = GameInfo.UnitOperations["UNITOPERATION_SPREAD_RELIGION"]
-if not opRow then {_bail("ERR:CANNOT_SPREAD|UNITOPERATION_SPREAD_RELIGION not found in GameInfo")} end
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = ux
-params[UnitOperationTypes.PARAM_Y] = uy
-local canStart = UnitManager.CanStartOperation(unit, opRow.Hash, nil, params, true)
-if not canStart then
-    {_bail_lua('"ERR:CANNOT_SPREAD|Cannot spread religion here (" .. ux .. "," .. uy .. "). Must be in or adjacent to a city with a different majority religion."')}
-end
-UnitManager.RequestOperation(unit, opRow.Hash, params)
-local newCharges = unit:GetSpreadCharges()
-print("OK:RELIGION_SPREAD|" .. Locale.Lookup(unit:GetName()) .. " spread religion at " .. ux .. "," .. uy .. " (charges remaining: " .. newCharges .. ")")
 print("{SENTINEL}")
 """
 

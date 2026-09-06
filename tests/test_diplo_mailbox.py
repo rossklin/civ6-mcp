@@ -392,7 +392,7 @@ class TestSendDiplomaticActionRouting:
         cmds = [
             {"action": "send_diplomatic_action",
              "params": {"other_player_id": 0, "action_name": "DECLARE_FRIENDSHIP"}},
-            {"action": "fortify_unit", "params": {"unit_id": 3}},
+            {"action": "skip_unit", "params": {"unit_id": 3}},
         ]
 
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
@@ -400,7 +400,7 @@ class TestSendDiplomaticActionRouting:
         assert app.diplo_mailbox.pending_count == 1
         assert len(rec.engine) == 1
         forwarded = json.loads(rec.engine[0])
-        assert forwarded[0]["action"] == "fortify_unit"
+        assert forwarded[0]["action"] == "skip_unit"
         assert "awaiting response" in result
         assert "engine-ok" in result
 

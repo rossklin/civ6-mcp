@@ -474,24 +474,3 @@ print("{SENTINEL}")
 """
 
 
-def build_teleport_to_city(unit_id: int, target_x: int, target_y: int) -> str:
-    """Teleport a trader to a different city to change origin (InGame context).
-
-    Only works when the trader is idle (not on an active route).
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local opInfo = GameInfo.UnitOperations["UNITOPERATION_TELEPORT_TO_CITY"]
-if opInfo == nil then {_bail("ERR:NO_TELEPORT_OP|TELEPORT_TO_CITY operation not found")} end
-local opHash = opInfo.Hash
-local tParams = {{}}
-tParams[UnitOperationTypes.PARAM_X] = {target_x}
-tParams[UnitOperationTypes.PARAM_Y] = {target_y}
-local can = UnitManager.CanStartOperation(unit, opHash, nil, tParams, true)
-if not can then {_bail(f"ERR:CANNOT_TELEPORT|Cannot teleport trader to ({target_x},{target_y}). Is the trader idle (not on an active route)?")} end
-UnitManager.RequestOperation(unit, opHash, tParams)
-local destCity = CityManager.GetCityAt({target_x}, {target_y})
-local destName = destCity and Locale.Lookup(destCity:GetName()) or "({target_x},{target_y})"
-print("OK:TELEPORTED|to " .. destName .. " at ({target_x},{target_y})")
-print("{SENTINEL}")
-"""

@@ -167,21 +167,49 @@ def narrate_spies(spies: list[lq.SpyInfo]) -> str:
             f" | xp:{s.xp}{mission_tag} | ops: {ops}{escape_tag}"
         )
     lines.append("")
-    lines.append("Actions:")
+    lines.append("Actions (via unit_action):")
     lines.append(
-        "  Travel: spy_travel(unit_id, target_x, target_y)"
-        " — send spy to own city or city-state"
+        "  Travel: unit_action(unit_id, UNITOPERATION_SPY_TRAVEL_NEW_CITY,"
+        " target_x, target_y) — send spy to own city or city-state"
     )
     lines.append(
-        "  Mission: spy_mission(unit_id, MISSION_TYPE, target_x, target_y)"
-        " — spy must already be in target city"
-    )
-    lines.append(
-        "  Mission types: COUNTERSPY, GAIN_SOURCES, SIPHON_FUNDS, STEAL_TECH_BOOST,"
-        " SABOTAGE_PRODUCTION, GREAT_WORK_HEIST, RECRUIT_PARTISANS,"
-        " NEUTRALIZE_GOVERNOR, FABRICATE_SCANDAL"
+        "  Mission: unit_action(unit_id, UNITOPERATION_SPY_<OP>, target_x,"
+        " target_y) — spy must already be in the target city; <OP> is one of"
+        " the ops listed above (COUNTERSPY, GAIN_SOURCES, SIPHON_FUNDS,"
+        " STEAL_TECH_BOOST, SABOTAGE_PRODUCTION, GREAT_WORK_HEIST,"
+        " RECRUIT_PARTISANS, NEUTRALIZE_GOVERNOR, FABRICATE_SCANDAL)"
     )
     return "\n".join(lines)
+
+
+_ACTION_ID_PREFIXES = ("UNITOPERATION_", "UNITCOMMAND_")
+# needs -> the params unit_action expects for that action (see units.lua)
+_NEEDS_HINT = {
+    "plot": "(x,y)",
+    "unit": "(target_unit_id)",
+    "improvement": "(improvement)",
+    "promotion": "(promotion_type)",
+    "wmd": "(wmd_type,x,y)",
+}
+
+
+def _short_action_id(action_id: str) -> str:
+    """Strip the DB kind prefix for display: UNITCOMMAND_GIFT -> GIFT."""
+    for prefix in _ACTION_ID_PREFIXES:
+        if action_id.startswith(prefix):
+            return action_id[len(prefix) :]
+    return action_id
+
+
+def _format_unit_actions(actions: list[lq.UnitActionInfo]) -> str:
+    """Render available actions as one compact list for the state output."""
+    parts = []
+    for a in actions:
+        s = _short_action_id(a.action_id) + _NEEDS_HINT.get(a.needs, "")
+        if a.detail:
+            s += f"[{a.detail}]"
+        parts.append(s)
+    return ", ".join(parts)
 
 
 def narrate_units(
@@ -239,7 +267,8 @@ def narrate_units(
         if u.formation_linked_to is not None:
             lines.append(
                 f"    >> FORMATION with {u.formation_linked_type} (id:{u.formation_linked_to}) — "
-                f"moving either unit moves both. Use exit_formation to unlink."
+                f"moving either unit moves both. Use unit_action(unit_id, "
+                f"UNITCOMMAND_EXIT_FORMATION) to unlink."
             )
         if u.targets:
             for t in u.targets:
@@ -250,10 +279,26 @@ def narrate_units(
                     f"    >> CAN PROMOTE: {p.name} ({p.promotion_type}) — {p.description}"
                 )
             lines.append(
-                f"    >> Use promote_unit(unit_id={u.unit_id}, promotion_type=<PROMOTION_TYPE>)"
+                f"    >> Use unit_action(unit_id={u.unit_id},"
+                f" UNITCOMMAND_PROMOTE, promotion_type=<PROMOTION_TYPE>)"
             )
         if u.valid_improvements:
             lines.append(f"    >> Can build: {', '.join(u.valid_improvements)}")
+        if u.available_actions:
+            avail = [a for a in u.available_actions if not a.disabled]
+            blocked = [a for a in u.available_actions if a.disabled]
+            if avail:
+                lines.append(
+                    f"    >> unit_action: {_format_unit_actions(avail)}"
+                )
+            if blocked:
+                shown = []
+                for a in blocked[:6]:
+                    reason = f" — {a.reasons[0][:70]}" if a.reasons else ""
+                    shown.append(_short_action_id(a.action_id) + reason)
+                lines.append(
+                    f"    >> not yet possible: {'; '.join(shown)}"
+                )
     if threats:
         lines.append("")
         lines.append(f"Nearby threats ({len(threats)}):")
@@ -972,7 +1017,8 @@ def narrate_trade_routes(status: lq.TradeRouteStatus) -> str:
         lines.append(f"\nIdle ({len(idle)}):")
         for t in idle:
             lines.append(
-                f"  Trader (id:{t.unit_id}) at ({t.x},{t.y}) — idle, can make_trade_route or teleport_to_city"
+                f"  Trader (id:{t.unit_id}) at ({t.x},{t.y}) — idle, can make_trade_route"
+                f" or unit_action(unit_id, UNITOPERATION_TELEPORT_TO_CITY, x, y)"
             )
     if not status.traders:
         lines.append("\nNo trader units.")

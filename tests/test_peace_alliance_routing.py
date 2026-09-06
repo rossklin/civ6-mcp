@@ -582,7 +582,7 @@ class TestExecuteCommandsPeaceAllianceRouting:
         mailed, executed = _patch(monkeypatch)
         cmds = [
             {"action": "propose_peace", "params": {"other_player_id": 0}},
-            {"action": "fortify_unit", "params": {"unit_id": 3}},
+            {"action": "skip_unit", "params": {"unit_id": 3}},
         ]
 
         result = asyncio.run(server.execute_commands(ctx, json.dumps(cmds)))
@@ -590,7 +590,7 @@ class TestExecuteCommandsPeaceAllianceRouting:
         assert mailed == [(0, {"other_player_id": 0, "offer_peace": True})]
         assert len(executed) == 1
         forwarded = json.loads(executed[0])
-        assert forwarded[0]["action"] == "fortify_unit"
+        assert forwarded[0]["action"] == "skip_unit"
         assert "propose_peace:" in result
         assert "engine-ok" in result
 

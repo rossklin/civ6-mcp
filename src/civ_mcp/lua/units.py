@@ -11,6 +11,7 @@ from civ_mcp.lua._helpers import (
     _lua_get_unit,
     _lua_get_unit_gamecore,
     load_lua_template,
+    lua_quote,
 )
 from civ_mcp.lua.models import (
     AttackOutcome,
@@ -20,6 +21,7 @@ from civ_mcp.lua.models import (
     GoodyReward,
     PromotionOption,
     ThreatInfo,
+    UnitActionInfo,
     UnitInfo,
 )
 
@@ -39,10 +41,121 @@ def build_units_query() -> str:
     targets appear only for religious attackers — theological combat needs no
     war, only apostles/inquisitors may initiate it, and the target must
     resolve as ``CombatTypes.RELIGIOUS`` in the simulation.
+
+    Available actions are emitted as ``UACTION|unit_id|action_id|category|
+    needs|disabled|detail[|reasons]`` lines, mirroring the UI's
+    UnitPanel.GetUnitActionsTable: the loose check lists every action the
+    unit could ever perform, the strict check marks it disabled with the
+    engine's failure reasons (the greyed-button tooltip) when it can't be
+    done yet — so conditional possibilities and their prerequisites are
+    visible to the agent (see the template's header for exceptions and the
+    deny-list of actions owned by dedicated commands). Parsed into
+    :attr:`UnitInfo.available_actions`.
     """
     return load_lua_template("units.lua").replace(
         "__LUA_OCCUPANCY_CLASS__", _LUA_OCCUPANCY_CLASS
     ).replace("__MCP_SENTINEL_TAG__", SENTINEL)
+
+
+def build_unit_action(
+    unit_id: int,
+    unit_action: str,
+    target_x: int | None = None,
+    target_y: int | None = None,
+    target_unit_id: int | None = None,
+    improvement: str | None = None,
+    promotion_type: str | None = None,
+    wmd_type: str | None = None,
+) -> str:
+    """InGame context: execute any unit command/operation by DB action id.
+
+    The Lua lives in ``unit_action.lua`` (loaded via ``load_lua_template``)
+    and mirrors the game UI's generic execution path
+    (UnitPanel.OnUnitActionClicked -> ``UnitManager.RequestCommand`` /
+    ``RequestOperation``). ``unit_action`` is a full DB id of the kind shown
+    in the unit's ``unit_action`` list in game state, e.g.
+    ``"UNITCOMMAND_CONDEMN_HERETIC"`` or ``"UNITOPERATION_PLUNDER_TRADE_ROUTE"``.
+
+    Optional params supply the action's target (see the template's header
+    for the per-kind parameter keys):
+
+    * ``target_x``/``target_y`` — target plot (both or neither). Spy
+      operations route these through PARAM_X0/PARAM_Y0 internally.
+    * ``target_unit_id`` — partner unit (ENTER_FORMATION, FORM_CORPS,
+      FORM_ARMY).
+    * ``improvement`` — IMPROVEMENT_* type (BUILD_IMPROVEMENT); always
+      applied to the unit's own tile.
+    * ``promotion_type`` — PROMOTION_* (PROMOTE); validated against the
+      unit's takeable list before requesting.
+    * ``wmd_type`` — WMD_* type (WMD_STRIKE); requires target_x/target_y.
+
+    Actions owned by dedicated commands (MOVE_TO, RANGE_ATTACK,
+    AIR_ATTACK, FOUND_CITY, FOUND_RELIGION, EVANGELIZE_BELIEF,
+    MAKE_TRADE_ROUTE, SKIP_TURN, NAME_UNIT) are refused by the template.
+    """
+    if (target_x is None) != (target_y is None):
+        raise ValueError("target_x and target_y must be given together")
+    if wmd_type is not None and (target_x is None or target_y is None):
+        raise ValueError("wmd_type requires target_x and target_y")
+    # Target exclusivity: plot coords, improvement (always the unit's own
+    # tile), and partner unit are three "what am I targeting" dimensions that
+    # never combine for any action — and unit_action.lua's improvement branch
+    # overwrites PARAM_X/PARAM_Y with the unit's position, so a combined call
+    # would silently change meaning. Typed params (promotion, wmd) only pair
+    # with their own action's target shape.
+    if (
+        sum(
+            (
+                target_x is not None,
+                improvement is not None,
+                target_unit_id is not None,
+            )
+        )
+        > 1
+    ):
+        raise ValueError(
+            "target_x/y, improvement, and target_unit_id are mutually exclusive"
+        )
+    if promotion_type is not None and (
+        target_x is not None
+        or improvement is not None
+        or target_unit_id is not None
+        or wmd_type is not None
+    ):
+        raise ValueError("promotion_type cannot be combined with other params")
+    if wmd_type is not None and (
+        improvement is not None or target_unit_id is not None
+    ):
+        raise ValueError("wmd_type combines only with target_x/target_y")
+    return (
+        load_lua_template("unit_action.lua")
+        .replace("__UNIT_ID__", str(unit_id))
+        .replace("__ACTION_ID__", lua_quote(unit_action))
+        .replace(
+            "__HAS_PLOT__", "true" if target_x is not None else "false"
+        )
+        .replace("__P_X__", str(target_x if target_x is not None else 0))
+        .replace("__P_Y__", str(target_y if target_y is not None else 0))
+        .replace(
+            "__HAS_TARGET_UNIT__",
+            "true" if target_unit_id is not None else "false",
+        )
+        .replace(
+            "__TARGET_UNIT_ID__",
+            str(target_unit_id if target_unit_id is not None else -1),
+        )
+        .replace(
+            "__HAS_IMPROVEMENT__", "true" if improvement else "false"
+        )
+        .replace("__IMPROVEMENT__", lua_quote(improvement or ""))
+        .replace(
+            "__HAS_PROMOTION__", "true" if promotion_type else "false"
+        )
+        .replace("__PROMOTION_TYPE__", lua_quote(promotion_type or ""))
+        .replace("__HAS_WMD__", "true" if wmd_type else "false")
+        .replace("__WMD_TYPE__", lua_quote(wmd_type or ""))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 
@@ -598,92 +711,12 @@ print("{SENTINEL}")
 """.replace("{SENTINEL}", SENTINEL)
 
 
-def build_fortify_unit(unit_id: int) -> str:
-    return f"""
-{_lua_get_unit(unit_id)}
-if unit:GetFortifyTurns() > 0 then
-    print("OK:ALREADY_FORTIFIED|Fortify turns: " .. unit:GetFortifyTurns())
-    print("{SENTINEL}"); return
-end
-if UnitManager.CanStartOperation(unit, UnitOperationTypes.FORTIFY, nil, true) then
-    UnitManager.RequestOperation(unit, UnitOperationTypes.FORTIFY)
-    print("OK:FORTIFIED")
-else
-    local sleepOp = GameInfo.UnitOperations["UNITOPERATION_SLEEP"]
-    if sleepOp and UnitManager.CanStartOperation(unit, sleepOp.Hash, nil, true) then
-        UnitManager.RequestOperation(unit, sleepOp.Hash)
-        print("OK:SLEEPING")
-    else
-        {_bail("ERR:CANNOT_FORTIFY|Unit cannot fortify or sleep")}
-    end
-end
-print("{SENTINEL}")
-"""
-
-
 def build_skip_unit(unit_id: int) -> str:
     """Skip a unit's turn (GameCore context — uses FinishMoves)."""
     return f"""
 {_lua_get_unit_gamecore(unit_id)}
 UnitManager.FinishMoves(unit)
 print("OK:SKIPPED")
-print("{SENTINEL}")
-"""
-
-
-def build_exit_formation(unit_id: int) -> str:
-    """Exit the current formation (unlink from escort partner)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-if not UnitManager.CanStartCommand(unit, UnitCommandTypes.EXIT_FORMATION, me, true) then
-    {_bail("ERR:NOT_IN_FORMATION|Unit is not in a formation")}
-end
-local ux, uy = unit:GetX(), unit:GetY()
-UnitManager.RequestCommand(unit, UnitCommandTypes.EXIT_FORMATION, {{}})
-print("OK:EXITED_FORMATION|" .. ux .. "," .. uy)
-print("{SENTINEL}")
-"""
-
-
-def build_enter_formation(unit_id: int, target_unit_id: int) -> str:
-    """Enter a formation with another unit (escort/link)."""
-    return f"""
-{_lua_get_unit(unit_id)}
--- Find the target unit by its per-player ID
-local target = nil
-for _, u in Players[me]:GetUnits():Members() do
-    if u:GetID() == {target_unit_id} and u:GetX() ~= -9999 then
-        target = u
-        break
-    end
-end
-if not target then
-    {_bail(f"ERR:TARGET_NOT_FOUND|Unit with id {target_unit_id} not found")}
-end
-local tx, ty = target:GetX(), target:GetY()
-local ux, uy = unit:GetX(), unit:GetY()
-if ux ~= tx or uy ~= ty then
-    {_bail_lua(f'"ERR:NOT_ON_SAME_TILE|Units must be on the same tile to form a formation. Unit at (" .. ux .. "," .. uy .. "), target at (" .. tx .. "," .. ty .. ")")')}
-end
--- Prevent stacking same formation class (already checked in move but re-check here)
-local unitInfo = GameInfo.Units[unit:GetType()]
-local targetInfo = GameInfo.Units[target:GetType()]
-local unitClass = unitInfo and unitInfo.FormationClass or ""
-local targetClass = targetInfo and targetInfo.FormationClass or ""
-if unitClass == targetClass then
-    {_bail_lua('"ERR:SAME_FORMATION_CLASS|Cannot link two units of the same formation class (" .. unitClass .. ")"')}
-end
-if UnitManager.CanStartCommand(unit, UnitCommandTypes.ENTER_FORMATION, me, true) then
-    local params = {{}}
-    params[UnitCommandTypes.PARAM_UNIT_ID] = target:GetID()
-    UnitManager.RequestCommand(unit, UnitCommandTypes.ENTER_FORMATION, params)
-    local uName = unitInfo and unitInfo.UnitType:gsub("UNIT_", "") or "unit"
-    local tName = targetInfo and targetInfo.UnitType:gsub("UNIT_", "") or "unit"
-    print("OK:ENTERED_FORMATION|" .. uName .. " linked with " .. tName)
-else
-    local uName = unitInfo and unitInfo.UnitType:gsub("UNIT_", "") or "unit"
-    print("ERR:CANNOT_ENTER_FORMATION|" .. uName .. " cannot enter formation — check units are adjacent, not already linked, and compatible")
-end
 print("{SENTINEL}")
 """
 
@@ -743,466 +776,6 @@ end
 print("OK:SKIPPED|" .. count .. " units")
 print("{SENTINEL}")
 """.replace("{SENTINEL}", SENTINEL)
-
-
-def build_automate_explore(unit_id: int) -> str:
-    """Automate a unit's exploration (InGame context)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-local hash = GameInfo.UnitOperations["UNITOPERATION_AUTOMATE_EXPLORE"].Hash
-if not UnitManager.CanStartOperation(unit, hash, nil, nil) then
-    {_bail("ERR:CANNOT_AUTOMATE|Unit cannot auto-explore")}
-end
-UnitManager.RequestOperation(unit, hash, {{}})
-print("OK:AUTOMATED|" .. unit:GetX() .. "," .. unit:GetY())
-print("{SENTINEL}")
-"""
-
-
-def build_heal_unit(unit_id: int) -> str:
-    """Fortify until healed (InGame context). Distinct from plain fortify."""
-    return f"""
-{_lua_get_unit(unit_id)}
-local hp = unit:GetMaxDamage() - unit:GetDamage()
-local maxHP = unit:GetMaxDamage()
-if hp >= maxHP then {_bail_lua('"ERR:FULL_HP|Unit already at full health (" .. hp .. "/" .. maxHP .. ")"')} end
-local healHash = GameInfo.UnitOperations["UNITOPERATION_HEAL"].Hash
-if UnitManager.CanStartOperation(unit, healHash, nil, nil) then
-    UnitManager.RequestOperation(unit, healHash, {{}})
-    print("OK:HEALING|HP:" .. hp .. "/" .. maxHP)
-else
-    {_bail("ERR:CANNOT_HEAL|Unit cannot fortify-until-healed (maybe already fortified?)")}
-end
-print("{SENTINEL}")
-"""
-
-
-def build_alert_unit(unit_id: int) -> str:
-    """Put unit on alert — sleeps but auto-wakes when enemy enters sight (InGame context)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-if UnitManager.CanStartOperation(unit, UnitOperationTypes.ALERT, nil, nil) then
-    UnitManager.RequestOperation(unit, UnitOperationTypes.ALERT, {{}})
-    print("OK:ALERT|" .. unit:GetX() .. "," .. unit:GetY())
-else
-    {_bail("ERR:CANNOT_ALERT|Unit cannot be put on alert")}
-end
-print("{SENTINEL}")
-"""
-
-
-def build_sleep_unit(unit_id: int) -> str:
-    """Put unit to sleep — stays until manually woken (InGame context)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-local sleepHash = GameInfo.UnitOperations["UNITOPERATION_SLEEP"].Hash
-if UnitManager.CanStartOperation(unit, sleepHash, nil, nil) then
-    UnitManager.RequestOperation(unit, sleepHash, {{}})
-    print("OK:SLEEPING|" .. unit:GetX() .. "," .. unit:GetY())
-else
-    {_bail("ERR:CANNOT_SLEEP|Unit cannot sleep")}
-end
-print("{SENTINEL}")
-"""
-
-
-def build_delete_unit(unit_id: int) -> str:
-    """Delete (disband) a unit (InGame context)."""
-    return f"""
-{_lua_get_unit(unit_id)}
-local unitInfo = GameInfo.Units[unit:GetType()]
-local uName = unitInfo and unitInfo.UnitType or "UNKNOWN"
-if UnitManager.CanStartCommand(unit, UnitCommandTypes.DELETE, true) then
-    UnitManager.RequestCommand(unit, UnitCommandTypes.DELETE)
-    print("OK:DELETED|" .. uName .. " at " .. unit:GetX() .. "," .. unit:GetY())
-else
-    {_bail("ERR:CANNOT_DELETE|Unit cannot be deleted")}
-end
-print("{SENTINEL}")
-"""
-
-
-def build_improve_tile(unit_id: int, improvement_name: str) -> str:
-    """Build an improvement with a builder unit (InGame context).
-
-    improvement_name is e.g. IMPROVEMENT_FARM, IMPROVEMENT_MINE, etc.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local imp = GameInfo.Improvements["{improvement_name}"]
-if imp == nil then
-    -- Feature removals (IMPROVEMENT_REMOVE_*) may not be in Improvements table.
-    -- Try scanning by ImprovementType name in case indexed lookup fails.
-    for row in GameInfo.Improvements() do
-        if row.ImprovementType == "{improvement_name}" then imp = row; break end
-    end
-    if imp == nil then
-        -- List all available improvements so the agent can find the correct name
-        local available = {{}}
-        local params0 = {{}}
-        params0[UnitOperationTypes.PARAM_X] = unit:GetX()
-        params0[UnitOperationTypes.PARAM_Y] = unit:GetY()
-        for row in GameInfo.Improvements() do
-            if row.Buildable then
-                params0[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = row.Hash
-                local ok2, canBuild2 = pcall(function()
-                    return UnitManager.CanStartOperation(unit, UnitOperationTypes.BUILD_IMPROVEMENT, nil, params0)
-                end)
-                if ok2 and canBuild2 then table.insert(available, row.ImprovementType) end
-            end
-        end
-        local hint = #available > 0 and ". Available here: " .. table.concat(available, ", ") or ""
-        {_bail_lua(f'"ERR:IMPROVEMENT_NOT_FOUND|{improvement_name} not in game database" .. hint')}
-    end
-end
-local plot = Map.GetPlot(unit:GetX(), unit:GetY())
-if plot:GetOwner() ~= me then {_bail_lua('"ERR:NOT_YOUR_TERRITORY|Tile at " .. unit:GetX() .. "," .. unit:GetY() .. " is not in your territory"')} end
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = unit:GetX()
-params[UnitOperationTypes.PARAM_Y] = unit:GetY()
-params[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = imp.Hash
-if plot:IsImprovementPillaged() then
-    local repairHash = GameInfo.UnitOperations["UNITOPERATION_REPAIR"] and GameInfo.UnitOperations["UNITOPERATION_REPAIR"].Hash
-    if repairHash then
-        local rParams = {{}}
-        rParams[UnitOperationTypes.PARAM_X] = unit:GetX()
-        rParams[UnitOperationTypes.PARAM_Y] = unit:GetY()
-        -- Include improvement type — REPAIR may need to know WHICH improvement to restore
-        local impType = plot:GetImprovementType()
-        if impType >= 0 then
-            local impRow = GameInfo.Improvements[impType]
-            if impRow then rParams[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = impRow.Hash end
-        end
-        local canRepair = UnitManager.CanStartOperation(unit, repairHash, nil, rParams)
-        if canRepair then
-            UnitManager.RequestOperation(unit, repairHash, rParams)
-            print("OK:REPAIRING|{improvement_name}|" .. unit:GetX() .. "," .. unit:GetY())
-            print("{SENTINEL}"); return
-        else
-            -- CanStartOperation is unreliable (stale InGame state) — attempt anyway
-            pcall(function() UnitManager.RequestOperation(unit, repairHash, rParams) end)
-            -- Check if it worked by re-reading pillage state next frame
-            print("WARN:REPAIR_ATTEMPTED|CanStartOperation=false but RequestOperation sent. Verify next turn.")
-            print("{SENTINEL}"); return
-        end
-    end
-end
-if unit:GetMovesRemaining() <= 0 then
-    print("ERR:CANNOT_IMPROVE|Builder has no moves remaining this turn")
-    print("{SENTINEL}"); return
-end
-local canBuild, opResult = UnitManager.CanStartOperation(unit, UnitOperationTypes.BUILD_IMPROVEMENT, nil, params, true)
-if not canBuild then
-    local reasons = {{}}
-    if opResult and opResult.FailureReasons then
-        for _, r in ipairs(opResult.FailureReasons) do
-            table.insert(reasons, tostring(r))
-        end
-    end
-    local reasonStr = #reasons > 0 and table.concat(reasons, "; ") or "unknown reason"
-    -- Add diagnostic context
-    local diag = {{}}
-    local charges = unit:GetBuildCharges()
-    if charges <= 0 then
-        table.insert(diag, "builder has 0 charges (will be consumed)")
-    end
-    local existImp = plot:GetImprovementType()
-    if existImp >= 0 then
-        local eiRow = GameInfo.Improvements[existImp]
-        table.insert(diag, "tile already has " .. (eiRow and eiRow.ImprovementType or "improvement"))
-    end
-    local fType = plot:GetFeatureType()
-    if fType >= 0 then
-        local fInfo = GameInfo.Features[fType]
-        local fName = fInfo and fInfo.FeatureType or "UNKNOWN"
-        table.insert(diag, "tile has " .. fName .. " (use remove_feature first)")
-    end
-    -- List what CAN be built here
-    local alts = {{}}
-    for altImp in GameInfo.Improvements() do
-        if altImp.Buildable and not altImp.TraitType then
-            local aParams = {{}}
-            aParams[UnitOperationTypes.PARAM_X] = unit:GetX()
-            aParams[UnitOperationTypes.PARAM_Y] = unit:GetY()
-            aParams[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = altImp.Hash
-            local ok3, canAlt = pcall(function()
-                return UnitManager.CanStartOperation(unit, UnitOperationTypes.BUILD_IMPROVEMENT, nil, aParams)
-            end)
-            if ok3 and canAlt then table.insert(alts, altImp.ImprovementType) end
-        end
-    end
-    if #alts > 0 then
-        table.insert(diag, "can build here: " .. table.concat(alts, ", "))
-    else
-        table.insert(diag, "no improvements can be built on this tile")
-    end
-    local diagStr = #diag > 0 and ". " .. table.concat(diag, ". ") or ""
-    print("ERR:CANNOT_IMPROVE|" .. reasonStr .. diagStr .. ". Builder at " .. unit:GetX() .. "," .. unit:GetY())
-    print("{SENTINEL}"); return
-end
-UnitManager.RequestOperation(unit, UnitOperationTypes.BUILD_IMPROVEMENT, params)
-print("OK:IMPROVING|{improvement_name}|" .. unit:GetX() .. "," .. unit:GetY())
-print("{SENTINEL}")
-"""
-
-
-def build_remove_feature(unit_id: int) -> str:
-    """Remove (chop/harvest) a feature from the tile the builder is standing on.
-
-    Uses UNITOPERATION_REMOVE_FEATURE — works on forest, jungle, marsh.
-    The game auto-detects which feature is present; no feature param needed.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-if unit:GetMovesRemaining() <= 0 then
-    {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")}
-end
-local plot = Map.GetPlot(unit:GetX(), unit:GetY())
-local fType = plot:GetFeatureType()
-if fType < 0 then
-    {_bail_lua('"ERR:NO_FEATURE|No feature on tile (" .. unit:GetX() .. "," .. unit:GetY() .. ") to remove"')}
-end
-local fInfo = GameInfo.Features[fType]
-local fName = fInfo and fInfo.FeatureType or "UNKNOWN"
-local opRow = GameInfo.UnitOperations["UNITOPERATION_REMOVE_FEATURE"]
-if not opRow then
-    {_bail("ERR:OP_NOT_FOUND|UNITOPERATION_REMOVE_FEATURE not available")}
-end
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = unit:GetX()
-params[UnitOperationTypes.PARAM_Y] = unit:GetY()
-local canStart = UnitManager.CanStartOperation(unit, opRow.Hash, nil, params, true)
-if not canStart then
-    {_bail_lua('"ERR:CANNOT_REMOVE|Cannot remove " .. fName .. " at (" .. unit:GetX() .. "," .. unit:GetY() .. ")"')}
-end
-UnitManager.RequestOperation(unit, opRow.Hash, params)
-print("OK:REMOVING_FEATURE|" .. fName .. " at " .. unit:GetX() .. "," .. unit:GetY())
-print("{SENTINEL}")
-"""
-
-
-def build_repair_improvement(unit_id: int) -> str:
-    """Repair a pillaged improvement at the builder's current tile (InGame context).
-
-    Auto-detects the pillaged improvement — no improvement name needed.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local ux, uy = unit:GetX(), unit:GetY()
-if unit:GetMovesRemaining() <= 0 then
-    {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")}
-end
-local plot = Map.GetPlot(ux, uy)
-if not plot then {_bail("ERR:NO_PLOT|Invalid plot")} end
-local impType = plot:GetImprovementType()
-if impType < 0 then
-    {_bail_lua('"ERR:NO_IMPROVEMENT|No improvement on tile (" .. ux .. "," .. uy .. ") to repair"')}
-end
-local okPil, isPillaged = pcall(function() return plot:IsImprovementPillaged() end)
-if not okPil or not isPillaged then
-    local impInfo = GameInfo.Improvements[impType]
-    local impName = impInfo and impInfo.ImprovementType or "UNKNOWN"
-    {_bail_lua('"ERR:NOT_PILLAGED|" .. impName .. " at (" .. ux .. "," .. uy .. ") is not pillaged"')}
-end
-local impInfo = GameInfo.Improvements[impType]
-local impName = impInfo and impInfo.ImprovementType or "UNKNOWN"
-local repairOp = GameInfo.UnitOperations["UNITOPERATION_REPAIR"]
-if not repairOp then {_bail("ERR:OP_NOT_FOUND|UNITOPERATION_REPAIR not available")} end
-local rParams = {{}}
-rParams[UnitOperationTypes.PARAM_X] = ux
-rParams[UnitOperationTypes.PARAM_Y] = uy
-if impInfo then rParams[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = impInfo.Hash end
-local canRepair = UnitManager.CanStartOperation(unit, repairOp.Hash, nil, rParams)
-if canRepair then
-    UnitManager.RequestOperation(unit, repairOp.Hash, rParams)
-    print("OK:REPAIRING|" .. impName .. " at (" .. ux .. "," .. uy .. ")")
-else
-    pcall(function() UnitManager.RequestOperation(unit, repairOp.Hash, rParams) end)
-    print("WARN:REPAIR_ATTEMPTED|CanStartOperation=false but RequestOperation sent for " .. impName .. " at (" .. ux .. "," .. uy .. "). Verify next turn.")
-end
-print("{SENTINEL}")
-"""
-
-
-def build_remove_improvement(unit_id: int) -> str:
-    """Remove (demolish) an intact improvement from the builder's current tile.
-
-    Uses UNITOPERATION_REMOVE_IMPROVEMENT. The game auto-detects which
-    improvement is present; no improvement param needed. Costs one builder charge.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local ux, uy = unit:GetX(), unit:GetY()
-if unit:GetMovesRemaining() <= 0 then
-    {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")}
-end
-local plot = Map.GetPlot(ux, uy)
-if not plot then {_bail("ERR:NO_PLOT|Invalid plot")} end
-local impType = plot:GetImprovementType()
-if impType < 0 then
-    {_bail_lua('"ERR:NO_IMPROVEMENT|No improvement on tile (" .. ux .. "," .. uy .. ") to remove"')}
-end
-local impInfo = GameInfo.Improvements[impType]
-local impName = impInfo and impInfo.ImprovementType or "UNKNOWN"
-local opRow = GameInfo.UnitOperations["UNITOPERATION_REMOVE_IMPROVEMENT"]
-if not opRow then
-    {_bail("ERR:OP_NOT_FOUND|UNITOPERATION_REMOVE_IMPROVEMENT not available in this game version")}
-end
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = ux
-params[UnitOperationTypes.PARAM_Y] = uy
-local canStart = UnitManager.CanStartOperation(unit, opRow.Hash, nil, params, true)
-if not canStart then
-    {_bail_lua('"ERR:CANNOT_REMOVE|Cannot remove " .. impName .. " at (" .. ux .. "," .. uy .. "). Builder must be on the tile with moves and charges."')}
-end
-UnitManager.RequestOperation(unit, opRow.Hash, params)
-print("OK:REMOVING_IMPROVEMENT|" .. impName .. " at (" .. ux .. "," .. uy .. ")")
-print("{SENTINEL}")
-"""
-
-
-def build_sacrifice_builder_charges(unit_id: int) -> str:
-    """Sacrifice builder charges to boost a district project (Royal Society).
-
-    Requires the Royal Society (BUILDING_GOV_SCIENCE) to be built.
-    Builder must be on the district tile where a project is actively building.
-    Consumes ALL remaining charges. Once per city per turn.
-    Each charge adds 2% of the project's production cost.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-local entry = GameInfo.Units[unit:GetType()]
-if not entry or entry.UnitType ~= "UNIT_BUILDER" then {_bail("ERR:NOT_A_BUILDER|Unit is not a builder")} end
-local ux, uy = unit:GetX(), unit:GetY()
-local charges = unit:GetBuildCharges()
-if charges <= 0 then {_bail("ERR:NO_CHARGES|Builder has no charges remaining")} end
-if unit:GetMovesRemaining() <= 0 then {_bail("ERR:NO_MOVES|Builder has no moves remaining this turn")} end
--- Verify Royal Society exists
-local hasRS = false
-local rsIdx = GameInfo.Buildings["BUILDING_GOV_SCIENCE"] and GameInfo.Buildings["BUILDING_GOV_SCIENCE"].Index
-if rsIdx then
-    for _, city in Players[me]:GetCities():Members() do
-        if city:GetBuildings():HasBuilding(rsIdx) then hasRS = true; break end
-    end
-end
-if not hasRS then {_bail("ERR:NO_ROYAL_SOCIETY|Royal Society (Tier 3 government building) required")} end
--- Check builder is on a district tile
-local plot = Map.GetPlot(ux, uy)
-local distType = plot:GetDistrictType()
-if distType < 0 then
-    {_bail_lua('"ERR:NOT_ON_DISTRICT|Builder at (" .. ux .. "," .. uy .. ") is not on a district tile. Move to the district with an active project."')}
-end
-local dInfo = GameInfo.Districts[distType]
-local dName = dInfo and dInfo.DistrictType or "UNKNOWN"
--- Find the city owning this plot and check for active project
-local cityOwner = nil
-for _, city in Players[me]:GetCities():Members() do
-    for _, d in city:GetDistricts():Members() do
-        if d:GetX() == ux and d:GetY() == uy then cityOwner = city; break end
-    end
-    if cityOwner then break end
-end
-if not cityOwner then {_bail("ERR:NO_CITY|Could not find city owning this district")} end
-local bq = cityOwner:GetBuildQueue()
-local producing = "nothing"
-local okProd, currentHash = pcall(function() return bq:GetCurrentProductionTypeHash() end)
-if okProd and currentHash then
-    for proj in GameInfo.Projects() do
-        if proj.Hash == currentHash then producing = proj.ProjectType; break end
-    end
-end
-if producing == "nothing" then
-    {_bail_lua('"ERR:NO_PROJECT|" .. Locale.Lookup(cityOwner:GetName()) .. " is not building a project. Queue a project first."')}
-end
--- Execute the command
-local cmdRow = GameInfo.UnitCommands["UNITCOMMAND_PROJECT_PRODUCTION"]
-if not cmdRow then {_bail("ERR:CMD_NOT_FOUND|UNITCOMMAND_PROJECT_PRODUCTION not in game database")} end
-local cmdHash = cmdRow.Hash
-local can, failTable = UnitManager.CanStartCommand(unit, cmdHash, nil, true)
-if not can then
-    local reasons = {{}}
-    if failTable then
-        for _, v in pairs(failTable) do
-            if type(v) == "table" then
-                for _, s in pairs(v) do
-                    if type(s) == "string" and s ~= "" then table.insert(reasons, s) end
-                end
-            end
-        end
-    end
-    local reasonStr = #reasons > 0 and table.concat(reasons, "; ") or "unknown"
-    {_bail_lua('"ERR:CANNOT_SACRIFICE|" .. reasonStr .. ". Builder at (" .. ux .. "," .. uy .. ") on " .. dName .. " with " .. charges .. " charges, city building " .. producing')}
-end
--- Try with coordinate params first
-local tParams = {{}}
-tParams[UnitCommandTypes.PARAM_X] = ux
-tParams[UnitCommandTypes.PARAM_Y] = uy
-UnitManager.RequestCommand(unit, cmdHash, tParams)
--- Verify charges were consumed
-local newCharges = unit:GetBuildCharges()
-if newCharges == charges then
-    -- Fallback: try with empty params
-    UnitManager.RequestCommand(unit, cmdHash, {{}})
-    newCharges = unit:GetBuildCharges()
-end
-if newCharges == charges then
-    -- Second fallback: try RequestCommandImmediate
-    pcall(function() UnitManager.RequestCommandImmediate(unit, cmdHash, tParams) end)
-    newCharges = unit:GetBuildCharges()
-end
-if newCharges < charges then
-    local consumed = charges - newCharges
-    print("OK:SACRIFICED|" .. consumed .. " charges consumed for " .. producing .. " in " .. Locale.Lookup(cityOwner:GetName()) .. " at (" .. ux .. "," .. uy .. ") on " .. dName)
-else
-    print("WARN:SACRIFICE_UNCERTAIN|Command sent but charges unchanged (" .. charges .. "). Builder at (" .. ux .. "," .. uy .. ") on " .. dName .. ", city building " .. producing .. ". Ensure builder is on the exact district tile where the project's district is located.")
-end
-print("{SENTINEL}")
-"""
-
-
-def build_build_route(unit_id: int) -> str:
-    """Build a route (road/railroad) on the Military Engineer's current tile.
-
-    Uses UNITOPERATION_BUILD_ROUTE — after Steam Power tech this builds
-    railroads (route type 4).  Does NOT consume charges.  Costs 1 Iron +
-    1 Coal per railroad tile from the player's stockpile.
-    """
-    return f"""
-{_lua_get_unit(unit_id)}
-if unit:GetMovesRemaining() <= 0 then
-    {_bail("ERR:NO_MOVES|Military Engineer has no moves remaining this turn")}
-end
-local x, y = unit:GetX(), unit:GetY()
-local plot = Map.GetPlot(x, y)
-if not plot or plot:GetOwner() ~= me then
-    {_bail_lua('"ERR:NOT_YOUR_TERRITORY|Tile (" .. x .. "," .. y .. ") is not in your territory"')}
-end
-local opRow = GameInfo.UnitOperations["UNITOPERATION_BUILD_ROUTE"]
-if not opRow then
-    {_bail("ERR:OP_NOT_FOUND|UNITOPERATION_BUILD_ROUTE not in game database")}
-end
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = x
-params[UnitOperationTypes.PARAM_Y] = y
-local canStart = UnitManager.CanStartOperation(unit, opRow.Hash, nil, params, true)
-if not canStart then
-    local rt = plot:GetRouteType()
-    local reason = "unknown reason"
-    if rt == 4 then reason = "tile already has a railroad"
-    elseif plot:IsCity() then reason = "cannot build on city center"
-    end
-    {_bail_lua('"ERR:CANNOT_BUILD_ROUTE|" .. reason .. " at (" .. x .. "," .. y .. ")"')}
-end
-UnitManager.RequestOperation(unit, opRow.Hash, params)
--- Read back route type (may be stale same-frame, but try)
-local newRoute = plot:GetRouteType()
-local routeName = "ROUTE"
-if newRoute == 4 then routeName = "RAILROAD"
-elseif newRoute >= 0 then routeName = "ROAD"
-end
-print("OK:BUILT_" .. routeName .. "|" .. x .. "," .. y)
-print("{SENTINEL}")
-"""
 
 
 def _parse_attack_target(token: str) -> AttackTarget:
@@ -1282,8 +855,10 @@ def _parse_attack_target(token: str) -> AttackTarget:
 
 def parse_units_response(lines: list[str]) -> list[UnitInfo]:
     units = []
-    # Pass 1: collect FORMATION| lines first (they appear after unit lines in output)
+    # Pass 1: collect FORMATION| and UACTION| lines first (they appear after
+    # unit lines in output)
     formations: dict[int, tuple[int, str]] = {}
+    actions: dict[int, list[UnitActionInfo]] = {}
     for line in lines:
         if line.startswith("FORMATION|"):
             parts = line.split("|")
@@ -1292,10 +867,32 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 tgt_id = int(parts[2])
                 tgt_type = parts[3]
                 formations[src_id] = (tgt_id, tgt_type)
+        elif line.startswith("UACTION|"):
+            # UACTION|unit_id|action_id|category|needs|disabled|detail[|reasons]
+            parts = line.split("|")
+            if len(parts) >= 6:
+                try:
+                    uid = int(parts[1])
+                except ValueError:
+                    continue
+                actions.setdefault(uid, []).append(
+                    UnitActionInfo(
+                        action_id=parts[2],
+                        category=parts[3],
+                        needs=parts[4],
+                        disabled=parts[5] == "1",
+                        detail=parts[6] if len(parts) > 6 else "",
+                        reasons=(
+                            [r for r in parts[7].split("; ") if r]
+                            if len(parts) > 7 and parts[7]
+                            else []
+                        ),
+                    )
+                )
     # Pass 2: parse unit lines with formation lookup
     # Line format: id|name|type|x,y|moves/max|hp/max|cs|rs|charges|targets|promo|canUp|upName|upCost|imps|religion
     for line in lines:
-        if line.startswith("FORMATION|"):
+        if line.startswith(("FORMATION|", "UACTION|")):
             continue
         parts = line.split("|")
         if len(parts) < 6:
@@ -1356,6 +953,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 upgrade_target=upgrade_target,
                 upgrade_cost=upgrade_cost,
                 valid_improvements=valid_imps,
+                available_actions=actions.get(int(parts[0]), []),
                 religion=religion,
                 formation_linked_to=fm[0] if fm else None,
                 formation_linked_type=fm[1] if fm else "",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import SENTINEL, _bail, _bail_lua, _int, _lua_get_unit
+from civ_mcp.lua._helpers import SENTINEL, _int
 from civ_mcp.lua.models import SpyInfo
 
 # Spy operation hashes — GameInfo.UnitOperations() returns 0 rows so we hardcode these.
@@ -138,79 +138,6 @@ def parse_spies_response(lines: list[str]) -> list[SpyInfo]:
         except (ValueError, IndexError):
             continue
     return spies
-
-
-def build_spy_travel(unit_id: int, target_x: int, target_y: int) -> str:
-    """InGame context: send spy to a target city tile.
-
-    Valid targets: own cities and city-states. Allied civ cities return ERR:CANNOT_TRAVEL.
-    Travel is queued end-of-turn — spy does not immediately appear at destination.
-    """
-    travel_hash = _SPY_OP_HASHES["TRAVEL"]
-    sentinel = SENTINEL
-    # Build the Lua error message expression without backslash escapes in f-strings
-    err_lua = (
-        '"ERR:CANNOT_TRAVEL|Cannot send spy to (" .. '
-        f"{target_x} .. ',' .. {target_y} .. "
-        '"). Allied civ cities are not valid; only own cities and city-states."'
-    )
-    return " ".join(
-        [
-            _lua_get_unit(unit_id),
-            "local entry = GameInfo.Units[unit:GetType()]",
-            f'if not entry or entry.UnitType ~= "UNIT_SPY" then {_bail("ERR:NOT_A_SPY")} end',
-            f"local params = {{[UnitOperationTypes.PARAM_X0]={target_x}, [UnitOperationTypes.PARAM_Y0]={target_y}}}",
-            f"local ok, can = pcall(function() return UnitManager.CanStartOperation(unit, {travel_hash}, nil, params) end)",
-            f"if not ok or not can then",
-            f"  {_bail_lua(err_lua)}",
-            "end",
-            f"UnitManager.RequestOperation(unit, {travel_hash}, params)",
-            f'print("OK:SPY_TRAVEL|Spy en route to ({target_x},{target_y}). Travel completes at end of turn.")',
-            f'print("{sentinel}")',
-        ]
-    )
-
-
-def build_spy_mission(
-    unit_id: int, mission_type: str, target_x: int, target_y: int
-) -> str:
-    """InGame context: launch a spy mission at a target city tile.
-
-    Offensive missions (anything except COUNTERSPY) require the spy to be physically
-    IN the target city. CanStartOperation will return false until arrival.
-    """
-    op_hash = _SPY_OP_HASHES.get(mission_type.upper())
-    sentinel = SENTINEL
-    if op_hash is None:
-        valid = ", ".join(k for k in _SPY_OP_HASHES if k != "TRAVEL")
-        # Escape the mission_type for Lua string embedding
-        safe_mission = mission_type.replace('"', '\\"')
-        return " ".join(
-            [
-                f'print("ERR:UNKNOWN_MISSION|Unknown mission type {safe_mission}. Valid missions: {valid}")',
-                f'print("{sentinel}")',
-            ]
-        )
-    err_lua = (
-        f'"ERR:CANNOT_MISSION|{mission_type} not available at (" .. '
-        f"{target_x} .. ',' .. {target_y} .. "
-        '"). Spy must be in the target city first (use spy_travel first)."'
-    )
-    return " ".join(
-        [
-            _lua_get_unit(unit_id),
-            "local entry = GameInfo.Units[unit:GetType()]",
-            f'if not entry or entry.UnitType ~= "UNIT_SPY" then {_bail("ERR:NOT_A_SPY")} end',
-            f"local params = {{[UnitOperationTypes.PARAM_X0]={target_x}, [UnitOperationTypes.PARAM_Y0]={target_y}}}",
-            f"local ok, can = pcall(function() return UnitManager.CanStartOperation(unit, {op_hash}, nil, params) end)",
-            f"if not ok or not can then",
-            f"  {_bail_lua(err_lua)}",
-            "end",
-            f"UnitManager.RequestOperation(unit, {op_hash}, params)",
-            f'print("OK:SPY_MISSION|{mission_type} mission launched at ({target_x},{target_y}).")',
-            f'print("{sentinel}")',
-        ]
-    )
 
 
 # ---------------------------------------------------------------------------
