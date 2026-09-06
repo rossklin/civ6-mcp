@@ -356,11 +356,11 @@ class _StubConnection:
 
 class TestGameStateUnitAction:
     def test_ok_passthrough(self):
-        conn = _StubConnection(["OK:ACTION|UNITCOMMAND_GIFT requested for unit 7 (verify in next state read)"])
+        conn = _StubConnection(["OK:ACTION|UNITCOMMAND_GIFT done"])
         gs = GameState.__new__(GameState)
         gs.conn = conn
         result = asyncio.run(gs.unit_action(7, "UNITCOMMAND_GIFT"))
-        assert result.startswith("ACTION|UNITCOMMAND_GIFT requested")
+        assert result == "ACTION|UNITCOMMAND_GIFT done"
         assert "UNITCOMMAND_GIFT" in conn.lua_sent
 
     def test_err_passthrough(self):

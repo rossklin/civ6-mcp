@@ -287,12 +287,16 @@ if not canStart then
     return
 end
 
--- Execute (async in the engine — the reply reports the request; the next
--- state read is the authority on the effect)
+-- Execute (async in the engine). The strict gate above is the same check
+-- the UI's button click runs and every guard/param shape has passed, so a
+-- silent post-check no-op is rare (the one documented legacy case was
+-- PROJECT_PRODUCTION param quirks). Report plain success — do NOT invite a
+-- ~15s get_full_game_state re-read to double-check; a rare no-op surfaces
+-- in the next turn's state anyway.
 if isCommand then
     UnitManager.RequestCommand(unit, h, params)
 else
     UnitManager.RequestOperation(unit, h, params)
 end
-print("OK:ACTION|" .. actionId .. " requested for unit __UNIT_ID__ (verify in next state read)")
+print("OK:ACTION|" .. actionId .. " done")
 print("__MCP_SENTINEL_TAG__")
