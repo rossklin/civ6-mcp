@@ -103,7 +103,7 @@ local function cleanReason(s)
     return t
 end
 
-local function collectReasons(results, out)
+local function collectReasons(results, out, forCommand)
     if results == nil then return end
     local arr = results[UnitOperationResults.FAILURE_REASONS]
     if type(arr) == "table" then
@@ -112,13 +112,18 @@ local function collectReasons(results, out)
             if c ~= "" then table.insert(out, c) end
         end
     end
-    -- Command results may nest reason/description lists in sub-tables
-    for _, v in pairs(results) do
-        if type(v) == "table" and v ~= arr then
-            for _, s in pairs(v) do
-                if type(s) == "string" and s ~= "" then
-                    local c = cleanReason(s)
-                    if c ~= "" and #out < 3 then table.insert(out, c) end
+    -- Only COMMANDS nest reason strings in sub-tables; operation results
+    -- nest effect DESCRIPTIONS there (live-verified T85: a disabled
+    -- BUILD_IMPROVEMENT surfaced "Provides 0.5 Housing" — effect text, not
+    -- the blocker), so the nested scan is commands-only.
+    if forCommand then
+        for _, v in pairs(results) do
+            if type(v) == "table" and v ~= arr then
+                for _, s in pairs(v) do
+                    if type(s) == "string" and s ~= "" then
+                        local c = cleanReason(s)
+                        if c ~= "" and #out < 3 then table.insert(out, c) end
+                    end
                 end
             end
         end
@@ -201,6 +206,35 @@ if __HAS_WMD__ then
     nReal = nReal + 1
 end
 
+-- Own-tile operations: attach the unit's plot so the engine validates the
+-- actual tile (paramless checks are weak — live-verified T85: a builder on
+-- a featureless city center passed the strict REMOVE_FEATURE check) and so
+-- the request carries the same param shape the legacy builders used. Only
+-- applied when the caller supplied no target of its own (build_unit_action
+-- enforces the exclusivity).
+local OWN_TILE_OPS = {
+    UNITOPERATION_REMOVE_FEATURE = true,
+    UNITOPERATION_REMOVE_IMPROVEMENT = true,
+    UNITOPERATION_REPAIR = true,
+    UNITOPERATION_REPAIR_ROUTE = true,
+    UNITOPERATION_BUILD_ROUTE = true,
+    UNITOPERATION_SPREAD_RELIGION = true,
+}
+if OWN_TILE_OPS[actionId] and nReal == 0 then
+    params[UnitOperationTypes.PARAM_X] = unit:GetX()
+    params[UnitOperationTypes.PARAM_Y] = unit:GetY()
+    nReal = nReal + 2
+end
+
+-- BUILD_IMPROVEMENT is executed through its improvement= param (which also
+-- carries the own-tile plot coords); without it the request has no target
+-- improvement and would silently no-op in the engine.
+if (not isCommand) and h == UnitOperationTypes.BUILD_IMPROVEMENT and nReal == 0 then
+    print("ERR:MISSING_PARAM|UNITOPERATION_BUILD_IMPROVEMENT requires improvement=IMPROVEMENT_X (the types buildable on the unit's tile are shown in its Can build list)")
+    print("__MCP_SENTINEL_TAG__")
+    return
+end
+
 -- PROMOTE: validate the promotion is in the unit's takeable list (the engine
 -- accepts RequestCommand for promotions the unit cannot take and silently
 -- no-ops — same authoritative-membership gate the legacy promote builder and
@@ -245,7 +279,7 @@ else
 end
 if not canStart then
     local reasons = {}
-    pcall(function() collectReasons(results, reasons) end)
+    pcall(function() collectReasons(results, reasons, isCommand) end)
     local rstr = ""
     if #reasons > 0 then rstr = "|" .. table.concat(reasons, "; ") end
     print("ERR:CANNOT_START|" .. actionId .. " cannot be started now" .. rstr)

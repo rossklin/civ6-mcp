@@ -298,6 +298,48 @@ class TestBuildUnitAction:
         assert "UnitCommandTypes.FORM_CORPS" in lua
         assert "UnitCommandTypes.FORM_ARMY" in lua
 
+    def test_own_tile_ops_carry_plot_params(self):
+        """Own-tile operations pass the unit's plot in the strict check /
+        request — the paramless check passed a builder on a featureless
+        city center (live-verified T85)."""
+        for lua in (
+            lq.build_units_query(),
+            lq.build_unit_action(1, "UNITOPERATION_REMOVE_FEATURE"),
+        ):
+            assert "OWN_TILE_OPS" in lua
+            for op in (
+                "UNITOPERATION_REMOVE_FEATURE",
+                "UNITOPERATION_REMOVE_IMPROVEMENT",
+                "UNITOPERATION_REPAIR",
+                "UNITOPERATION_BUILD_ROUTE",
+                "UNITOPERATION_SPREAD_RELIGION",
+            ):
+                assert f"{op} = true" in lua
+
+    def test_reason_extraction_is_kind_split(self):
+        """Failure reasons come from the FAILURE_REASONS array for both
+        kinds; the nested sub-table scan is commands-only — operation
+        results nest effect DESCRIPTIONS there (live-verified T85:
+        BUILD_IMPROVEMENT surfaced 'Provides 0.5 Housing')."""
+        state_lua = lq.build_units_query()
+        assert "strictReasons(tRes, true)" in state_lua  # commands
+        assert "strictReasons(tRes, false)" in state_lua  # operations
+        assert "strictReasons(tRes2, true)" in state_lua
+        assert "strictReasons(tRes2, false)" in state_lua
+        exec_lua = lq.build_unit_action(1, "UNITCOMMAND_GIFT")
+        assert "collectReasons(results, reasons, isCommand)" in exec_lua
+
+    def test_build_improvement_requires_improvement_param(self):
+        """Bare BUILD_IMPROVEMENT (no improvement=) is rejected loudly —
+        the engine would silently no-op a paramless request."""
+        lua = lq.build_unit_action(1, "UNITOPERATION_BUILD_IMPROVEMENT")
+        assert "ERR:MISSING_PARAM" in lua
+        # ...and the properly-parametrized call doesn't trip the guard
+        ok_lua = lq.build_unit_action(
+            1, "UNITOPERATION_BUILD_IMPROVEMENT", improvement="IMPROVEMENT_MINE"
+        )
+        assert 'GameInfo.Improvements["IMPROVEMENT_MINE"]' in ok_lua
+
 
 class _StubConnection:
     def __init__(self, lines):

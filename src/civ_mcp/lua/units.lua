@@ -418,6 +418,19 @@ local DENY_ACTIONS = {
     UNITOPERATION_SKIP_TURN = true,
     UNITCOMMAND_NAME_UNIT = true,
 }
+-- Operations whose target is implicitly the unit's own tile. The engine's
+-- paramless checks are weak for these (live-verified T85: a builder on a
+-- featureless city center passed the strict REMOVE_FEATURE check), so the
+-- strict check carries the unit's plot — the same param shape the legacy
+-- builders used and unit_action.lua sends at execution time.
+local OWN_TILE_OPS = {
+    UNITOPERATION_REMOVE_FEATURE = true,
+    UNITOPERATION_REMOVE_IMPROVEMENT = true,
+    UNITOPERATION_REPAIR = true,
+    UNITOPERATION_REPAIR_ROUTE = true,
+    UNITOPERATION_BUILD_ROUTE = true,
+    UNITOPERATION_SPREAD_RELIGION = true,
+}
 local function emitUAction(uid, row, actionId, needs, detail, disabled, reasons)
     local line = "UACTION|" .. uid .. "|" .. actionId
         .. "|" .. (row.CategoryInUI or "SPECIFIC") .. "|" .. needs
@@ -442,9 +455,13 @@ local function cleanReason(s)
     return t
 end
 -- Extract up to two cleaned failure reasons from a strict-check results
--- table. Handles both shapes the engine produces: the FAILURE_REASONS
--- array (operations) and nested string lists (commands).
-local function strictReasons(tRes)
+-- table. The FAILURE_REASONS array is the authoritative source for both
+-- kinds; only COMMANDS additionally nest reason strings in sub-tables.
+-- Operation results nest effect DESCRIPTIONS in their sub-tables instead
+-- (live-verified T85: a disabled BUILD_IMPROVEMENT surfaced "Provides 0.5
+-- Housing" — the improvement's effect text, not the blocker), so the
+-- nested scan is commands-only.
+local function strictReasons(tRes, isCommand)
     if tRes == nil then return "" end
     local out = {}
     local arr = tRes[UnitOperationResults.FAILURE_REASONS]
@@ -454,12 +471,14 @@ local function strictReasons(tRes)
             if c ~= "" then table.insert(out, c) end
         end
     end
-    for _, v in pairs(tRes) do
-        if type(v) == "table" and v ~= arr then
-            for _, s in pairs(v) do
-                if type(s) == "string" and s ~= "" then
-                    local c = cleanReason(s)
-                    if c ~= "" then table.insert(out, c) end
+    if isCommand then
+        for _, v in pairs(tRes) do
+            if type(v) == "table" and v ~= arr then
+                for _, s in pairs(v) do
+                    if type(s) == "string" and s ~= "" then
+                        local c = cleanReason(s)
+                        if c ~= "" then table.insert(out, c) end
+                    end
                 end
             end
         end
@@ -506,7 +525,7 @@ for _, u2 in Players[id]:GetUnits():Members() do
                         elseif UnitManager.CanStartCommand(u2, h, true) then
                             local _, tRes2 = UnitManager.CanStartCommand(u2, h, false, true)
                             emitUAction(uid2, row, row.CommandType, "unit",
-                                nil, true, strictReasons(tRes2))
+                                nil, true, strictReasons(tRes2, true))
                         end
                     end)
                 elseif h == UnitCommandTypes.FORM_CORPS
@@ -536,7 +555,7 @@ for _, u2 in Players[id]:GetUnits():Members() do
                                 detail, false, nil)
                         elseif UnitManager.CanStartCommand(u2, h, true) then
                             emitUAction(uid2, row, row.CommandType, "unit",
-                                nil, true, strictReasons(tRes))
+                                nil, true, strictReasons(tRes, true))
                         end
                     end)
                 elseif h == UnitCommandTypes.PROMOTE then
@@ -565,7 +584,7 @@ for _, u2 in Players[id]:GetUnits():Members() do
                             else
                                 emitUAction(uid2, row, row.CommandType,
                                     uactionNeeds(row, h, true), nil, true,
-                                    strictReasons(tRes))
+                                    strictReasons(tRes, true))
                             end
                         end
                     end)
@@ -600,7 +619,7 @@ for _, u2 in Players[id]:GetUnits():Members() do
                                 sp[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = best
                                 local bNow, tRes2 = UnitManager.CanStartOperation(u2, h, nil, sp, true)
                                 emitUAction(uid2, row, row.OperationType,
-                                    "improvement", nil, not bNow, strictReasons(tRes2))
+                                    "improvement", nil, not bNow, strictReasons(tRes2, false))
                             end
                         end)
                     elseif row.CategoryInUI == "OFFENSIVESPY" then
@@ -634,20 +653,33 @@ for _, u2 in Players[id]:GetUnits():Members() do
                             end
                         end)
                     else
-                        -- Generic two-phase check like the UI. Strict pass
-                        -- hints NO_TARGETS — we don't consume target lists
-                        -- here (the executor re-checks with real params).
+                        -- Generic two-phase check like the UI. The strict
+                        -- pass hints NO_TARGETS (we don't consume target
+                        -- lists here) — unless the op implicitly targets
+                        -- the unit's own tile, where the paramless check is
+                        -- weak and the unit's plot must be in the params.
                         pcall(function()
                             if UnitManager.CanStartOperation(u2, h, nil, true) then
-                                local bNow, tRes = UnitManager.CanStartOperation(u2, h, nil, false,
+                                local opParams = nil
+                                if OWN_TILE_OPS[row.OperationType] then
+                                    opParams = {}
+                                    opParams[UnitOperationTypes.PARAM_X] = x2
+                                    opParams[UnitOperationTypes.PARAM_Y] = u2:GetY()
+                                end
+                                local bNow, tRes
+                                if opParams ~= nil then
+                                    bNow, tRes = UnitManager.CanStartOperation(u2, h, nil, opParams, true)
+                                else
+                                    bNow, tRes = UnitManager.CanStartOperation(u2, h, nil, false,
                                         OperationResultsTypes.NO_TARGETS)
+                                end
                                 if bNow then
                                     emitUAction(uid2, row, row.OperationType,
                                         uactionNeeds(row, h, false), nil, false, nil)
                                 else
                                     emitUAction(uid2, row, row.OperationType,
                                         uactionNeeds(row, h, false), nil, true,
-                                        strictReasons(tRes))
+                                        strictReasons(tRes, false))
                                 end
                             end
                         end)
