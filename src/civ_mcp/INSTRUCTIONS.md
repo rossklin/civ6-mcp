@@ -208,7 +208,7 @@ The diary is your persistent memory across sessions and turns, it is what allows
 
 - **`next_turn_plan`**: Your concrete plan for the NEXT turn. Be specific — unit movements, production choices, research targets. This is overwritten each turn, so only the most recent entry matters.
 - **`long_term_plans`**: Your long-term strategy — victory path, expansion goals, tech progression timeline, diplomatic posture. Pass the complete current version each time you call `update_diary`; last write wins.
-- **`notes`**: Durable learnings worth remembering across the whole game — game rules you discovered, mistakes you made and corrected, things the civilopedia taught you. Unlike the plan fields, notes are **appended** to the existing notes each call (with a turn marker) rather than replacing them, so they accumulate over the game. Leave empty to leave the notes unchanged. Use this for facts, not transient plans. Example: you tried to move onto an enemy unit's tile and the action was rejected — read the civilopedia, learned you must declare war first — record that in `notes` so you never repeat the mistake.
+- **`notes`**: Durable learnings worth remembering across the whole game — game rules you discovered, mistakes you made and corrected, things the civilopedia taught you. Unlike the plan fields, notes are **appended** to the existing notes each call (with a turn marker) rather than replacing them, so they accumulate over the game. Leave empty to leave the notes unchanged. Use this for facts, not transient plans. Example: you tried to move onto an enemy unit's tile and the action was rejected — read the civilopedia, learned you must declare war first — record that in `notes` so you never repeat the mistake. You can also take note of important game interactions that agents playing future turns need to know about, such as interactions with other players that change how you should interact in the future.
 
 ## Strategic Patterns
 
@@ -378,7 +378,10 @@ tool for replying to an AI leader dialogue — do not look for one.
 
 **Espionage:** `unit_action(unit_id, UNITOPERATION_SPY_TRAVEL_NEW_CITY, target_x, target_y)` to a city first, then `unit_action(unit_id, UNITOPERATION_SPY_<OP>, target_x, target_y)` to run operations. OP: COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL. Offensive missions only work after the spy arrives.
 
-**City-states:** `send_envoy(city_state_player_id)`. Suzerainty = +1 favor/turn. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic.
+**City-states:** `send_envoy(city_state_player_id)`. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic. Whichever player has the most envoys (minimum 3) becomes the suzerain and will get that city-state's unique bonus and earn +1 favor/turn. All players with envoys gain a bonus yield of the city-state's associated resource (yields for gold are double):
+1 envoy => +1 yield per corresponding level 1 building (eg library for science)
+3 envoys => +2 yield per corresponding level 2 building (eg university for science)
+6 envoys => +3 yield per corresponding level 3 building (eg research lab for science)
 
 ## Production & Research
 
