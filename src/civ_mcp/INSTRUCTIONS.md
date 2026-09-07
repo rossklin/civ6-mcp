@@ -256,7 +256,7 @@ Diplomacy generates yield: each alliance +1 favor/turn per alliance level, each 
 If favor is accumulating above 100 with no World Congress imminent, it's worth thinking about whether it could be better deployed in trade or alliance building.
 
 ### War Declaration
-War declarations take effect for diplomacy immediately but the **combat engine does not sync until the next turn**. After declaring war via `send_diplomatic_action`, units cannot attack the new enemy until the following turn. Plan accordingly: declare war on turn N, position units adjacent to targets, then attack on turn N+1. Do not reload or retry if attacks return `NO_ENEMY` on the declaration turn — this is expected behavior.
+After declaring war, you can immediately attack enemy units and cities, capture enemy civilians and condemn enemy religious units as heretics. If you have time, you can call get_full_game_state again to see available war actions for your units (takes about 15s).
 
 ### Wartime
 Cities with walls can fire at enemies via `city_attack(city_id, target_x, target_y)` (range 2). You must build the walls in the city center (or research the steel technology). Cities that fall are expensive to recover — when you capture a city, `resolve_city_capture(action)` with `keep`, `reject`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(other_player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.

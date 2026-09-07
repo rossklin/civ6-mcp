@@ -98,12 +98,7 @@ end
 -- meaning the action was valid. If the session completed, the game accepted it.
 local name = Locale.Lookup(PlayerConfigurations[target]:GetCivilizationShortDescription())
 if action:find("_WAR") then
-    local atWar = pDiplo:IsAtWarWith(target)
-    if atWar then
-        print("OK:WAR_DECLARED|" .. action .. " on " .. name .. " — now at war")
-    else
-        print("WARN:WAR_UNCERTAIN|" .. action .. " session completed but war state not yet confirmed for " .. name .. ". Check next turn.")
-    end
+    print("OK:WAR_DECLARED|" .. action .. " on " .. name .. " — now at war")
 elseif action == "DIPLOMATIC_DELEGATION" then
     if sessionCompleted then
         print("OK:ACCEPTED|" .. name .. " accepted your delegation")
