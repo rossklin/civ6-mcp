@@ -1,4 +1,6 @@
 # Agent instructions
+## About the project
+This is an mcp server that allows agents to connect to a live game of Civ 6 through the debugging interface in order to play the game. The main entry point is src/civ_mcp/server.py.
 ## Testing
 To run the full test suite, target the tests directory, otherwise it will run other files with test in name that are not intended to be tests.
 Powershell: uv run python -m pytest .\tests -q 2>&1
