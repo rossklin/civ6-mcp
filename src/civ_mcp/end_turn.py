@@ -615,6 +615,28 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                 f"GAME OVER — VICTORY! You won a {vtype} victory! The game has ended."
             )
 
+    # 0b. Crash-dialog guard.  A Windows-level crash reporter / unhandled
+    # exception dialog on top of the game means Lua queries return
+    # degraded data and the engine state is suspect.  These dialogs are
+    # the human's to read — never auto-dismissed — so abort with a
+    # warning instead of advancing the turn.
+    try:
+        from civ_mcp.game_launcher import detect_crash_dialogs
+
+        crash_dialogs = await detect_crash_dialogs()
+    except Exception:
+        log.debug("Crash-dialog detection failed", exc_info=True)
+        crash_dialogs = []
+    if crash_dialogs:
+        return (
+            "GAME CRASH DIALOG DETECTED (left open for the human to read): "
+            + "; ".join(crash_dialogs)
+            + ". The game hit an unhandled exception — Lua data is "
+            "degraded and the turn cannot be advanced reliably. Do NOT "
+            "take further actions; report this to the human immediately "
+            "and wait for them to handle the crash."
+        )
+
     # Record turn number at entry so we can detect external advancement
     # (e.g. game auto-ends turn when skip_remaining_units finishes all moves)
     turn_at_entry = await _get_turn_number(gs)
@@ -1181,6 +1203,27 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
     # with the original request, so we only need to poll for advancement.
     lua = lq.build_end_turn()
     if gs._pending_end_turn:
+        # Heal a stranded flag: a cancelled end_turn call can leave the
+        # flag set with no live request behind it (the tool was killed
+        # mid-poll).  If the turn has since advanced past the pending
+        # request's baseline, that request completed — send a fresh one
+        # instead of skipping and polling forever.
+        turn_now = await _get_turn_number(gs)
+        if (
+            gs._pending_end_turn_from is not None
+            and turn_now is not None
+            and turn_now > gs._pending_end_turn_from
+        ):
+            log.info(
+                "Pending end-turn request from turn %s already completed "
+                "(now turn %s) — sending a fresh ACTION_ENDTURN",
+                gs._pending_end_turn_from,
+                turn_now,
+            )
+            gs._pending_end_turn = False
+            gs._pending_end_turn_from = None
+    sent_this_call = not gs._pending_end_turn
+    if gs._pending_end_turn:
         log.info(
             "Skipping ACTION_ENDTURN — previous request still in flight (from turn %s)",
             gs._pending_end_turn_from,
@@ -1202,179 +1245,174 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
     turn_after = None
     advanced = False
 
-    # Phase 1: Quick check (4s) — turn sometimes advances within 1-2s
-    for _ in range(8):
-        await asyncio.sleep(0.5)
-        turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
-        if advanced:
-            break
-
-    # Phase 2: Slow polling (5 min) — AI can take 1-5 min on large maps,
-    # especially during wars with many units. GameCore-only queries.
-    if not advanced:
-        # 10 min total: AI can take several minutes on large maps with wars.
-        # Quick polls early (catch fast turns), then escalate to 30s intervals.
-        diplomacy_probed = False
-        cumulative_wait = 4.0  # Phase 1 already waited ~4s
-        for delay in [
-            2.0,
-            2.0,
-            3.0,
-            3.0,
-            5.0,
-            5.0,  # 20s: catch fast turns
-            10.0,
-            10.0,
-            10.0,
-            10.0,
-            10.0,
-            10.0,  # 80s: mid wait
-            15.0,
-            15.0,
-            15.0,
-            15.0,  # 140s
-            20.0,
-            20.0,
-            20.0,
-            20.0,  # 220s
-            30.0,
-            30.0,
-            30.0,
-            30.0,
-            30.0,
-            30.0,
-            30.0,  # 430s
-            30.0,
-            30.0,
-            30.0,
-            30.0,  # 550s (~9 min)
-        ]:
-            await asyncio.sleep(delay)
-            cumulative_wait += delay
+    # The guard clears the pending-request flags if this coroutine is
+    # cancelled mid-poll — see the except clause for why.
+    try:
+        # Phase 1: Quick check (4s) — turn sometimes advances within 1-2s
+        for _ in range(8):
+            await asyncio.sleep(0.5)
             turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
             if advanced:
                 break
-            # Check for game-over during longer polling intervals.
-            # An opponent victory (Science, Culture, etc.) fires during
-            # their turn — without this we'd wait the full 9-min timeout.
-            if delay >= 10.0:
-                gameover = await gs.check_game_over()
-                if gameover is not None:
-                    gs._pending_end_turn = False
-                    gs._pending_end_turn_from = None
-                    gs._last_game_over = gameover
-                    vtype = (
-                        gameover.victory_type.replace("VICTORY_", "")
-                        .replace("_", " ")
-                        .title()
-                    )
-                    if gameover.is_defeat:
-                        return (
-                            f"GAME OVER — DEFEAT. {gameover.winner_leader} "
-                            f"of {gameover.winner_name} won a {vtype} victory. "
-                            f"The game has ended. No further actions are possible."
-                        )
-                    else:
-                        return (
-                            f"GAME OVER — VICTORY! You won a {vtype} victory! "
-                            f"The game has ended."
-                        )
-            # Early diplomacy probe — ONE InGame query after ~45s of silence.
-            # The CRITICAL constraint (Games 1-5) was about REPEATED InGame
-            # queries in a tight loop. A single probe after 45s is safe: if
-            # the AI paused for a trade deal, the game is idle. If the AI is
-            # still processing, the query may be slow/fail (caught below).
-            if not diplomacy_probed and cumulative_wait >= 45:
-                diplomacy_probed = True
-                diplo_msg, diplo_advanced = await _check_mid_turn_diplomacy(
-                    gs, lua, turn_before, seat
+
+        # Phase 1.5: the engine may silently consume the first end-turn
+        # request.  ACTION_ENDTURN behaves like the native End Turn
+        # button: queued unit movements are processed first, and when a
+        # queued move completes (or fails) with movement remaining, the
+        # engine ABORTS the end-turn to ask for new orders — the request
+        # is gone, and the arriving units show up as newly needing orders
+        # (live verification 2026-09-09: a second request succeeds because
+        # the first consumed the queued orders; a unit with moves but no
+        # queued orders does not block the turn at all).  A visible
+        # exclusive popup can also swallow the request.  So: drain popups,
+        # then re-send unconditionally and re-poll briefly instead of
+        # waiting out the long poll below.
+        if not advanced and sent_this_call:
+            try:
+                redismiss = await gs.dismiss_popup()
+            except Exception:
+                redismiss = ""
+            log.info(
+                "Turn not advancing — popup drain: %s; re-sending "
+                "ACTION_ENDTURN (first request may have been consumed by "
+                "end-turn unit processing)",
+                redismiss or "nothing to dismiss",
+            )
+            await gs.conn.execute_write(lua)
+            for _ in range(8):
+                await asyncio.sleep(0.5)
+                turn_after, advanced = await _poll_advanced(
+                    gs, turn_before, seat
                 )
-                if diplo_msg is not None:
-                    return diplo_msg
-                if diplo_advanced:
-                    advanced = True
+                if advanced:
                     break
 
-    # Phase 3: After ~5 min, now safe to check InGame state.
-    # AI processing either completed (blocker is on our side) or is
-    # truly hung.  Do ONE round of InGame checks, not a loop.
-    if not advanced:
-        # Check for AI diplomatic proposals (reuses the same helper
-        # as the early Phase 2 probe — Phase 3 is the fallback if the
-        # probe didn't fire or missed the diplomacy window).
-        diplo_msg, diplo_advanced = await _check_mid_turn_diplomacy(
-            gs, lua, turn_before, seat
-        )
-        if diplo_msg is not None:
-            return diplo_msg
-        if diplo_advanced:
-            advanced = True
-
-    if not advanced:
-        # Single popup dismiss attempt (NOT a loop — looped dismissal
-        # during AI processing was a primary cause of AI hangs).
-        try:
-            dismissed = await gs.dismiss_popup()
-            if "Dismissed" in dismissed:
-                log.info("Post-timeout popup dismissed: %s", dismissed)
-                await gs.conn.execute_write(lua)
-                for _ in range(5):
-                    await asyncio.sleep(2.0)
-                    turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
-                    if advanced:
+        # Phase 2: Slow polling (5 min) — AI can take 1-5 min on large maps,
+        # especially during wars with many units. GameCore-only queries.
+        if not advanced:
+            # 10 min total: AI can take several minutes on large maps with wars.
+            # Quick polls early (catch fast turns), then escalate to 30s intervals.
+            diplomacy_probed = False
+            cumulative_wait = 4.0  # Phase 1 + 1.5 already waited ~4s
+            for delay in [
+                2.0,
+                2.0,
+                3.0,
+                3.0,
+                5.0,
+                5.0,  # 20s: catch fast turns
+                10.0,
+                10.0,
+                10.0,
+                10.0,
+                10.0,
+                10.0,  # 80s: mid wait
+                15.0,
+                15.0,
+                15.0,
+                15.0,  # 140s
+                20.0,
+                20.0,
+                20.0,
+                20.0,  # 220s
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,  # 430s
+                30.0,
+                30.0,
+                30.0,
+                30.0,  # 550s (~9 min)
+            ]:
+                await asyncio.sleep(delay)
+                cumulative_wait += delay
+                turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
+                if advanced:
+                    break
+                # Check for game-over during longer polling intervals.
+                # An opponent victory (Science, Culture, etc.) fires during
+                # their turn — without this we'd wait the full 9-min timeout.
+                if delay >= 10.0:
+                    gameover = await gs.check_game_over()
+                    if gameover is not None:
+                        gs._pending_end_turn = False
+                        gs._pending_end_turn_from = None
+                        gs._last_game_over = gameover
+                        vtype = (
+                            gameover.victory_type.replace("VICTORY_", "")
+                            .replace("_", " ")
+                            .title()
+                        )
+                        if gameover.is_defeat:
+                            return (
+                                f"GAME OVER — DEFEAT. {gameover.winner_leader} "
+                                f"of {gameover.winner_name} won a {vtype} victory. "
+                                f"The game has ended. No further actions are possible."
+                            )
+                        else:
+                            return (
+                                f"GAME OVER — VICTORY! You won a {vtype} victory! "
+                                f"The game has ended."
+                            )
+                # Early diplomacy probe — ONE InGame query after ~45s of silence.
+                # The CRITICAL constraint (Games 1-5) was about REPEATED InGame
+                # queries in a tight loop. A single probe after 45s is safe: if
+                # the AI paused for a trade deal, the game is idle. If the AI is
+                # still processing, the query may be slow/fail (caught below).
+                if not diplomacy_probed and cumulative_wait >= 45:
+                    diplomacy_probed = True
+                    diplo_msg, diplo_advanced = await _check_mid_turn_diplomacy(
+                        gs, lua, turn_before, seat
+                    )
+                    if diplo_msg is not None:
+                        return diplo_msg
+                    if diplo_advanced:
+                        advanced = True
                         break
-        except Exception:
-            log.debug("Post-timeout dismiss failed", exc_info=True)
 
-    if not advanced:
-        # Final verification — turn may have slipped through
-        await asyncio.sleep(2.0)
-        turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
-
-    if not advanced:
-        # Check if game ended during turn transition (victory/defeat)
-        gameover = await gs.check_game_over()
-        if gameover is not None:
-            gs._pending_end_turn = False
-            gs._pending_end_turn_from = None
-            gs._last_game_over = gameover
-            vtype = (
-                gameover.victory_type.replace("VICTORY_", "").replace("_", " ").title()
+        # Phase 3: After ~5 min, now safe to check InGame state.
+        # AI processing either completed (blocker is on our side) or is
+        # truly hung.  Do ONE round of InGame checks, not a loop.
+        if not advanced:
+            # Check for AI diplomatic proposals (reuses the same helper
+            # as the early Phase 2 probe — Phase 3 is the fallback if the
+            # probe didn't fire or missed the diplomacy window).
+            diplo_msg, diplo_advanced = await _check_mid_turn_diplomacy(
+                gs, lua, turn_before, seat
             )
-            if gameover.is_defeat:
-                return (
-                    f"GAME OVER — DEFEAT. {gameover.winner_leader} of {gameover.winner_name} won a {vtype} victory. "
-                    f"The game has ended. No further actions are possible."
-                )
-            else:
-                return (
-                    f"GAME OVER — VICTORY! You won a {vtype} victory! "
-                    f"The game has ended."
-                )
+            if diplo_msg is not None:
+                return diplo_msg
+            if diplo_advanced:
+                advanced = True
 
-        # Provide specific blocker info instead of generic message.  (No
-        # session listing anymore: sessions are auto-resolved by
-        # _auto_clear_diplomacy before we ever get here, and telling the
-        # agent about one would invite interaction that does not exist.  If
-        # one still shows up in the blocker query below, that is actionable
-        # on its own.)
-        details: list[str] = []
-        try:
-            blocking_lines = await gs.conn.execute_write(
-                lq.build_end_turn_blocking_query()
-            )
-            blockers = lq.parse_end_turn_blocking(blocking_lines)
-            for bt, bm in blockers:
-                display = bt.replace("ENDTURN_BLOCKING_", "").replace("_", " ").title()
-                details.append(f"Blocker: {display}" + (f" ({bm})" if bm else ""))
-        except Exception:
-            pass
-        # Turn didn't advance — clear the pending flag so next call re-sends
-        gs._pending_end_turn = False
-        gs._pending_end_turn_from = None
-        if details:
-            # Before returning blocker, check if game actually ended —
-            # victory can trigger during AI processing while blockers coexist
+        if not advanced:
+            # Single popup dismiss attempt (NOT a loop — looped dismissal
+            # during AI processing was a primary cause of AI hangs).
+            try:
+                dismissed = await gs.dismiss_popup()
+                if "Dismissed" in dismissed:
+                    log.info("Post-timeout popup dismissed: %s", dismissed)
+                    await gs.conn.execute_write(lua)
+                    for _ in range(5):
+                        await asyncio.sleep(2.0)
+                        turn_after, advanced = await _poll_advanced(
+                            gs, turn_before, seat
+                        )
+                        if advanced:
+                            break
+            except Exception:
+                log.debug("Post-timeout dismiss failed", exc_info=True)
+
+        if not advanced:
+            # Final verification — turn may have slipped through
+            await asyncio.sleep(2.0)
+            turn_after, advanced = await _poll_advanced(gs, turn_before, seat)
+
+        if not advanced:
+            # Check if game ended during turn transition (victory/defeat)
             gameover = await gs.check_game_over()
             if gameover is not None:
                 gs._pending_end_turn = False
@@ -1391,25 +1429,83 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                         f"The game has ended. No further actions are possible."
                     )
                 else:
-                    return f"GAME OVER — VICTORY! You won a {vtype} victory! The game has ended."
-            return f"End turn blocked (turn {turn_after or turn_before}): {'; '.join(details)}"
-        # No blockers, no diplomacy, no game over — true AI turn hang.
-        # Return structured HANG: prefix so server.py can auto-recover.
-        turn_num = turn_after or turn_before
-        if turn_num is not None:
-            from .autosave import get_autosave_for_turn
+                    return (
+                        f"GAME OVER — VICTORY! You won a {vtype} victory! "
+                        f"The game has ended."
+                    )
 
-            hang_save = get_autosave_for_turn(turn_num)
-            return (
-                f"HANG:{turn_num}:{hang_save}|"
-                f"End turn requested (turn is still {turn_num}). "
-                f"AI turn processing appears stuck."
-            )
-        return f"End turn requested (turn is still {turn_num}). Check get_pending_diplomacy or dismiss_popup."
+            # Provide specific blocker info instead of generic message.  (No
+            # session listing anymore: sessions are auto-resolved by
+            # _auto_clear_diplomacy before we ever get here, and telling the
+            # agent about one would invite interaction that does not exist.  If
+            # one still shows up in the blocker query below, that is actionable
+            # on its own.)
+            details: list[str] = []
+            try:
+                blocking_lines = await gs.conn.execute_write(
+                    lq.build_end_turn_blocking_query()
+                )
+                blockers = lq.parse_end_turn_blocking(blocking_lines)
+                for bt, bm in blockers:
+                    display = (
+                        bt.replace("ENDTURN_BLOCKING_", "").replace("_", " ").title()
+                    )
+                    details.append(f"Blocker: {display}" + (f" ({bm})" if bm else ""))
+            except Exception:
+                pass
+            # Turn didn't advance — clear the pending flag so next call re-sends
+            gs._pending_end_turn = False
+            gs._pending_end_turn_from = None
+            if details:
+                # Before returning blocker, check if game actually ended —
+                # victory can trigger during AI processing while blockers coexist
+                gameover = await gs.check_game_over()
+                if gameover is not None:
+                    gs._pending_end_turn = False
+                    gs._pending_end_turn_from = None
+                    gs._last_game_over = gameover
+                    vtype = (
+                        gameover.victory_type.replace("VICTORY_", "")
+                        .replace("_", " ")
+                        .title()
+                    )
+                    if gameover.is_defeat:
+                        return (
+                            f"GAME OVER — DEFEAT. {gameover.winner_leader} of {gameover.winner_name} won a {vtype} victory. "
+                            f"The game has ended. No further actions are possible."
+                        )
+                    else:
+                        return f"GAME OVER — VICTORY! You won a {vtype} victory! The game has ended."
+                return f"End turn blocked (turn {turn_after or turn_before}): {'; '.join(details)}"
+            # No blockers, no diplomacy, no game over — true AI turn hang.
+            # Return structured HANG: prefix so server.py can auto-recover.
+            turn_num = turn_after or turn_before
+            if turn_num is not None:
+                from .autosave import get_autosave_for_turn
 
-    # Turn advanced — clear the pending flag
-    gs._pending_end_turn = False
-    gs._pending_end_turn_from = None
+                hang_save = get_autosave_for_turn(turn_num)
+                return (
+                    f"HANG:{turn_num}:{hang_save}|"
+                    f"End turn requested (turn is still {turn_num}). "
+                    f"AI turn processing appears stuck."
+                )
+            return f"End turn requested (turn is still {turn_num}). Check get_pending_diplomacy or dismiss_popup."
+
+        # Turn advanced — clear the pending flag
+        gs._pending_end_turn = False
+        gs._pending_end_turn_from = None
+    except asyncio.CancelledError:
+        # The tool call was cancelled mid-poll.  The pending-request
+        # bookkeeping only helps while this coroutine lives to watch for
+        # advancement; a stranded flag makes every later end_turn skip
+        # sending ACTION_ENDTURN and re-hang even on a fixed game state
+        # (seen live: cancelled hang → "Skipping ACTION_ENDTURN — previous
+        # request still in flight" forever).  Clear it — a rare duplicate
+        # ACTION_ENDTURN is a same-turn no-op for the engine, unlike a
+        # stranded flag which never recovers on its own.
+        gs._pending_end_turn = False
+        gs._pending_end_turn_from = None
+        raise
 
     # Turn regression detection — catch accidental wrong-save loads
     if turn_after is not None and gs._high_water_turn > 0:

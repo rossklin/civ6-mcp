@@ -1360,7 +1360,11 @@ class GameState:
         """
         from civ_mcp.end_turn import execute_end_turn
 
-        return await execute_end_turn(self, seat)
+        # Hold the end-turn lock for the whole advancement so background
+        # services (PopupWatcher) skip their scheduled dismisses instead of
+        # interleaving InGame queries with turn processing.
+        async with self.conn.end_turn_lock:
+            return await execute_end_turn(self, seat)
 
     async def dismiss_popup(self) -> str:
         """Dismiss any blocking popup or UI overlay."""

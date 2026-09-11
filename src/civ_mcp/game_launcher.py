@@ -1987,8 +1987,54 @@ def _click_text(
 
 
 # ---------------------------------------------------------------------------
-# Crash dialog dismissal (Windows only)
+# Crash dialog detection / dismissal (Windows only)
 # ---------------------------------------------------------------------------
+
+# Dialog signatures: (title_substring, button_text_to_click)
+_CRASH_DIALOG_SIGNATURES = [
+    ("Unhandled Exception", "OK"),
+    ("Firaxis Crash Reporter", "No"),
+]
+
+
+def _detect_crash_dialogs_sync() -> list[str]:
+    """Find Firaxis crash reporter / exception dialogs WITHOUT touching them.
+
+    Returns a list of visible dialog titles.  Detection is safe any time;
+    dismissal is a human decision during play (the dialogs carry the crash
+    details) and is reserved for explicit recovery flows.
+    """
+    if sys.platform != "win32":
+        return []
+
+    try:
+        import win32gui
+    except ImportError:
+        return []
+
+    found: list[str] = []
+
+    def _enum_callback(hwnd: int, results: list) -> bool:
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        title = win32gui.GetWindowText(hwnd)
+        if not title:
+            return True
+        for title_substr, _ in _CRASH_DIALOG_SIGNATURES:
+            if title_substr in title:
+                results.append(title)
+        return True
+
+    try:
+        win32gui.EnumWindows(_enum_callback, found)
+    except Exception:
+        return []
+    return found
+
+
+async def detect_crash_dialogs() -> list[str]:
+    """Async wrapper for crash dialog detection (never dismisses)."""
+    return await asyncio.to_thread(_detect_crash_dialogs_sync)
 
 
 def _dismiss_crash_dialogs_sync() -> list[str]:
@@ -1998,6 +2044,10 @@ def _dismiss_crash_dialogs_sync() -> list[str]:
     an EXCEPTION_ACCESS_VIOLATION or similar crash.  The game continues
     running underneath but Lua calls return degraded data until the
     dialogs are dismissed.
+
+    Only used by explicit recovery flows (restart_and_load): crash dialogs
+    are the human's to read during play — end_turn aborts with a warning
+    instead (see detect_crash_dialogs).
 
     Returns list of dismissed dialog descriptions.
     """
@@ -2012,13 +2062,7 @@ def _dismiss_crash_dialogs_sync() -> list[str]:
 
     dismissed: list[str] = []
 
-    # Dialog signatures: (title_substring, button_text_to_click)
-    _CRASH_DIALOGS = [
-        ("Unhandled Exception", "OK"),
-        ("Firaxis Crash Reporter", "No"),
-    ]
-
-    for title_substr, target_button in _CRASH_DIALOGS:
+    for title_substr, target_button in _CRASH_DIALOG_SIGNATURES:
         # Find all top-level windows matching the title
         def _enum_callback(hwnd: int, results: list) -> bool:
             if not win32gui.IsWindowVisible(hwnd):

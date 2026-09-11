@@ -73,6 +73,13 @@ class GameConnection:
         # tuner socket (unsolicited print() output from the deal shim).
         self._deal_callbacks: list = []
         self._deal_monitor_task: asyncio.Task | None = None
+        # Held while execute_end_turn advances the turn.  Background
+        # services (PopupWatcher) check this to stay out of the way — an
+        # async popup dismissal landing mid-end-turn interleaves InGame
+        # queries with turn advancement, which has caused mystery
+        # interference (and InGame queries during AI processing can stall
+        # the AI outright).
+        self.end_turn_lock = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:

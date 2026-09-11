@@ -13,15 +13,89 @@ log = logging.getLogger(__name__)
 async def dismiss_popup(conn: GameConnection) -> str:
     """Dismiss any blocking popup or UI overlay in the game.
 
-    Three-phase approach:
-    1. Single batched InGame call that checks all known popup/overlay names
-       and closes diplomacy screens (fast — one TCP roundtrip).
-    2. Only if Phase 1 found nothing: scan individual Lua states for
-       ExclusivePopupManager popups (disaster, wonder, era screens) that
-       need Close() in their own state to release the engine event lock.
-    3. Safety net: always fire ExclusivePopupManager Close LuaEvents to
-       ensure BulkHide counters are decremented even if Phase 1 caught
-       the popup by name (SetHide) without proper cleanup.
+    Runs one dismissal pass (see :func:`_dismiss_pass`) repeatedly until a
+    pass dismisses nothing.  Popups stack, and only the top-most layer is
+    visible (``not IsHidden()``) — the exclusive popup manager hides the
+    layers below and reveals each next popup only after the one above it
+    closes.  A single pass therefore dismisses at most one layer, which is
+    why partial runs left e.g. the Inspiration popup open after the Era
+    popup closed — and why an ACTION_ENDTURN sent against a half-drained
+    stack is silently swallowed by the engine.
+    """
+    import asyncio
+
+    dismissed: list[str] = []
+    pending_deal = False
+    pending_diplomacy = False
+    # Consecutive passes that closed nothing while an exclusive popup was
+    # still visible at precheck — after a few we accept the stack as
+    # drained (the popup's own Lua state can lag the reveal, or the
+    # control is stuck visible) and let end_turn's retry/backstops cope.
+    stuck_rounds = 0
+    for _drain_round in range(10):
+        (
+            round_dismissed,
+            round_deal,
+            round_diplomacy,
+            exclusive_visible,
+        ) = await _dismiss_pass(conn)
+        dismissed.extend(round_dismissed)
+        pending_deal = pending_deal or round_deal
+        pending_diplomacy = pending_diplomacy or round_diplomacy
+        if round_dismissed:
+            # The next stacked popup may only surface on a later UI frame,
+            # or after the engine posts the next popup event following the
+            # close — settle so the next pass's visibility checks see it
+            # instead of declaring the stack drained one layer early.
+            stuck_rounds = 0
+            await asyncio.sleep(0.25)
+            continue
+        if not exclusive_visible:
+            break  # full pass dismissed nothing — stack drained
+        # An exclusive popup is still visible but this pass closed
+        # nothing: its own state usually just hasn't caught up with the
+        # reveal yet.  Settle longer and retry before giving up.
+        stuck_rounds += 1
+        if stuck_rounds >= 3:
+            log.warning(
+                "dismiss_popup: exclusive popup still visible after %d "
+                "unproductive passes — leaving it (dismissed so far: %s)",
+                stuck_rounds,
+                dismissed,
+            )
+            break
+        await asyncio.sleep(0.75)
+
+    # NOTE: Windows-level crash dialogs (Firaxis Crash Reporter, Unhandled
+    # Exception) are deliberately NOT dismissed here — they are the human's
+    # to read and act on.  end_turn aborts with a warning when one is
+    # detected (detect_crash_dialogs); only explicit recovery flows
+    # (restart_and_load) dismiss them.
+
+    if dismissed:
+        msg = f"Dismissed: {', '.join(dismissed)}"
+        if pending_diplomacy:
+            msg += ". Also: diplomacy session active — use respond_to_diplomacy."
+        if pending_deal:
+            msg += " (incoming trade deal pending — use get_pending_trades)"
+        return msg
+    if pending_diplomacy:
+        return "Diplomacy session active — use respond_to_diplomacy to handle it."
+    if pending_deal:
+        return "No popups to dismiss (incoming trade deal pending — use get_pending_trades)."
+    return "No popups to dismiss."
+
+
+async def _dismiss_pass(conn: GameConnection) -> tuple[list[str], bool, bool, bool]:
+    """One dismissal pass over popup/overlay state.
+
+    Three phases (InGame batched dismiss, exclusive-popup state scan,
+    probe fallback).  Returns ``(dismissed_names, pending_deal,
+    pending_diplomacy, exclusive_visible)`` — the last flag reports
+    whether an exclusive-popup control was still visible at precheck even
+    if this pass closed nothing (the popup's own Lua state can lag the
+    reveal, so callers retry rather than declaring the stack drained).
+    See :func:`dismiss_popup`.
     """
     dismissed = []
 
@@ -153,17 +227,21 @@ async def dismiss_popup(conn: GameConnection) -> str:
         # Phase 2: Close ExclusivePopupManager popups in their own Lua states.
         # These need Close() in their OWN state to release the engine lock —
         # Phase 1's SetHide() does NOT release this lock.
-        popup_keywords = ("Popup", "Wonder", "Moment", "Era", "Disaster")
+        # Exact state names only: keyword matching ("Popup") also caught
+        # non-game contexts such as the multiplayer InvitePopup, whose
+        # Close() never hides it — the drain loop then hammered it 20
+        # times per call and logged an entry for every hit.
         popup_states = {
             idx: n
             for idx, n in conn.lua_states.items()
-            if any(kw in n for kw in popup_keywords)
+            if n in exclusive_popup_names
         }
         log.debug("Phase 2 popup states: %s", popup_states)
         for state_idx, name in popup_states.items():
             # Loop to drain the ExclusivePopupManager's engine queue —
             # each Close() pops the next event, so we keep closing until
             # the popup stays hidden (max 20 to avoid infinite loops).
+            closed = 0
             for _drain in range(20):
                 try:
                     lines = await conn.execute_in_state(
@@ -177,7 +255,7 @@ async def dismiss_popup(conn: GameConnection) -> str:
                         'print("---END---")',
                     )
                     if any("DISMISSED" in l for l in lines):
-                        dismissed.append(name)
+                        closed = closed + 1
                     else:
                         break  # popup stayed hidden, queue drained
                 except Exception as e:
@@ -188,6 +266,8 @@ async def dismiss_popup(conn: GameConnection) -> str:
                         e,
                     )
                     break
+            if closed:
+                dismissed.append(name if closed == 1 else f"{name} x{closed}")
 
         # Phase 3: Fallback — if InGame still sees visible ExclusivePopups,
         # probe state indexes to find and close them.  Handles cases where
@@ -251,27 +331,7 @@ async def dismiss_popup(conn: GameConnection) -> str:
         except Exception as e:
             log.debug("Phase 3 probe failed: %s", e)
 
-    # Final phase: dismiss Windows-level crash dialogs (Firaxis Crash
-    # Reporter, Unhandled Exception).  These are Win32 dialogs that appear
-    # on top of the game after EXCEPTION_ACCESS_VIOLATION crashes — the
-    # game keeps running but Lua calls return degraded data until dismissed.
-    from . import game_launcher
-
-    crash_dismissed = await game_launcher.dismiss_crash_dialogs()
-    dismissed.extend(crash_dismissed)
-
-    if dismissed:
-        msg = f"Dismissed: {', '.join(dismissed)}"
-        if pending_diplomacy:
-            msg += ". Also: diplomacy session active — use respond_to_diplomacy."
-        if pending_deal:
-            msg += " (incoming trade deal pending — use get_pending_trades)"
-        return msg
-    if pending_diplomacy:
-        return "Diplomacy session active — use respond_to_diplomacy to handle it."
-    if pending_deal:
-        return "No popups to dismiss (incoming trade deal pending — use get_pending_trades)."
-    return "No popups to dismiss."
+    return dismissed, pending_deal, pending_diplomacy, any_exclusive_visible
 
 
 # ------------------------------------------------------------------

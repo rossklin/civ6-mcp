@@ -259,6 +259,12 @@ class PopupWatcher:
     async def _dismiss_if_allowed(self, label: str) -> None:
         from civ_mcp.game_lifecycle import dismiss_popup
 
+        # Never dismiss while end_turn is advancing the turn — a dismissal
+        # interleaving with turn processing caused mystery interference
+        # during end-turn hangs (units re-activating, requests swallowed),
+        # and InGame queries during AI processing can stall the AI.
+        if self._conn.end_turn_lock.locked():
+            return
         if not await self._agent_on_clock():
             return
         # Skip while a diplomacy screen is up (CRITICAL) — dismissal only
