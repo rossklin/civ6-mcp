@@ -259,21 +259,33 @@ class PopupWatcher:
     async def _dismiss_if_allowed(self, label: str) -> None:
         from civ_mcp.game_lifecycle import dismiss_popup
 
-        # Never dismiss while end_turn is advancing the turn — a dismissal
-        # interleaving with turn processing caused mystery interference
-        # during end-turn hangs (units re-activating, requests swallowed),
-        # and InGame queries during AI processing can stall the AI.
-        if self._conn.end_turn_lock.locked():
+        # True mutual exclusion with end_turn, not a point-in-time check.
+        # A bare locked() test races: the watcher task can pass it in the
+        # gap before gs.end_turn() acquires the lock, then block on the
+        # connection lock behind end_turn's queries and interleave its
+        # dismissal with turn processing (seen live 2026-09-11).  Acquire
+        # the end-turn lock for the whole dismissal; if end_turn already
+        # holds it, skip — this is best-effort cleanup, never worth
+        # waiting on.  While held here, an incoming end_turn waits out the
+        # (bounded, seconds) dismissal instead of interleaving with it.
+        try:
+            await asyncio.wait_for(
+                self._conn.end_turn_lock.acquire(), timeout=0.5
+            )
+        except asyncio.TimeoutError:
             return
-        if not await self._agent_on_clock():
-            return
-        # Skip while a diplomacy screen is up (CRITICAL) — dismissal only
-        # targets non-critical popups.
-        if await self._poll() == "CRITICAL":
-            return
-        result = await dismiss_popup(self._conn)
-        if "Dismissed" in result:
-            log.info("PopupWatcher: %s dismiss: %s", label, result)
+        try:
+            if not await self._agent_on_clock():
+                return
+            # Skip while a diplomacy screen is up (CRITICAL) — dismissal only
+            # targets non-critical popups.
+            if await self._poll() == "CRITICAL":
+                return
+            result = await dismiss_popup(self._conn)
+            if "Dismissed" in result:
+                log.info("PopupWatcher: %s dismiss: %s", label, result)
+        finally:
+            self._conn.end_turn_lock.release()
 
     async def _agent_on_clock(self) -> bool:
         """True only while a managed agent holds the local-player slot.
