@@ -10,7 +10,13 @@ local pDiplo = Players[me]:GetDiplomacy()
 local pVis = PlayersVisibility[me]
 local states = {"ALLIED","DECLARED_FRIEND","FRIENDLY","NEUTRAL","UNFRIENDLY","DENOUNCED","WAR"}
 local aNames = {"RESEARCH","CULTURAL","ECONOMIC","MILITARY","RELIGIOUS"}
-local checkActions = {"DIPLOACTION_DIPLOMATIC_DELEGATION","DIPLOACTION_DECLARE_FRIENDSHIP","DIPLOACTION_DENOUNCE","DIPLOACTION_RESIDENT_EMBASSY","DIPLOACTION_OPEN_BORDERS","DIPLOACTION_MAKE_ALLIANCE"}
+-- Each war declaration is its own engine action (DIPLOACTION_DECLARE_*_WAR
+-- in GameInfo.DiplomaticActions), so the per-civ "Can:" line can name the
+-- specific war types currently valid — the same IsDiplomaticActionValid
+-- gate the native leader screen uses for its war menu. DIPLOACTION_ALLIANCE
+-- is the engine's type name; DIPLOACTION_MAKE_ALLIANCE does not exist, so
+-- that old entry never validated.
+local checkActions = {"DIPLOACTION_DIPLOMATIC_DELEGATION","DIPLOACTION_DECLARE_FRIENDSHIP","DIPLOACTION_DENOUNCE","DIPLOACTION_RESIDENT_EMBASSY","DIPLOACTION_OPEN_BORDERS","DIPLOACTION_ALLIANCE","DIPLOACTION_DECLARE_SURPRISE_WAR","DIPLOACTION_DECLARE_FORMAL_WAR","DIPLOACTION_DECLARE_HOLY_WAR","DIPLOACTION_DECLARE_LIBERATION_WAR","DIPLOACTION_DECLARE_RECONQUEST_WAR","DIPLOACTION_DECLARE_PROTECTORATE_WAR","DIPLOACTION_DECLARE_COLONIAL_WAR","DIPLOACTION_DECLARE_TERRITORIAL_WAR"}
 
 local out = {}
 local function emit(s) table.insert(out, s) end
@@ -379,20 +385,22 @@ for i = 0, 62 do
                 end
             end
 
-            -- Available actions
+            -- Available actions. War declarations are listed per casus belli
+            -- type (surprise/formal/holy/...): each is its own engine action,
+            -- gated by the same IsDiplomaticActionValid call that decides
+            -- what the native leader screen's war menu offers. At war or
+            -- blocked (friendship, peace cooldown), every type reads invalid
+            -- and no war action is listed.
             local avail = {}
             for _, aName in ipairs(checkActions) do
                 local ok2, valid = pcall(function() return pDiplo:IsDiplomaticActionValid(aName, i, false) end)
                 if ok2 and valid then
                     local label = aName:gsub("DIPLOACTION_", "")
-                    if label == "OPEN_BORDERS" then label = "Open Borders (via propose_trade)" end
-                    table.insert(avail, titleCase(label))
+                    local display = titleCase(label)
+                    if label == "OPEN_BORDERS" then display = display .. " (via propose_trade)" end
+                    if label == "ALLIANCE" then display = display .. " (via form_alliance)" end
+                    table.insert(avail, display)
                 end
-            end
-            if not pDiplo:IsAtWarWith(i) then
-                local canWar = false
-                pcall(function() canWar = pDiplo:CanDeclareWarOn(i) end)
-                if canWar then table.insert(avail, titleCase("DECLARE_WAR")) end
             end
             if #avail > 0 then line("    Can: " .. table.concat(avail, ", ")) end
 
