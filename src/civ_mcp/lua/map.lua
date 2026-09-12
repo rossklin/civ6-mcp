@@ -224,6 +224,19 @@ for y = h - 1, 0, -1 do
                     if adj then
                         local strbuf = dirNames[i+1] .. " (" .. adj:GetX() .. "," .. adj:GetY() .. ")"
                         if (adj:IsRiverCrossingToPlot(plot)) then strbuf = strbuf .. " RC" end
+                        -- Cliff flags are positional, like the river flags:
+                        -- IsNEOfCliff() means "this plot is NE of a cliff",
+                        -- i.e. the cliff is on the plot's SW edge (IsWOfCliff
+                        -- -> E edge, IsNWOfCliff -> SE edge). Crossings toward
+                        -- NE/W/NW read the neighbour's flags from its side.
+                        local isCliff = false
+                        if i == 0 then isCliff = adj:IsNEOfCliff()     -- adj's SW edge
+                        elseif i == 1 then isCliff = plot:IsWOfCliff() -- plot's E edge
+                        elseif i == 2 then isCliff = plot:IsNWOfCliff()-- plot's SE edge
+                        elseif i == 3 then isCliff = plot:IsNEOfCliff()-- plot's SW edge
+                        elseif i == 4 then isCliff = adj:IsWOfCliff()  -- adj's E edge
+                        else isCliff = adj:IsNWOfCliff() end           -- adj's SE edge
+                        if isCliff then strbuf = strbuf .. " cliffs" end
                         neighbours[#neighbours+1] = strbuf
                     end
                 end

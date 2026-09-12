@@ -1457,6 +1457,7 @@ class GameState:
 The map consists of hexagonal tiles so each tile has six neighbours.
 If the tile is a valid settle location it is marked [VSL].
 Note: neighbours with "RC" have a river crossing.
+Note: neighbours with "cliffs" have a cliff crossing, which is impassable.
 
 """
         text = text + "\n".join(lines)
