@@ -72,135 +72,77 @@ Conventions:
     (e.g. UNIT_WARRIOR, TECH_IRON_WORKING) — use the names shown in
     get_full_game_state's production/research lists.
 
-Command reference (params in parentheses; ``?`` = optional):
+Command reference — each command is shown as the exact JSON object to put in
+the commands array. The values in the examples are placeholders; see each
+description for allowed values. Params described as optional may be omitted.
 
 Units:
-    move_unit(unit_id, target_x, target_y) — move toward a tile (can target tiles beyond this turn's movement range)
-    attack_unit(unit_id, target_x, target_y) — attack enemy at tile
-    unit_action(unit_id, unit_action, target_x?, target_y?, target_unit_id?,
-                improvement?, promotion_type?, wmd_type?) — generic executor
-        for any action shown in the unit's ">> unit_action:" list in the
-        Units section (e.g. UNITCOMMAND_CONDEMN_HERETIC,
-        UNITOPERATION_PLUNDER_TRADE_ROUTE, UNITOPERATION_COASTAL_RAID).
-        ``unit_action`` (param) is the full action id exactly as listed. The
-        suffix in the list tells you which params it needs: ``(x,y)`` ->
-        target_x/target_y; ``(target_unit_id)`` -> the partner unit
-        (formations, corps/army — valid partner ids are in [partners:..]);
-        ``(improvement)`` -> improvement=IMPROVEMENT_X (types shown in the
-        unit's "Can build" list); ``(promotion_type)`` -> promotion_type=
-        PROMOTION_X (options shown as CAN PROMOTE); ``(wmd_type,x,y)`` ->
-        wmd_type (WMD_NUCLEAR_DEVICE | WMD_THERMONUCLEAR_DEVICE, types shown
-        in [types:..]) plus the target tile. No suffix -> no extra params.
-    skip_unit(unit_id)
-    skip_remaining_units() — fortify combat units, then skip the rest
+- `{"action": "move_unit", "params": {"unit_id": 0, "target_x": 10, "target_y": 20}}` — move toward a tile (can target tiles beyond this turn's movement range)
+- `{"action": "attack_unit", "params": {"unit_id": 0, "target_x": 10, "target_y": 20}}` — attack enemy at tile
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_PLUNDER_TRADE_ROUTE"}}` — generic executor for any action shown in the unit's ">> unit_action:" list in the Units section (e.g. UNITCOMMAND_CONDEMN_HERETIC, UNITOPERATION_PLUNDER_TRADE_ROUTE, UNITOPERATION_COASTAL_RAID). `unit_action` (the param) is the full action id exactly as listed. Add extra params to `params` only when the action needs them: `target_x`/`target_y`, `target_unit_id`, `improvement`, `promotion_type`, `wmd_type` — e.g. `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_IMPROVEMENT", "improvement": "IMPROVEMENT_MINE"}}`. The suffix in the list tells you which params it needs: `(x,y)` -> target_x/target_y; `(target_unit_id)` -> the partner unit (formations, corps/army — valid partner ids are in [partners:..]); `(improvement)` -> improvement=IMPROVEMENT_X (types shown in the unit's "Can build" list); `(promotion_type)` -> promotion_type=PROMOTION_X (options shown as CAN PROMOTE); `(wmd_type,x,y)` -> wmd_type (WMD_NUCLEAR_DEVICE | WMD_THERMONUCLEAR_DEVICE, types shown in [types:..]) plus the target tile. No suffix -> no extra params.
+- `{"action": "skip_unit", "params": {"unit_id": 0}}` — end the unit's turn (always works)
+- `{"action": "skip_remaining_units", "params": {}}` — fortify combat units, then skip the rest
 
 Settling & cities:
-    found_city(unit_id) - must be at least 4 steps away from any other city
-    resolve_city_capture(action) — action: keep | reject | raze |
-    liberate_founder | liberate_previous
-    set_city_production(city_id, item_type, item_name, target_x?, target_y?)
-        item_type: UNIT | BUILDING | DISTRICT; item_name e.g. UNIT_WARRIOR,
-        BUILDING_GRANARY, DISTRICT_CAMPUS. DISTRICTs and wonders require
-        target_x/target_y.
-        purchase_item(city_id, item_type, item_name, yield_type="YIELD_GOLD")
-        item_type: UNIT | BUILDING; yield_type: YIELD_GOLD | YIELD_FAITH.
-    list_city_production(city_id) — what the city can build now
-    set_city_focus(city_id, focus) — focus: DEFAULT (clear) | FOOD |
-        PRODUCTION | GOLD | SCIENCE | CULTURE | FAITH
-    purchase_tile(city_id, x, y)
-    city_attack(city_id, target_x, target_y) — ranged attack from a city (must build walls in city center first)
+- `{"action": "found_city", "params": {"unit_id": 0}}` — settle; must be at least 4 steps away from any other city
+- `{"action": "resolve_city_capture", "params": {"action": "keep"}}` — the `"action"` param (a params-level choice, not the command name): "keep" | "reject" | "raze" | "liberate_founder" | "liberate_previous"
+- `{"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_WARRIOR", "target_x": 10, "target_y": 20}}` — `item_type`: "UNIT" | "BUILDING" | "DISTRICT"; `item_name` e.g. UNIT_WARRIOR, BUILDING_GRANARY, DISTRICT_CAMPUS. `target_x`/`target_y` (optional) are required for DISTRICTs and wonders.
+- `{"action": "purchase_item", "params": {"city_id": 3, "item_type": "BUILDING", "item_name": "BUILDING_GRANARY", "yield_type": "YIELD_GOLD"}}` — `item_type`: "UNIT" | "BUILDING"; `yield_type` (optional, default "YIELD_GOLD"): "YIELD_GOLD" | "YIELD_FAITH"
+- `{"action": "list_city_production", "params": {"city_id": 3}}` — what the city can build now
+- `{"action": "set_city_focus", "params": {"city_id": 3, "focus": "FOOD"}}` — `focus`: "DEFAULT" (clear) | "FOOD" | "PRODUCTION" | "GOLD" | "SCIENCE" | "CULTURE" | "FAITH"
+- `{"action": "purchase_tile", "params": {"city_id": 3, "x": 10, "y": 20}}` — buy a border tile with gold
+- `{"action": "city_attack", "params": {"city_id": 3, "target_x": 10, "target_y": 20}}` — ranged attack from a city (must build walls in city center first)
 
 Builders & improvements:
-    All builder actions go through unit_action with the ids shown in the
-    unit's ">> unit_action:" list, e.g.:
-    unit_action(unit_id, UNITOPERATION_BUILD_IMPROVEMENT, improvement=IMPROVEMENT_MINE)
-    unit_action(unit_id, UNITOPERATION_REMOVE_FEATURE) — chop/harvest
-    unit_action(unit_id, UNITOPERATION_REPAIR) — repair pillaged improvement
-    unit_action(unit_id, UNITOPERATION_REMOVE_IMPROVEMENT) — demolish
-    unit_action(unit_id, UNITOPERATION_BUILD_ROUTE) — Military Engineer road/railroad
-    unit_action(unit_id, UNITCOMMAND_PROJECT_PRODUCTION) — sacrifice builder
-        charges into a district project (Royal Society)
+All builder actions go through unit_action with the ids shown in the unit's ">> unit_action:" list, e.g.:
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_IMPROVEMENT", "improvement": "IMPROVEMENT_MINE"}}`
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REMOVE_FEATURE"}}` — chop/harvest
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REPAIR"}}` — repair pillaged improvement
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REMOVE_IMPROVEMENT"}}` — demolish
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_ROUTE"}}` — Military Engineer road/railroad
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITCOMMAND_PROJECT_PRODUCTION"}}` — sacrifice builder charges into a district project (Royal Society)
 
 Research & civics: you should only set those that are listed as available to research.
-    set_research(tech_name) — e.g. TECH_IRON_WORKING
-    set_civic(civic_name) — e.g. CIVIC_CRAFTSMANSHIP
+- `{"action": "set_research", "params": {"tech_name": "TECH_IRON_WORKING"}}`
+- `{"action": "set_civic", "params": {"civic_name": "CIVIC_CRAFTSMANSHIP"}}`
 
 Diplomacy & trade (other_player_id = target player ID):
-    send_diplomatic_action(other_player_id, action) — action: DIPLOMATIC_DELEGATION
-        | RESIDENT_EMBASSY | DECLARE_FRIENDSHIP | DENOUNCE
-        | DECLARE_SURPRISE_WAR | DECLARE_FORMAL_WAR | DECLARE_HOLY_WAR
-        | DECLARE_LIBERATION_WAR | DECLARE_RECONQUEST_WAR
-        | DECLARE_PROTECTORATE_WAR | DECLARE_COLONIAL_WAR | DECLARE_TERRITORIAL_WAR.
-        For the three response-able actions (DIPLOMATIC_DELEGATION,
-        RESIDENT_EMBASSY, DECLARE_FRIENDSHIP) targeting a managed civ, the
-        proposal is filed in the DIPLOMACY MAILBOX instead of the engine —
-        opening a session would let the target's built-in AI auto-respond. The
-        target answers on its own turn; your action takes effect on your next
-        turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go
-        straight to the engine.
-    propose_trade(other_player_id, ...) — pass FLAT params (auto-converted):
-        offer_gold, offer_gold_per_turn, offer_resources (comma-separated
-        RESOURCE_TYPE names), offer_favor, offer_open_borders (bool),
-        plus the request_* equivalents; joint_war_target (player ID) for a joint war.
-    propose_peace(other_player_id, ...) — propose peace, you can add trade items here
-    form_alliance(other_player_id, alliance_type, ...) — alliance_type:
-        MILITARY | RESEARCH | CULTURAL | ECONOMIC | RELIGIOUS (required).
-        You can also add trade items.
-    respond_to_trade(other_player_id, accept: bool) — accept/reject an
-        incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
-    respond_to_diplo_action(other_player_id, accept: bool) — accept/reject
-        an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy)
-        from a managed civ. Accept marks it; the proposer's action takes effect
-        on the proposer's next turn. Reject discards it.
+- `{"action": "send_diplomatic_action", "params": {"other_player_id": 1, "action": "DECLARE_FRIENDSHIP"}}` — the `"action"` param (a params-level choice, not the command name): "DIPLOMATIC_DELEGATION" | "RESIDENT_EMBASSY" | "DECLARE_FRIENDSHIP" | "DENOUNCE" | "DECLARE_SURPRISE_WAR" | "DECLARE_FORMAL_WAR" | "DECLARE_HOLY_WAR" | "DECLARE_LIBERATION_WAR" | "DECLARE_RECONQUEST_WAR" | "DECLARE_PROTECTORATE_WAR" | "DECLARE_COLONIAL_WAR" | "DECLARE_TERRITORIAL_WAR". For the three response-able actions (DIPLOMATIC_DELEGATION, RESIDENT_EMBASSY, DECLARE_FRIENDSHIP) targeting a managed civ, the proposal is filed in the DIPLOMACY MAILBOX instead of the engine — opening a session would let the target's built-in AI auto-respond. The target answers on its own turn; your action takes effect on your next turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go straight to the engine.
+- `{"action": "propose_trade", "params": {"other_player_id": 1, "offer_gold": 100, "offer_gold_per_turn": 5, "offer_resources": "RESOURCE_IRON,RESOURCE_HORSES", "offer_favor": 20, "offer_open_borders": true, "request_gold": 150, "joint_war_target": 2}}` — pass FLAT params (auto-converted); every trade item is optional: offer_gold, offer_gold_per_turn, offer_resources (comma-separated RESOURCE_TYPE names), offer_favor, offer_open_borders (bool), plus the request_* equivalents; joint_war_target (player ID) for a joint war.
+- `{"action": "propose_peace", "params": {"other_player_id": 1, "offer_gold": 100}}` — propose peace, you can add trade items (same FLAT params as propose_trade)
+- `{"action": "form_alliance", "params": {"other_player_id": 1, "alliance_type": "MILITARY", "offer_gold": 100}}` — `alliance_type`: "MILITARY" | "RESEARCH" | "CULTURAL" | "ECONOMIC" | "RELIGIOUS" (required). You can also add trade items (same FLAT params as propose_trade).
+- `{"action": "respond_to_trade", "params": {"other_player_id": 1, "accept": true}}` — accept/reject an incoming mailbox deal from a managed civ (see DEAL MAILBOX in state).
+- `{"action": "respond_to_diplo_action", "params": {"other_player_id": 1, "accept": true}}` — accept/reject an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy) from a managed civ. Accept marks it; the proposer's action takes effect on the proposer's next turn. Reject discards it.
 
 Messaging (managed-player chat; see MESSAGES in state):
-    send_message(other_player_id, text) — send a free-text message to a
-        managed civ or the human. To a managed civ it is filed for that agent
-        to read next turn; to the human it is also rendered in their native
-        in-game chat panel. Incoming messages to this seat appear in the
-        === MESSAGES === section of get_full_game_state.
+- `{"action": "send_message", "params": {"other_player_id": 1, "text": "Ready to make a deal?"}}` — send a free-text message to a managed civ or the human. To a managed civ it is filed for that agent to read next turn; to the human it is also rendered in their native in-game chat panel. Incoming messages to this seat appear in the === MESSAGES === section of get_full_game_state.
 
 Governance:
-    set_policies(assignments) — assignments: {slot_index: "POLICY_TYPE"}
-    change_government(government_type) — e.g. GOVERNMENT_OLIGARCHY
-    appoint_governor(governor_type) — e.g. GOVERNOR_THE_CARDINAL
-    assign_governor(governor_type, city_id)
-    promote_governor(governor_type, promotion_type)
-    send_envoy(city_state_player_id)
-    choose_dedication(dedication_index)
+- `{"action": "set_policies", "params": {"assignments": {"<slot_index>": "POLICY_TYPE"}}}` — assignments maps each slot index to the policy type to place in it
+- `{"action": "change_government", "params": {"government_type": "GOVERNMENT_OLIGARCHY"}}`
+- `{"action": "appoint_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL"}}`
+- `{"action": "assign_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "city_id": 3}}`
+- `{"action": "promote_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "promotion_type": "PROMOTION_..."}}`
+- `{"action": "send_envoy", "params": {"city_state_player_id": 5}}`
+- `{"action": "choose_dedication", "params": {"dedication_index": 0}}`
 
 Religion & Great People:
-    choose_pantheon(belief_type) — e.g. BELIEF_RELIGIOUS_SETTLEMENTS
-    found_religion(religion_type, follower_belief, founder_belief)
-    recruit_great_person(individual_id)
-    patronize_great_person(individual_id, yield_type="YIELD_GOLD")
-    reject_great_person(individual_id)
-    found_religion covers the whole founding flow — it activates the Great
-    Prophet (who must be on a completed Holy Site with movement) and picks
-    the religion and both beliefs in one call.
-    Other Great People activate via unit_action(unit_id,
-    UNITCOMMAND_ACTIVATE_GREAT_PERSON) when standing on their matching
-    district. Religious unit actions (spread religion, remove heresy,
-    launch inquisition, ...) also go through unit_action with the ids
-    shown in the unit's ">> unit_action:" list, e.g.
-    unit_action(unit_id, UNITOPERATION_SPREAD_RELIGION).
+- `{"action": "choose_pantheon", "params": {"belief_type": "BELIEF_RELIGIOUS_SETTLEMENTS"}}`
+- `{"action": "found_religion", "params": {"religion_type": "RELIGION_...", "follower_belief": "BELIEF_...", "founder_belief": "BELIEF_..."}}` — covers the whole founding flow: it activates the Great Prophet (who must be on a completed Holy Site with movement) and picks the religion and both beliefs in one call.
+- `{"action": "recruit_great_person", "params": {"individual_id": 0}}`
+- `{"action": "patronize_great_person", "params": {"individual_id": 0, "yield_type": "YIELD_GOLD"}}` — `yield_type` (optional, default "YIELD_GOLD")
+- `{"action": "reject_great_person", "params": {"individual_id": 0}}`
+- Other Great People activate via `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITCOMMAND_ACTIVATE_GREAT_PERSON"}}` when standing on their matching district. Religious unit actions (spread religion, remove heresy, launch inquisition, ...) also go through unit_action with the ids shown in the unit's ">> unit_action:" list, e.g. `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_SPREAD_RELIGION"}}`.
 
 Trade routes & spies:
-    make_trade_route(unit_id, target_x, target_y)
-    Spies: unit_action(unit_id, UNITOPERATION_SPY_TRAVEL_NEW_CITY, x, y) to
-        reposition, unit_action(unit_id, UNITOPERATION_SPY_<OP>, x, y) to run
-        a mission (OP is one of the ops listed for the spy in the Spies
-        section: COUNTERSPY, GAIN_SOURCES, SIPHON_FUNDS, STEAL_TECH_BOOST,
-        SABOTAGE_PRODUCTION, GREAT_WORK_HEIST, RECRUIT_PARTISANS,
-        NEUTRALIZE_GOVERNOR, FABRICATE_SCANDAL). Offensive missions need the
-        spy in the target city first.
+- `{"action": "make_trade_route", "params": {"unit_id": 0, "target_x": 10, "target_y": 20}}`
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_SPY_TRAVEL_NEW_CITY", "target_x": 10, "target_y": 20}}` — reposition a spy
+- `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_SPY_SIPHON_FUNDS", "target_x": 10, "target_y": 20}}` — run a spy mission (replace SIPHON_FUNDS with one of the ops listed for the spy in the Spies section: COUNTERSPY, GAIN_SOURCES, SIPHON_FUNDS, STEAL_TECH_BOOST, SABOTAGE_PRODUCTION, GREAT_WORK_HEIST, RECRUIT_PARTISANS, NEUTRALIZE_GOVERNOR, FABRICATE_SCANDAL). Offensive missions need the spy in the target city first.
 
 World Congress:
-    queue_wc_votes(votes) — votes: list of {hash, option (1=A|2=B), target,
-        votes}; registers a one-shot handler that casts them at end of turn
-    vote_world_congress(resolution_hash, option, target_index, num_votes)
-        — option 1=A, 2=B; target_index is 0-based
-    submit_congress() — submit votes and resume the turn
+- `{"action": "queue_wc_votes", "params": {"votes": [{"hash": 123, "option": 1, "target": 0, "votes": 3}]}}` — registers a one-shot handler that casts the votes at end of turn. Each vote object has `hash` (resolution hash), `option` (1=A | 2=B), `target` (player id) and `votes` (how many votes to spend).
+- `{"action": "vote_world_congress", "params": {"resolution_hash": 123, "option": 1, "target_index": 0, "num_votes": 3}}` — option 1=A, 2=B; `target_index` is 0-based
+- `{"action": "submit_congress", "params": {}}` — submit votes and resume the turn
 
 ## Diary
 
@@ -236,16 +178,16 @@ Before building an improvement, consider whether it actually improves the yields
 You can also gain a lot of value by harvesting features or resources. Weight the value gained against the effect on the city's yields. For instance, if the city already has several free good tiles to work, it will take a long time before harvesting one tile has any negative effect on city yields. But harvesting the best currently worked tile may be a bad idea. And later in the game you will be able to re-plant forests. It's always worth harvesting before placing a district since that would remove the feature and resource anyways.
 
 ### Spending Gold & Faith
-Gold and faith sitting idle lose value over time. `purchase_item(city_id, item_type, item_name)` buys units/buildings instantly with gold (or faith via `yield_type="YIELD_FAITH"`). `purchase_tile(city_id, x, y)` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it. When you purchase a unit it will have zero movement points so you can't use it until next turn.
+Gold and faith sitting idle lose value over time. `{"action": "purchase_item", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_WARRIOR", "yield_type": "YIELD_GOLD"}}` buys units/buildings instantly with gold (or faith by setting `"yield_type"` to `"YIELD_FAITH"`). `{"action": "purchase_tile", "params": {"city_id": 3, "x": 10, "y": 20}}` buys a specific tile. `patronize_great_person` buys a GP outright. If you're saving, name the item and the turn — otherwise, deploy it. When you purchase a unit it will have zero movement points so you can't use it until next turn.
 
 ### Expansion
-Each city multiplies your districts, yields, and Great Person generation. The gap between a 3-city and 5-city empire by the Medieval era is hard to recover from. If city count is lagging, a settler is typically the highest-impact production choice — more so than most infrastructure in existing cities. Check loyalty before settling: negative-loyalty sites near rivals need a governor assigned immediately via `assign_governor(governor_type, city_id)` or they'll flip. Cities must have at least a 3 tile gap between them, ie be 4 tiles away from the nearest city.
+Each city multiplies your districts, yields, and Great Person generation. The gap between a 3-city and 5-city empire by the Medieval era is hard to recover from. If city count is lagging, a settler is typically the highest-impact production choice — more so than most infrastructure in existing cities. Check loyalty before settling: negative-loyalty sites near rivals need a governor assigned immediately via `{"action": "assign_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "city_id": 3}}` or they'll flip. Cities must have at least a 3 tile gap between them, ie be 4 tiles away from the nearest city.
 
 ### Growth
-Stagnant cities fall behind exponentially. If any city has food surplus ≤ 0, that's worth fixing this turn (Farm, Granary, domestic Trade Route, or `set_city_focus(city_id, "FOOD")`). Turns-to-growth over 15 is a signal the city needs food or housing.
+Stagnant cities fall behind exponentially. If any city has food surplus ≤ 0, that's worth fixing this turn (Farm, Granary, domestic Trade Route, or `{"action": "set_city_focus", "params": {"city_id": 3, "focus": "FOOD"}}`). Turns-to-growth over 15 is a signal the city needs food or housing.
 
 ### Exploration
-You can't settle what you can't see, and you can't counter threats you don't know exist. A scout set to auto-explore (`unit_action(unit_id, UNITOPERATION_AUTOMATE_EXPLORE)`) is one of the best investments in the early game. If a scout is lost or stuck, replacing it early keeps the information flow going.
+You can't settle what you can't see, and you can't counter threats you don't know exist. A scout set to auto-explore (`{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_AUTOMATE_EXPLORE"}}`) is one of the best investments in the early game. If a scout is lost or stuck, replacing it early keeps the information flow going.
 
 ### Diplomacy
 Diplomatic and trade actions are issued through `execute_commands`; see the Diplomacy reference section for the full action list. In shared (handoff) games, proposals to managed civs are routed through a mailbox so the built-in AI does not auto-answer them. You can also use the send_message command to strategize, cooperate with or manipulate your opponents.
@@ -259,10 +201,10 @@ If favor is accumulating above 100 with no World Congress imminent, it's worth t
 After declaring war, you can immediately attack enemy units and cities, capture enemy civilians and condemn enemy religious units as heretics. If you have time, you can call get_full_game_state again to see available war actions for your units (takes about 15s).
 
 ### Wartime
-Cities with walls can fire at enemies via `city_attack(city_id, target_x, target_y)` (range 2). You must build the walls in the city center (or research the steel technology). Cities that fall are expensive to recover — when you capture a city, `resolve_city_capture(action)` with `keep`, `reject`, `raze`, or `liberate_founder`/`liberate_previous` resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `propose_peace(other_player_id)` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
+Cities with walls can fire at enemies via `{"action": "city_attack", "params": {"city_id": 3, "target_x": 10, "target_y": 20}}` (range 2). You must build the walls in the city center (or research the steel technology). Cities that fall are expensive to recover — when you capture a city, `{"action": "resolve_city_capture", "params": {"action": "keep"}}` (the `"action"` param is one of "keep", "reject", "raze", "liberate_founder", "liberate_previous") resolves the decision. If your military strength is significantly below an enemy's and you're not making progress, `{"action": "propose_peace", "params": {"other_player_id": 1}}` — available after a 10-turn cooldown — is usually better than a war of attrition while the rest of the map moves on.
 
 ### Military Readiness
-Keep an eye on opponents' military strength. A neighbor at 2x+ your strength who isn't a friend or ally is a risk worth taking seriously. Make sure you have a plan to handle if your opponent becomes aggressive. Units become progressively weaker relative to rivals if not upgraded (Slinger→Archer with Archery, Warrior→Swordsman with Iron Working) — use `unit_action(unit_id, UNITCOMMAND_UPGRADE)`.
+Keep an eye on opponents' military strength. A neighbor at 2x+ your strength who isn't a friend or ally is a risk worth taking seriously. Make sure you have a plan to handle if your opponent becomes aggressive. Units become progressively weaker relative to rivals if not upgraded (Slinger→Archer with Archery, Warrior→Swordsman with Iron Working) — use `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITCOMMAND_UPGRADE"}}`.
 
 ### Barbarian Camps
 Camps upgrade with the era — an Ancient-era camp spawns Warriors; the same camp in the Medieval era spawns Man-at-Arms. Clearing a camp within a few turns of finding it is almost always easier than fighting the units it produces over many turns.
@@ -270,7 +212,7 @@ Camps upgrade with the era — an Ancient-era camp spawns Warriors; the same cam
 ### Religion
 Religious victory is the easiest win condition to miss because it produces no notifications and unfolds slowly. If a rival religion reaches majority in most civs, the window for a response narrows quickly. Religious units bought from a city carry **that city's majority religion** — buy them from cities where your own religion is majority, not a converted city.
 
-To found a religion: build a Holy Site → earn a Great Prophet → `get_religion_beliefs()` to see available beliefs → `found_religion(religion_type, follower_belief, founder_belief)`. The Great Prophet pool fills early (roughly half the major civs).
+To found a religion: build a Holy Site → earn a Great Prophet → `get_religion_beliefs()` to see available beliefs → `{"action": "found_religion", "params": {"religion_type": "RELIGION_...", "follower_belief": "BELIEF_...", "founder_belief": "BELIEF_..."}}`. The Great Prophet pool fills early (roughly half the major civs).
 
 Trade routes spread the origin city's religion to the destination — worth factoring into routing decisions if conversion pressure is a concern.
 
@@ -329,16 +271,16 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 
 Common improvements: `IMPROVEMENT_FARM`, `IMPROVEMENT_MINE`, `IMPROVEMENT_QUARRY`, `IMPROVEMENT_PLANTATION`, `IMPROVEMENT_PASTURE`, `IMPROVEMENT_CAMP`, `IMPROVEMENT_FISHING_BOATS`, `IMPROVEMENT_LUMBER_MILL`
 
-Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `unit_action(unit_id, UNITOPERATION_REMOVE_FEATURE)` to chop/harvest the feature first, then `unit_action(unit_id, UNITOPERATION_BUILD_IMPROVEMENT, improvement=...)` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
+Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REMOVE_FEATURE"}}` to chop/harvest the feature first, then `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_IMPROVEMENT", "improvement": "IMPROVEMENT_FARM"}}` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
 
-Builders repair tile improvements via `unit_action(unit_id, UNITOPERATION_REPAIR)`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
+Builders repair tile improvements via `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REPAIR"}}`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
 
-Military Engineers (requires Encampment + Armory): `unit_action(unit_id, UNITOPERATION_BUILD_ROUTE)` builds a railroad on the current tile (no charges consumed; costs 1 Iron + 1 Coal per tile). `unit_action` with `IMPROVEMENT_FORT` or `IMPROVEMENT_AIRSTRIP` uses charges. Building a railroad consumes all movement — one tile per engineer per turn.
+Military Engineers (requires Encampment + Armory): `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_ROUTE"}}` builds a railroad on the current tile (no charges consumed; costs 1 Iron + 1 Coal per tile). Building `IMPROVEMENT_FORT` or `IMPROVEMENT_AIRSTRIP` via unit_action uses charges. Building a railroad consumes all movement — one tile per engineer per turn.
 
 | Other unit tools | |
 |--------|--------|
 | `skip_remaining_units` | Skip all units with remaining moves (useful after diplomacy) |
-| `unit_action(unit_id, UNITCOMMAND_UPGRADE)` | Upgrade to next type (requires tech + resources + gold) |
+| `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITCOMMAND_UPGRADE"}}` | Upgrade to next type (requires tech + resources + gold) |
 
 Taking an action with a unit other than movement generally consumes all movement points.
 
@@ -348,12 +290,12 @@ Taking an action with a unit other than movement generally consumes all movement
 - **Units**: unmoved units need orders (move / skip / fortify)
 - **Production**: city queue empty — set new production
 - **Research/Civic**: completed — choose next
-- **Governor**: point available — `appoint_governor` / `assign_governor(governor_type, city_id)` / `promote_governor(governor_type, promotion_type)`
+- **Governor**: point available — `{"action": "appoint_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL"}}` / `{"action": "assign_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "city_id": 3}}` / `{"action": "promote_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "promotion_type": "PROMOTION_..."}}`
 - **Policy Slot**: empty — `set_policies`
 - **Pantheon/Religion**: faith threshold reached — `get_pantheon_beliefs` → `choose_pantheon`; for founding: `get_religion_beliefs` → `found_religion`
 - **Envoys**: tokens available — `send_envoy`
 - **Dedication**: new era — `get_dedications` → `choose_dedication`
-- **City Capture**: conquered or disloyal city — `resolve_city_capture("keep"/"reject"/"raze"/"liberate_founder"/"liberate_previous")`
+- **City Capture**: conquered or disloyal city — `{"action": "resolve_city_capture", "params": {"action": "keep"}}` (the `"action"` param is one of "keep"/"reject"/"raze"/"liberate_founder"/"liberate_previous")
 - Move responses show the **target tile**, not arrival position (async pathfinding)
 
 Note that if any production, research or similar has 1 turn left, that is not a blocker. It will simply complete next turn. You should never count on any of these things blocking the turn, usually the end turn will go through regardless.
@@ -367,18 +309,18 @@ you cannot be declined and are reported in your turn report. There is no
 tool for replying to an AI leader dialogue — do not look for one.
 
 **Proactive:**
-- `send_diplomatic_action(other_player_id, action)` — action: DIPLOMATIC_DELEGATION (25g, worth sending on first meeting), DECLARE_FRIENDSHIP (requires Friendly status), RESIDENT_EMBASSY (requires Writing tech), plus DENOUNCE and the war declarations. For the three response-able actions (delegation/embassy/friendship) targeting a managed civ, the proposal is filed in the DIPLOMACY MAILBOX instead of the engine — the target answers on its own turn and your action takes effect on your next turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go straight to the engine.
-- `form_alliance(other_player_id, alliance_type)` — alliance_type: MILITARY/RESEARCH/CULTURAL/ECONOMIC/RELIGIOUS; requires declared friendship + Diplomatic Service civic. Targeting a managed civ routes through the deal mailbox after an eligibility check.
-- `propose_trade(other_player_id, ...)` — pass FLAT params: offer_gold, offer_gold_per_turn, offer_resources (comma-separated RESOURCE_TYPE names), offer_favor, offer_open_borders, plus the request_* equivalents; joint_war_target (player ID) for a joint war. Targeting a managed civ routes through the deal mailbox.
-- `propose_peace(other_player_id)` — white peace; eligibility (at war, past cooldown) is checked first. Targeting a managed civ routes through the deal mailbox.
-- `respond_to_trade(other_player_id, accept)` — accept/reject an incoming mailbox deal from a managed civ (see DEAL MAILBOX in get_full_game_state).
-- `respond_to_diplo_action(other_player_id, accept)` — accept/reject an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy) from a managed civ. Accept marks it; the proposer's action takes effect on the proposer's next turn.
+- `{"action": "send_diplomatic_action", "params": {"other_player_id": 1, "action": "DIPLOMATIC_DELEGATION"}}` — the `"action"` param: DIPLOMATIC_DELEGATION (25g, worth sending on first meeting), DECLARE_FRIENDSHIP (requires Friendly status), RESIDENT_EMBASSY (requires Writing tech), plus DENOUNCE and the war declarations. For the three response-able actions (delegation/embassy/friendship) targeting a managed civ, the proposal is filed in the DIPLOMACY MAILBOX instead of the engine — the target answers on its own turn and your action takes effect on your next turn. One-way actions (DENOUNCE, war) and actions to unmanaged civs go straight to the engine.
+- `{"action": "form_alliance", "params": {"other_player_id": 1, "alliance_type": "MILITARY"}}` — alliance_type: MILITARY/RESEARCH/CULTURAL/ECONOMIC/RELIGIOUS; requires declared friendship + Diplomatic Service civic. Targeting a managed civ routes through the deal mailbox after an eligibility check.
+- `{"action": "propose_trade", "params": {"other_player_id": 1, "offer_gold": 100, ...}}` — add FLAT trade params: offer_gold, offer_gold_per_turn, offer_resources (comma-separated RESOURCE_TYPE names), offer_favor, offer_open_borders, plus the request_* equivalents; joint_war_target (player ID) for a joint war. Targeting a managed civ routes through the deal mailbox.
+- `{"action": "propose_peace", "params": {"other_player_id": 1}}` — white peace; eligibility (at war, past cooldown) is checked first. Targeting a managed civ routes through the deal mailbox.
+- `{"action": "respond_to_trade", "params": {"other_player_id": 1, "accept": true}}` — accept/reject an incoming mailbox deal from a managed civ (see DEAL MAILBOX in get_full_game_state).
+- `{"action": "respond_to_diplo_action", "params": {"other_player_id": 1, "accept": true}}` — accept/reject an incoming DIPLOMACY MAILBOX proposal (friendship/delegation/embassy) from a managed civ. Accept marks it; the proposer's action takes effect on the proposer's next turn.
 - Check the diplomacy section of `get_full_game_state` for defensive pacts before declaring war.
 - Leader agendas appear in the diplomacy section of `get_full_game_state` — historical agendas are always visible; random agendas require Secret diplomatic visibility (spy in their capital or alliance). Use agendas to predict AI behavior and avoid relationship penalties.
 
-**Espionage:** `unit_action(unit_id, UNITOPERATION_SPY_TRAVEL_NEW_CITY, target_x, target_y)` to a city first, then `unit_action(unit_id, UNITOPERATION_SPY_<OP>, target_x, target_y)` to run operations. OP: COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL. Offensive missions only work after the spy arrives.
+**Espionage:** `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_SPY_TRAVEL_NEW_CITY", "target_x": 10, "target_y": 20}}` to a city first, then `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_SPY_<OP>", "target_x": 10, "target_y": 20}}` to run operations. OP: COUNTERSPY | GAIN_SOURCES | SIPHON_FUNDS | STEAL_TECH_BOOST | SABOTAGE_PRODUCTION | GREAT_WORK_HEIST | RECRUIT_PARTISANS | NEUTRALIZE_GOVERNOR | FABRICATE_SCANDAL. Offensive missions only work after the spy arrives.
 
-**City-states:** `send_envoy(city_state_player_id)`. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic. Whichever player has the most envoys (minimum 3) becomes the suzerain and will get that city-state's unique bonus and earn +1 favor/turn. All players with envoys gain a bonus yield of the city-state's associated resource (yields for gold are double):
+**City-states:** `{"action": "send_envoy", "params": {"city_state_player_id": 5}}`. Types: Scientific/Industrial/Trade/Cultural/Religious/Militaristic. Whichever player has the most envoys (minimum 3) becomes the suzerain and will get that city-state's unique bonus and earn +1 favor/turn. All players with envoys gain a bonus yield of the city-state's associated resource (yields for gold are double):
 1 envoy => +1 yield per corresponding level 1 building (eg library for science)
 3 envoys => +2 yield per corresponding level 2 building (eg university for science)
 6 envoys => +3 yield per corresponding level 3 building (eg research lab for science)
@@ -389,11 +331,11 @@ tool for replying to an AI leader dialogue — do not look for one.
 
 **Research:** try to research techs and civics in such an order that you make optimal use of eurekas and inspirations.
 
-**Tiles:** the game state shows purchasable tiles by city. `purchase_tile(city_id, x, y)` — buy border tiles with gold for strategic resources or district placement.
+**Tiles:** the game state shows purchasable tiles by city. `{"action": "purchase_tile", "params": {"city_id": 3, "x": 10, "y": 20}}` — buy border tiles with gold for strategic resources or district placement.
 
 ## District Placement
 
-Use `set_city_production` with target_x/y to place districts. Plan your empire so that districts will get high adjacency bonuses later on. There are later game policies which multiply the adjacency bonuses so having well planned district placement can yield a lot of value. Districts can not be moved once placed so you need to find a balance between what your empire needs now to expand and what will be needed later in the game. Also the number of districts allowed in a city is limited by population, so choose which districts to build carefully to support your overall strategy. Limits are:
+Place districts via `{"action": "set_city_production", "params": {"city_id": 3, "item_type": "DISTRICT", "item_name": "DISTRICT_CAMPUS", "target_x": 10, "target_y": 20}}`. Plan your empire so that districts will get high adjacency bonuses later on. There are later game policies which multiply the adjacency bonuses so having well planned district placement can yield a lot of value. Districts can not be moved once placed so you need to find a balance between what your empire needs now to expand and what will be needed later in the game. Also the number of districts allowed in a city is limited by population, so choose which districts to build carefully to support your overall strategy. Limits are:
 
 • 1  Population for 1 District
 • 4  Population for 2 Districts
@@ -419,18 +361,18 @@ In addition, there is a general +1 per 2 adjacent districts, and the government 
 ## Trade Routes
 
 - `get_trade_destinations(unit_id)` → available destinations
-- `make_trade_route(unit_id, target_x, target_y)` → start route
+- `{"action": "make_trade_route", "params": {"unit_id": 0, "target_x": 10, "target_y": 20}}` → start route
 - Domestic routes: food + production to new cities. International: gold.
 - Capacity: 1 from Foreign Trade civic, +1 per Market/Lighthouse
 - Idle routes are free yields going uncollected
 
 ## Great People
 
-- `recruit_great_person(individual_id)` — recruit with accumulated GP points (check `[CAN RECRUIT]`)
-- `patronize_great_person(individual_id)` — buy instantly with gold or faith
-- `reject_great_person(individual_id)` — pass, advance to next candidate in that class
+- `{"action": "recruit_great_person", "params": {"individual_id": 0}}` — recruit with accumulated GP points (check `[CAN RECRUIT]`)
+- `{"action": "patronize_great_person", "params": {"individual_id": 0, "yield_type": "YIELD_GOLD"}}` — buy instantly with gold or faith
+- `{"action": "reject_great_person", "params": {"individual_id": 0}}` — pass, advance to next candidate in that class
 - Rivals will recruit what you pass on — recruiting quickly tends to be worth it
-- Once recruited, move the GP to its matching completed district; activate with `unit_action(unit_id, UNITCOMMAND_ACTIVATE_GREAT_PERSON)`
+- Once recruited, move the GP to its matching completed district; activate with `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITCOMMAND_ACTIVATE_GREAT_PERSON"}}`
 - Great Prophets are the exception: they found religions via `found_religion` on a completed Holy Site (one command does the whole flow)
 - The unit's "not yet possible" line shows the activation requirement (e.g. matching district) before the GP is in position
 - Don't delete GPs — they show 0 builder charges but that's a different system; they're not consumed until activated
@@ -441,7 +383,7 @@ WC fires synchronously inside `end_turn()` — register votes **before** calling
 
 **Voting flow:**
 1. Review resolutions (options A/B, target list, favor costs)
-2. `queue_wc_votes(votes='[{"hash": H, "option": 1, "target": 0, "votes": N}]')`
+2. `{"action": "queue_wc_votes", "params": {"votes": [{"hash": H, "option": 1, "target": 0, "votes": N}]}}`
 3. `end_turn()` — handler fires, votes deploy, turn advances
 
 - `hash`: from `get_world_congress`; `option`: 1=A / 2=B; `target`: player_id resolved to list index at runtime; `votes`: max to spend
