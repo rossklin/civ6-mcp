@@ -3,7 +3,8 @@
 -- roundtrip). __MCP_MANAGED_IDS_TAG__ is substituted Python-side with a Lua
 -- table of agent-managed player ids ({} or {[1]=true,[3]=true}): managed
 -- civs are effectively "us", so their relationship state, modifiers and
--- agendas are hidden.
+-- agendas are hidden. __MCP_SENTINEL_TAG__ is replaced with the response
+-- sentinel (see _helpers.SENTINEL).
 local managed = __MCP_MANAGED_IDS_TAG__
 local me = Game.GetLocalPlayer()
 local pDiplo = Players[me]:GetDiplomacy()
@@ -420,3 +421,4 @@ else
     end
 end
 print(table.concat(out, "\n"))
+print("__MCP_SENTINEL_TAG__")

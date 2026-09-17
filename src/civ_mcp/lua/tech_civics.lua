@@ -1,5 +1,7 @@
 -- Tech & civics status, emitted as natural text (same format that
 -- narrate_tech_civics used to produce from the pipe-delimited roundtrip).
+-- __MCP_SENTINEL_TAG__ is replaced with the response sentinel
+-- (see _helpers.SENTINEL).
 local id = Game.GetLocalPlayer()
 local te = Players[id]:GetTechs()
 local cu = Players[id]:GetCulture()
@@ -361,3 +363,4 @@ end
 emitByEra("Locked civics (prerequisites missing):", lockedCivicsByEra)
 
 print(table.concat(out, "\n"))
+print("__MCP_SENTINEL_TAG__")

@@ -1,3 +1,6 @@
+-- Map dump of explored tiles, emitted as natural text.
+-- __MCP_SENTINEL_TAG__ is replaced with the response sentinel
+-- (see _helpers.SENTINEL).
 local me = Game.GetLocalPlayer()
 local vis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
@@ -253,3 +256,4 @@ else
     print(#lines .. " tiles:")
     print(table.concat(lines, "\n"))
 end
+print("__MCP_SENTINEL_TAG__")

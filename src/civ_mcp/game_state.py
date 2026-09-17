@@ -1437,20 +1437,26 @@ class GameState:
         # relationship state, modifiers and agendas are hidden.
         managed_lua = "{" + ",".join(f"[{pid}]=true" for pid in managed_ids) + "}"
         lines: list[str] = await self.conn.execute_write(
-            load_lua_template("diplomacy.lua").replace(
-                "__MCP_MANAGED_IDS_TAG__", managed_lua
-            )
+            load_lua_template("diplomacy.lua")
+            .replace("__MCP_MANAGED_IDS_TAG__", managed_lua)
+            .replace("__MCP_SENTINEL_TAG__", lq.SENTINEL)
         )
         text = text + "\n\n## Known Civilizations\n" + "\n".join(lines)
 
         # Append the tech/civics query output
         lines: list[str] = await self.conn.execute_write(
-            load_lua_template("tech_civics.lua")
+            load_lua_template("tech_civics.lua").replace(
+                "__MCP_SENTINEL_TAG__", lq.SENTINEL
+            )
         )
         text = text + "\n\n## Research & Civics\n" + "\n".join(lines)
 
         # Append the map query output
-        lines: list[str] = await self.conn.execute_write(load_lua_template("map.lua"))
+        lines: list[str] = await self.conn.execute_write(
+            load_lua_template("map.lua").replace(
+                "__MCP_SENTINEL_TAG__", lq.SENTINEL
+            )
+        )
         text = text + """
 
 ## Map
@@ -1463,7 +1469,11 @@ Note: neighbours with "cliffs" have a cliff crossing, which is impassable.
         text = text + "\n".join(lines)
 
         # Append the cities query output
-        lines: list[str] = await self.conn.execute_write(load_lua_template("cities.lua"))
+        lines: list[str] = await self.conn.execute_write(
+            load_lua_template("cities.lua").replace(
+                "__MCP_SENTINEL_TAG__", lq.SENTINEL
+            )
+        )
         text = text + "\n\n## Cities\n" + "\n".join(lines)
 
         # Append diary plans (long-term + next-turn) from the JSONL file

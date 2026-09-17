@@ -1,4 +1,6 @@
--- city production
+-- Full narrated per-city report (production options, defense, buildings,
+-- distance matrix). __MCP_SENTINEL_TAG__ is replaced with the response
+-- sentinel (see _helpers.SENTINEL).
 local function CityProductionOptions(cityId)
     -- Section headings in display order, each with its column header.
     -- Headings and headers are emitted only for sections that collect items,
@@ -271,3 +273,4 @@ for i = 1, #cityCoords do for j = i + 1, #cityCoords do
     local d = Map.GetPlotDistance(cityCoords[i].x, cityCoords[i].y, cityCoords[j].x, cityCoords[j].y)
     print("Distance from " .. cityCoords[i].name .. " to " .. cityCoords[j].name .. " is " .. d)
 end end
+print("__MCP_SENTINEL_TAG__")
