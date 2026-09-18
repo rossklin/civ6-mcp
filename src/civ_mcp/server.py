@@ -2059,7 +2059,10 @@ async def _logged(
         pass
     return result
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(
+        annotations={"readOnlyHint": True},
+        meta={"anthropic/maxResultSizeChars": 500000},
+)
 async def get_agent_reference(ctx: Context) -> str:
     """Get the agent reference instructions.
     Describes the game rules, game concepts and how to use the other tools.
