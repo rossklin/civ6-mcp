@@ -660,7 +660,7 @@ def narrate_policies(gov: lq.GovernmentStatus) -> str:
                     lines.append(f"    {p.name} ({p.policy_type}): {p.description}")
 
     lines.append(
-        "\nUse set_policies with slot assignments, e.g. '0=POLICY_AGOGE,1=POLICY_URBAN_PLANNING'"
+        "\nUse set_policies to fill ALL slots at once, e.g. {\"action\": \"set_policies\", \"params\": {\"assignments\": {\"0\": \"POLICY_AGOGE\", \"1\": \"POLICY_URBAN_PLANNING\"}}}"
     )
     lines.append("Wildcard slots can accept any policy type.")
     return "\n".join(lines)

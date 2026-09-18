@@ -118,7 +118,7 @@ Messaging (managed-player chat; see MESSAGES in state):
 - `{"action": "send_message", "params": {"other_player_id": 1, "text": "Ready to make a deal?"}}` — send a free-text message to a managed civ or the human. To a managed civ it is filed for that agent to read next turn; to the human it is also rendered in their native in-game chat panel. Incoming messages to this seat appear in the === MESSAGES === section of get_full_game_state.
 
 Governance:
-- `{"action": "set_policies", "params": {"assignments": {"<slot_index>": "POLICY_TYPE"}}}` — assignments maps each slot index to the policy type to place in it
+- `{"action": "set_policies", "params": {"assignments": {"<slot_index>": "POLICY_TYPE"}}}` — assignments maps EVERY slot of your current government to the policy to place in it (slot indices and types are in the Policies section of game state). A government is only valid with all slots filled, so the assignment must be complete: all slots are refilled in one atomic change and there is no partial update.
 - `{"action": "change_government", "params": {"government_type": "GOVERNMENT_OLIGARCHY"}}`
 - `{"action": "appoint_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL"}}`
 - `{"action": "assign_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "city_id": 3}}`
