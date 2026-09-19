@@ -650,7 +650,7 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
         _, notes = await _auto_clear_diplomacy(gs)
         gs._diplo_auto_notes.extend(notes)
     except Exception:
-        log.debug("Pre-end-turn diplomacy auto-clear failed", exc_info=True)
+        log.warning("Pre-end-turn diplomacy auto-clear failed", exc_info=True)
 
     # 2. Pre-dismiss any ExclusivePopupManager popups (wonder, disaster, era)
     # that may hold engine locks blocking turn advancement.
@@ -1167,7 +1167,7 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                 continue
             break  # no blockers left
         except Exception:
-            log.debug("Blocking check failed, proceeding anyway", exc_info=True)
+            log.warning("Blocking check failed, proceeding anyway", exc_info=True)
             break
 
     # Take pre-turn snapshot.
@@ -1620,7 +1620,7 @@ async def build_post_turn_report(
             gs.conn.last_autosave_turn = turn_after
             cleanup_old_autosaves(keep=8)
         except Exception:
-            log.debug("MCP autosave failed for T%s", turn_after, exc_info=True)
+            log.warning("MCP autosave failed for T%s", turn_after, exc_info=True)
 
     events: list[lq.TurnEvent] = []
     if snap_before and snap_after:
@@ -1633,7 +1633,7 @@ async def build_post_turn_report(
         _, notes = await _auto_clear_diplomacy(gs)
         gs._diplo_auto_notes.extend(notes)
     except Exception:
-        log.debug("Post-turn diplomacy auto-clear failed", exc_info=True)
+        log.warning("Post-turn diplomacy auto-clear failed", exc_info=True)
     for note in gs._diplo_auto_notes:
         events.append(
             lq.TurnEvent(priority=1, category="diplomacy", message=note)
@@ -1710,7 +1710,7 @@ async def build_post_turn_report(
                 )
             )
         except Exception:
-            log.debug("10-turn victory check failed", exc_info=True)
+            log.warning("10-turn victory check failed", exc_info=True)
 
     # Growth alerts from post-turn city state
     if snap_after:

@@ -592,7 +592,7 @@ async def _open_app_context() -> AsyncIterator[AppContext]:
                 )
                 log.debug("Notification handler re-armed: %s", status)
             except Exception:
-                log.debug("Notification handler re-arm failed", exc_info=True)
+                log.warning("Notification handler re-arm failed", exc_info=True)
 
         keeper.add_post_install_hook(_rearm_deal_shim)
         keeper.add_post_install_hook(_rearm_note_handler)
@@ -1970,7 +1970,7 @@ async def _logged(
     try:
         refusal = await _check_turn_gate(ctx, tool_name, params)
     except Exception:
-        log.debug("Turn-gate check failed, allowing call", exc_info=True)
+        log.warning("Turn-gate check failed, allowing call", exc_info=True)
         refusal = None
     if refusal is not None:
         log.info("[T%s] %s(%s) GATED", turn, tool_name, _param_summary(params))
@@ -2199,7 +2199,7 @@ async def get_full_game_state(ctx: Context) -> str:
                             "directly.\n\n" + text
                         )
         except Exception:
-            log.debug(
+            log.warning(
                 "Failed to prepend deferred turn report", exc_info=True
             )
 
@@ -2229,7 +2229,7 @@ async def get_full_game_state(ctx: Context) -> str:
                         text += f"\n\nOutgoing to P{p.to_player}"
                         text += f" (proposal {p.proposal_id}): awaiting response."
         except Exception:
-            log.debug("Failed to append mailbox deals", exc_info=True)
+            log.warning("Failed to append mailbox deals", exc_info=True)
 
         # Append diplo mailbox (response-able actions to managed civs).
         try:
@@ -2274,7 +2274,7 @@ async def get_full_game_state(ctx: Context) -> str:
                             f" — {status}."
                         )
         except Exception:
-            log.debug("Failed to append diplo mailbox", exc_info=True)
+            log.warning("Failed to append diplo mailbox", exc_info=True)
 
         # Append chat messages (managed-player messaging).
         try:
@@ -2294,7 +2294,7 @@ async def get_full_game_state(ctx: Context) -> str:
                             other = m.from_player
                         text += f"\n[{who} P{other} (T{m.turn})] {m.text}"
         except Exception:
-            log.debug("Failed to append messages", exc_info=True)
+            log.warning("Failed to append messages", exc_info=True)
 
         # The turn timer starts now, at completion: get_full_game_state's
         # own (slow) runtime is not charged against the seat's budget.
@@ -3221,7 +3221,7 @@ async def end_turn(ctx: Context) -> str:
                     try:
                         await gs.submit_congress()
                     except Exception:
-                        log.debug("WC auto-submit failed", exc_info=True)
+                        log.warning("WC auto-submit failed", exc_info=True)
             else:
                 gs._wc_blocker_turn = current
                 gs._wc_blocker_count = 1

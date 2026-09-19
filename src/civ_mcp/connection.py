@@ -373,6 +373,7 @@ class GameConnection:
         engine = 0.0
         timed_out = False
         error = False
+        error_msg = ""
         lines: list[str] = []
         try:
             # Drain any stale messages — route through deal callbacks so
@@ -423,8 +424,9 @@ class GameConnection:
             self._dispatch_unsolicited(trailing)
 
             return lines
-        except Exception:
+        except Exception as e:
             error = True
+            error_msg = f"{type(e).__name__}: {e}"
             raise
         finally:
             _log_lua_timing(
@@ -435,6 +437,7 @@ class GameConnection:
                 lines=lines,
                 timed_out=timed_out,
                 error=error,
+                error_msg=error_msg,
             )
 
 
@@ -464,6 +467,7 @@ def _log_lua_timing(
     lines: list[str],
     timed_out: bool,
     error: bool,
+    error_msg: str = "",
 ) -> None:
     """Log per-command latency so slow tools are attributable.
 
@@ -473,10 +477,19 @@ def _log_lua_timing(
     ``total − engine`` is fixed drain overhead plus collection work here.
     Python-side CPU hotspots beyond that show up in pyinstrument reports
     (see CIV_MCP_PROFILE in server.py).
+
+    ``error_msg`` carries the exception text on the ERROR path. Callers up
+    the stack routinely swallow exceptions from best-effort round-trips at
+    DEBUG level, so this line — already INFO for errors — is the one place
+    a hard Lua error (e.g. a "Not Implemented" API in the wrong Lua state)
+    is guaranteed to be visible with its actual message.
     """
     label = " ".join(lua_code.split())[:80]
     result = f"{len(lines)} lines/{sum(len(l) for l in lines) // 1024}KB"
     status = "TIMEOUT" if timed_out else ("ERROR" if error else "ok")
+    if error_msg:
+        # Collapse the multi-line Lua traceback so the line stays scannable
+        status += " " + " ".join(error_msg.split())[:160]
     if _PROMOTE_LUA_TIMING or timed_out or error or engine >= _SLOW_ENGINE_SECONDS:
         log.info(
             "lua[%d] status=%s engine=%.0fms total=%.0fms out=%s | %s",

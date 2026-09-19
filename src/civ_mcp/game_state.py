@@ -133,7 +133,7 @@ class GameState:
             lines = await self.conn.execute_read(lq.build_gameover_check_gamecore())
             return lq.parse_gameover_response(lines)
         except Exception:
-            log.debug("Game-over check failed in GameCore too", exc_info=True)
+            log.warning("Game-over check failed in GameCore too", exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -556,7 +556,7 @@ class GameState:
                             )
                     return f"Error: CANNOT_START|{item_name} cannot start.{hint}"
             except Exception:
-                log.debug("Production readback failed", exc_info=True)
+                log.warning("Production readback failed", exc_info=True)
                 return f"Error: CANNOT_START|{item_name} (readback failed)"
 
         # OK-path verification. RequestOperation is fire-and-forget; even
@@ -580,7 +580,7 @@ class GameState:
                     f"with gold/faith."
                 )
             except Exception:
-                log.debug("OK-path production verify failed", exc_info=True)
+                log.warning("OK-path production verify failed", exc_info=True)
 
         return result
 
@@ -1496,7 +1496,7 @@ Note: neighbours with "cliffs" have a cliff crossing, which is impassable.
                 if notes:
                     text += f"\n\nNotes (accumulated learnings):\n{notes}"
         except Exception:
-            log.debug("Failed to append diary to full game state", exc_info=True)
+            log.warning("Failed to append diary to full game state", exc_info=True)
 
         return text
 
