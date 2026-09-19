@@ -227,9 +227,23 @@ pass). Two deviations from the plan text, both deliberate:
   also pre-cleared at recipe start), and the flag is armed only once
   `ms_ActiveSessionID == sid` — the human cannot click before the dialogue
   presents, so no real answer can slip through unreported.
-- **`build_send_diplo_action` refuses the three response-able actions**
-  outright with `ERR:NOT_SUPPORTED` (the plan's "or make it refuse them"
-  option). One-way actions (denounce, wars) are unchanged.
+- **`build_send_diplo_action` no longer refuses the three response-able
+  actions** toward unmanaged (built-in AI) civs. Reading the game's UI source
+  settled the question: the native button click is a *bare* `RequestSession`
+  (`DiplomacyActionView.lua` `OnSelectInitialDiplomacyStatement` ~470 — no
+  SendAction, no AddResponse; the base UI never calls SendAction at all). The
+  engine's AI answers on later frames and applies the effect from its own
+  response, which is why the old same-chunk `AddResponse`+`CloseSession`
+  could only fail. The builder now dispatches to three linear templates:
+  `build_send_diplo_proposal.lua` (response-able: validate + open + print
+  `SESSION_OPENED|sid|localPlayer|name`, stop), `build_send_war_declaration.lua`,
+  and `build_send_diplo_statement.lua` (one-way). Python
+  (`GameState._await_diplo_ai_answer`) polls the validity flip
+  (`build_diplo_effect_check`), uses DAV-context adoption as the
+  "statement delivered = AI answered" signal (no flip after the settle window
+  → REJECTED; nothing → NO_ANSWER), and tears down with the recipe teardown
+  (bare `CloseSession`, settle, DAV `Close()`). Managed targets still never
+  reach the engine path — mailbox routing unchanged.
 
 Live verification (§6): **items 2 and 3 both passed on 2026-08-22.**
 - **Item 2 (human→agent friendship)**: shim intercept → mailbox →

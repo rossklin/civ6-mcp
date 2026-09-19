@@ -26,7 +26,10 @@ Covers:
     → mailbox + chat echo), ``_handle_diplo_notification_click`` (recipe
     steps 1–6, flag armed only after adoption), ``_handle_diplo_response``.
   - Diplo shim builders in :mod:`civ_mcp.handoff` and the recipe step
-    builders + response-able refusal in :mod:`civ_mcp.lua.diplomacy`.
+    builders in :mod:`civ_mcp.lua.diplomacy`, plus the proposer-local
+    response-able flow to built-in AIs
+    (``GameState.send_diplomatic_action`` → ``_await_diplo_ai_answer``:
+    open-only Lua, effect-flip poll, adoption-gated rejection, teardown).
 """
 
 import asyncio
@@ -34,7 +37,7 @@ import json
 import re
 import types
 
-from civ_mcp import handoff, server, seats as seats_mod
+from civ_mcp import game_state, handoff, server, seats as seats_mod
 from civ_mcp.diplo_mailbox import DiploMailbox, PendingDiploProposal
 from civ_mcp.handoff import HandoffConfig
 from civ_mcp.lua import diplomacy as diplo_lua
@@ -722,6 +725,179 @@ class TestExecuteDiploAgreement:
 
 
 # ---------------------------------------------------------------------------
+# send_diplomatic_action — response-able flow toward a built-in AI
+# (proposer-local: open-only Lua, effect-flip poll, teardown)
+# ---------------------------------------------------------------------------
+
+
+def _zero_ai_answer_timings(monkeypatch):
+    """Collapse the AI-answer wait so tests run instantly."""
+    monkeypatch.setattr(game_state, "_DIPLO_AI_ANSWER_POLL_INTERVAL", 0.0)
+    monkeypatch.setattr(game_state, "_DIPLO_AI_ANSWER_TIMEOUT", 0.0)
+    monkeypatch.setattr(game_state, "_DIPLO_AI_REJECT_SETTLE", 0.0)
+    monkeypatch.setattr(game_state, "_DIPLO_AI_TEARDOWN_SETTLE", 0.0)
+
+
+class TestSendResponseableToUnmanagedAI:
+    def _gs(self, conn):
+        return game_state.GameState(conn)
+
+    def test_accepted_flips_validity_and_tears_down(self, monkeypatch):
+        """Open-only chunk (native button equivalent) → validity-flip poll →
+        ACCEPTED, with a bare CloseSession + DAV Close() teardown after."""
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],   # open chunk
+                ["VALID|false", "STATE|1|1"],      # effect poll: flipped
+                ["OK|CLOSED|7"],                   # teardown close
+            ),
+            named=(["DIPLO_VIEW_DISMISSED"],),     # teardown dismiss
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "DECLARE_FRIENDSHIP"))
+
+        assert result.startswith(
+            "OK:ACCEPTED|Cree accepted your friendship declaration")
+        # The open chunk is the native button: validate + RequestSession,
+        # no proposer-side response, no same-frame close of the new session.
+        assert "IsDiplomaticActionValid" in conn.write_calls[0]
+        assert 'RequestSession(me, target, "DECLARE_FRIEND")' in conn.write_calls[0]
+        assert "DiplomacyManager.AddResponse" not in conn.write_calls[0]
+        # Then the effect poll and the teardown close (separate round-trips).
+        assert "VALID|" in conn.write_calls[1]
+        assert "CloseSession" in conn.write_calls[2]
+        assert len(conn.write_calls) == 3
+        # Teardown dismiss goes through the view's own Close(), DAV context.
+        assert conn.named_calls[0][0] == handoff.DIPLO_SHIM_STATE
+        assert "pcall(Close)" in conn.named_calls[0][1]
+
+    def test_delegation_requires_has_delegation_at(self, monkeypatch):
+        """Delegations verify the validity flip AND HasDelegationAt in the
+        direction the action creates — same oracle as the target-local
+        recipe."""
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],
+                ["VALID|false", "HAS_DELEGATION|true", "STATE|3|3"],
+                ["OK|CLOSED|7"],
+            ),
+            named=(["DIPLO_VIEW_DISMISSED"],),
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "DIPLOMATIC_DELEGATION"))
+
+        assert result.startswith("OK:ACCEPTED|Cree accepted your delegation")
+
+    def test_delegation_flip_without_direction_flag_is_not_accepted(
+        self, monkeypatch
+    ):
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],
+                ["VALID|false", "HAS_DELEGATION|false", "STATE|3|3"],
+                ["OK|CLOSED|7"],
+            ),
+            named=(["DIPLO_VIEW_DISMISSED"],),
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "DIPLOMATIC_DELEGATION"))
+
+        assert not result.startswith("OK:ACCEPTED")
+
+    def test_rejected_when_adopted_but_no_flip(self, monkeypatch):
+        """The view adopted (statement delivered = the AI answered) but the
+        validity never flipped → the answer was negative."""
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],
+                ["VALID|true", "STATE|2|2"],       # never flips
+                ["OK|CLOSED|7"],
+            ),
+            named=(
+                ["ADOPTED|true"],                  # adoption poll
+                ["DIPLO_VIEW_DISMISSED"],          # teardown dismiss
+            ),
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "RESIDENT_EMBASSY"))
+
+        assert result.startswith("OK:REJECTED|Cree declined your embassy")
+        # Teardown still ran on the rejection path.
+        assert "CloseSession" in conn.write_calls[2]
+        assert conn.named_calls[-1][0] == handoff.DIPLO_SHIM_STATE
+
+    def test_no_answer_when_never_adopted(self, monkeypatch):
+        """Neither the effect nor the statement arrived in the window — an
+        honest NO_ANSWER, not a fake accept or reject."""
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],
+                ["VALID|true"],
+                ["OK|CLOSED|7"],
+            ),
+            named=(
+                ["ADOPTED|false"],
+                ["DIPLO_VIEW_DISMISSED"],
+            ),
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "DECLARE_FRIENDSHIP"))
+
+        assert result.startswith("OK:NO_ANSWER|Cree did not answer")
+
+    def test_invalid_action_short_circuits_without_polling(self, monkeypatch):
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(["ERR:INVALID|Already friends with this player"],)
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "DECLARE_FRIENDSHIP"))
+
+        assert result.startswith("Error: INVALID|Already friends")
+        assert len(conn.write_calls) == 1  # no polling, no teardown writes
+        assert conn.named_calls == []
+
+    def test_action_name_alias_routes_identically(self, monkeypatch):
+        """``action_name`` (the mailbox convention) reaches the same flow as
+        the documented ``action`` kwarg."""
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],
+                ["VALID|false", "STATE|1|1"],
+                ["OK|CLOSED|7"],
+            ),
+            named=(["DIPLO_VIEW_DISMISSED"],),
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, action_name="DECLARE_FRIENDSHIP"))
+
+        assert result.startswith("OK:ACCEPTED|Cree")
+        assert 'RequestSession(me, target, "DECLARE_FRIEND")' in conn.write_calls[0]
+
+    def test_dismiss_failure_noted_but_verdict_preserved(self, monkeypatch):
+        _zero_ai_answer_timings(monkeypatch)
+        conn = _RecipeConn(
+            writes=(
+                ["OK:SESSION_OPENED|7|1|Cree"],
+                ["VALID|false", "STATE|1|1"],
+                ["OK|CLOSED|7"],
+            ),
+            named=(["ERR:DISMISS_FAILED|attempt to call a nil value"],),
+        )
+        result = asyncio.run(self._gs(conn).send_diplomatic_action(
+            2, "DECLARE_FRIENDSHIP"))
+
+        assert result.startswith("OK:ACCEPTED|Cree")
+        assert "leader screen dismiss failed" in result
+
+
+# ---------------------------------------------------------------------------
 # _drain_diplo_proposals (report-only — execution happens at accept time)
 # ---------------------------------------------------------------------------
 
@@ -1376,20 +1552,46 @@ class TestDiploRecipeBuilders:
         assert "local me = 0" in lua
         assert "Players[me]:GetDiplomacy()" in lua
 
-    def test_send_diplo_action_refuses_responseable_actions(self):
+    def test_send_diplo_action_responseable_opens_session_only(self):
+        """Response-able actions load the dedicated proposal template: the
+        native-button flow (validate + bare RequestSession + sid print) with
+        NO AddResponse and NO post-open CloseSession — the engine's AI
+        answers on later frames and Python polls for the effect
+        (GameState._await_diplo_ai_answer)."""
         for action in RESPONSEABLE_DIPLO_ACTIONS:
             lua = diplo_lua.build_send_diplo_action(2, action)
-            assert 'print("ERR:NOT_SUPPORTED|' in lua
             assert "---END---" in lua
-            # The broken proposer-side flow never loads (the refusal message
-            # mentions AddResponse, but no engine call is ever emitted).
+            assert "IsDiplomaticActionValid" in lua  # still gated
+            session_str = diplo_lua.DIPLO_SESSION_STRING_MAP[action]
+            assert f'RequestSession(me, target, "{session_str}")' in lua
+            assert 'print("OK:SESSION_OPENED|" .. sid' in lua
+            assert 'print("ERR:NO_SESSION|' in lua
+            # No proposer-side response and no NEGATIVE sweep — both belong
+            # to the one-way statement template.
             assert "DiplomacyManager.AddResponse" not in lua
-            assert "RequestSession(me, target" not in lua
+            assert '"NEGATIVE"' not in lua
 
     def test_send_diplo_action_keeps_one_way_actions(self):
         lua = diplo_lua.build_send_diplo_action(2, "DENOUNCE")
-        assert "ERR:NOT_SUPPORTED" not in lua
         assert 'RequestSession(me, target, "DENOUNCE")' in lua
+        assert "IsDiplomaticActionValid" in lua
+        assert "OK:SESSION_OPENED" not in lua
+        # Playback + same-chunk close + NEGATIVE sweep.
+        assert 'AddResponse(sid, me, "POSITIVE")' in lua
+        assert 'AddResponse(sid, me, "NEGATIVE")' in lua
+        assert 'print("OK:SENT|Denounced ' in lua
+
+    def test_send_diplo_action_war_template(self):
+        lua = diplo_lua.build_send_diplo_action(2, "DECLARE_FORMAL_WAR")
+        assert 'RequestSession(me, target, "DECLARE_FORMAL_WAR")' in lua
+        # Wars validate via CanDeclareWarOn, not the shared validity block.
+        assert "pDiplo:CanDeclareWarOn" in lua
+        assert "pDiplo:IsDiplomaticActionValid" not in lua
+        assert 'print("OK:WAR_DECLARED|' in lua
+        # Playback advances, but no same-chunk close or NEGATIVE sweep — the
+        # session stays open for the leader animation (Python closes later).
+        assert 'AddResponse(sid, me, "POSITIVE")' in lua
+        assert '"NEGATIVE"' not in lua
 
     def test_all_builder_lua_blocks_balance(self):
         """Every generated Lua chunk must have balanced blocks — the recipe

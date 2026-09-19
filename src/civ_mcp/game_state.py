@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,12 @@ from civ_mcp.diary import (
     get_current_plans as _get_current_plans,
 )
 from civ_mcp.lua._helpers import load_lua_template
+from civ_mcp.lua.diplomacy import (
+    RESPONSEABLE_DIPLO_ACTIONS,
+    build_diplo_adoption_check,
+    build_diplo_close_step,
+    build_diplo_effect_check,
+)
 from civ_mcp.narrate import (
     narrate_goody_rewards,
     narrate_move_discoveries,
@@ -32,6 +39,27 @@ if TYPE_CHECKING:
     from civ_mcp.spatial import SpatialTracker
 
 log = logging.getLogger(__name__)
+
+# Response-able diplo actions toward built-in AIs: how Python waits for the
+# engine's answer after the session opens (GameState._await_diplo_ai_answer).
+# The AI's answer and the effect land on later frames — same-frame reads are
+# stale — so the flow needs real round-trips and delays between them.
+# Module-level so tests can zero them out, mirroring server.py's _DIPLO_*
+# recipe timings.
+_DIPLO_AI_ANSWER_POLL_INTERVAL = 0.4
+_DIPLO_AI_ANSWER_TIMEOUT = 8.0
+# Once the DiplomacyActionView adopts the session (statement delivered) the
+# AI has answered; this window lets a possibly same-frame-stale effect read
+# catch up before a missing validity flip is classified as a rejection.
+_DIPLO_AI_REJECT_SETTLE = 1.5
+_DIPLO_AI_TEARDOWN_SETTLE = 0.5
+
+# Result-message nouns for the three response-able actions.
+_DIPLO_ACTION_NOUNS: dict[str, str] = {
+    "DECLARE_FRIENDSHIP": "friendship declaration",
+    "DIPLOMATIC_DELEGATION": "delegation",
+    "RESIDENT_EMBASSY": "embassy",
+}
 
 
 class GameState:
@@ -672,8 +700,19 @@ class GameState:
         lines = await self.conn.execute_write(lua)
         return lq.parse_pending_deals_response(lines)
 
-    async def send_diplomatic_action(self, other_player_id: int, action: str) -> str:
-        if action.upper() == "OPEN_BORDERS":
+    async def send_diplomatic_action(
+        self, other_player_id: int, action: str = "", action_name: str = ""
+    ) -> str:
+        """Send a proactive diplomatic action.
+
+        ``action_name`` is accepted as an alias for ``action`` (the mailbox
+        routing convention vs. the documented engine kwarg) so either form
+        reaches the engine path regardless of routing.
+        """
+        action = (action or action_name or "").upper()
+        if not action:
+            return "Error: send_diplomatic_action requires an action name"
+        if action == "OPEN_BORDERS":
             # Session-based OPEN_BORDERS causes AI turn hang.
             # Route through the trade deal API instead (mutual open borders).
             return await self.propose_trade(
@@ -681,12 +720,20 @@ class GameState:
                 offer_items=[{"type": "AGREEMENT", "subtype": "OPEN_BORDERS"}],
                 request_items=[{"type": "AGREEMENT", "subtype": "OPEN_BORDERS"}],
             )
-        is_war = action.upper().endswith("_WAR") and action.upper().startswith(
-            "DECLARE_"
-        )
-        lua = lq.build_send_diplo_action(other_player_id, action.upper())
+        is_war = action.endswith("_WAR") and action.startswith("DECLARE_")
+        lua = lq.build_send_diplo_action(other_player_id, action)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
+
+        if action in RESPONSEABLE_DIPLO_ACTIONS:
+            # Response-able action toward a built-in AI: the chunk above only
+            # validated and opened the session (the native button equivalent
+            # — the engine's AI answers on later frames and applies the
+            # effect from its own response). Wait for that answer, then tear
+            # the session and the popped leader screen down.
+            return await self._await_diplo_ai_answer(
+                other_player_id, action, result
+            )
 
         if not result.startswith("Error"):
             # _action_result renders Lua ERR: lines as "Error: ..." — never
@@ -716,6 +763,158 @@ class GameState:
                     self._diplo_state_watch[other_player_id] = "DENOUNCED"
 
         return result
+
+    async def _await_diplo_ai_answer(
+        self, other_player_id: int, action: str, open_result: str
+    ) -> str:
+        """Wait for the built-in AI's answer to a just-opened response-able
+        diplo session, then tear the session and leader screen down.
+
+        The proposer-side chunk (``build_send_diplo_action`` with the
+        response-able tag) is the native UI's button: a bare
+        ``RequestSession`` whose answer the engine computes on later frames —
+        there is no Lua-side moment to read it (``GetSessionInfo`` exposes
+        only From/To). So the flow polls two oracles from separate
+        round-trips:
+
+        - ``build_diplo_effect_check`` — the validity flip. Valid-before +
+          invalid-after means the effect registered (the established oracle;
+          delegations additionally require ``HasDelegationAt`` in the
+          direction the action creates).
+        - ``build_diplo_adoption_check`` — once the DiplomacyActionView has
+          adopted the session, the statement (the AI's answer) HAS been
+          delivered. A missing flip after the settle window then means the
+          answer was negative; no adoption within the timeout means the
+          engine never answered.
+
+        Teardown on every path (bare ``CloseSession``, settle, then the
+        DAV-context ``Close()`` dismiss) mirrors the target-local recipe
+        (DIPLO_EXECUTION_PLAN.md §3 step 9): the statement delivery pops the
+        leader screen on the human's monitor, and closing + hiding in the
+        same instant leaves a stale ``ms_ActiveSessionID`` that swallows the
+        next session's statement event.
+        """
+        if not open_result.startswith("SESSION_OPENED"):
+            # Validation or session-open failure — already an honest error.
+            return open_result
+        parts = open_result.split("|")
+        try:
+            sid = int(parts[1])
+            me = int(parts[2])
+        except (IndexError, ValueError):
+            return f"Error: malformed session-open result: {open_result}"
+        name = parts[3] if len(parts) > 3 else f"P{other_player_id}"
+        noun = _DIPLO_ACTION_NOUNS.get(action, action)
+
+        applied = False
+        adopted = False
+        deadline = time.monotonic() + _DIPLO_AI_ANSWER_TIMEOUT
+        while True:
+            valid, has_del = await self._read_diplo_effect(
+                me, other_player_id, action
+            )
+            if valid is False and (
+                action != "DIPLOMATIC_DELEGATION" or has_del is True
+            ):
+                applied = True
+                break
+            if not adopted:
+                adopted = await self._check_diplo_adoption(sid)
+                if adopted:
+                    # The AI has answered; the settle window lets a possibly
+                    # same-frame-stale effect read catch up before the
+                    # missing flip is read as a rejection.
+                    deadline = min(
+                        deadline,
+                        time.monotonic() + _DIPLO_AI_REJECT_SETTLE,
+                    )
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_DIPLO_AI_ANSWER_POLL_INTERVAL)
+
+        note = await self._teardown_proposed_diplo_session(me, other_player_id)
+        if applied:
+            return f"OK:ACCEPTED|{name} accepted your {noun}{note}"
+        if adopted:
+            return (
+                f"OK:REJECTED|{name} declined your {noun} proposal"
+                f" (no effect registered){note}"
+            )
+        return (
+            f"OK:NO_ANSWER|{name} did not answer within "
+            f"{_DIPLO_AI_ANSWER_TIMEOUT:.0f}s — the session was closed and "
+            f"no effect registered{note}"
+        )
+
+    async def _read_diplo_effect(
+        self, from_player: int, to_player: int, action: str
+    ) -> tuple[bool | None, bool | None]:
+        """One validity-flip read: ``(valid, has_delegation)`` — either may
+        be ``None`` when the read fails or the line is absent."""
+        try:
+            lines = await self.conn.execute_write(
+                build_diplo_effect_check(from_player, to_player, action)
+            )
+        except Exception:
+            log.debug("Diplo AI-answer effect check failed", exc_info=True)
+            return None, None
+        valid: bool | None = None
+        has_del: bool | None = None
+        for line in lines:
+            if line.startswith("VALID|"):
+                valid = line.split("|", 1)[1] == "true"
+            elif line.startswith("HAS_DELEGATION|"):
+                has_del = line.split("|", 1)[1] == "true"
+        return valid, has_del
+
+    async def _check_diplo_adoption(self, sid: int) -> bool:
+        """Has the DiplomacyActionView adopted this session yet? (Statement
+        delivered = the AI's answer arrived.)"""
+        from civ_mcp import handoff
+
+        try:
+            lines = await self.conn.execute_in_named_state(
+                handoff.DIPLO_SHIM_STATE, build_diplo_adoption_check(sid)
+            )
+        except Exception:
+            log.debug("Diplo AI-answer adoption check failed", exc_info=True)
+            return False
+        return any(line == "ADOPTED|true" for line in lines)
+
+    async def _teardown_proposed_diplo_session(
+        self, from_player: int, to_player: int
+    ) -> str:
+        """Teardown after a proposer-local response-able session: bare
+        ``CloseSession``, a pause, then dismiss the leader screen — strictly
+        separate round-trips (the recipe's live-observed requirement).
+
+        Best effort — returns a note describing anything that failed (""
+        when clean), appended to the caller's result message.
+        """
+        from civ_mcp import handoff
+
+        notes: list[str] = []
+        try:
+            await self.conn.execute_write(
+                build_diplo_close_step(from_player, to_player)
+            )
+        except Exception:
+            notes.append("session close failed")
+        if _DIPLO_AI_TEARDOWN_SETTLE > 0:
+            await asyncio.sleep(_DIPLO_AI_TEARDOWN_SETTLE)
+        try:
+            # DAV context on purpose: the dismiss must go through the view's
+            # own Close() — raw hide events skip the teardown and froze the
+            # UI live (unbalanced bulk-hide bookkeeping).
+            lines = await self.conn.execute_in_named_state(
+                handoff.DIPLO_SHIM_STATE,
+                handoff.build_dismiss_leader_screen_lua(),
+            )
+            if not any(line.startswith("DIPLO_VIEW_DISMISSED") for line in lines):
+                notes.append("leader screen dismiss failed")
+        except Exception:
+            notes.append("leader screen dismiss failed")
+        return "" if not notes else f" (teardown issues: {', '.join(notes)})"
 
     async def _cleanup_diplo_screen(self) -> None:
         """Background: dismiss the leader screen after a one-way statement.

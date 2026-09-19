@@ -2480,7 +2480,12 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
                 continue
             elif action == "send_diplomatic_action" and app.diplo_mailbox is not None:
                 target = params.get("other_player_id", -1)
-                action_name = params.get("action_name", "")
+                # The diplo action arrives under either key: the documented
+                # engine kwarg `action` or the mailbox convention
+                # `action_name`. Read both so a mailbox-eligible proposal
+                # can never leak to the engine path (where the target's
+                # built-in AI would auto-answer it).
+                action_name = params.get("action_name") or params.get("action") or ""
                 # Only response-able actions (friendship/delegation/embassy)
                 # to a managed target (another agent or the human) are
                 # mailbox-routed. One-way actions (denounce, war

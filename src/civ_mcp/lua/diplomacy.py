@@ -363,47 +363,59 @@ print("{SENTINEL}")
 
 
 def build_send_diplo_action(other_player_id: int, action_name: str) -> str:
-    """Send a proactive diplomatic action and detect acceptance/rejection.
+    """Send a proactive diplomatic action — dispatch to the flow template.
 
-    action_name is e.g. DENOUNCE, DECLARE_SURPRISE_WAR, DECLARE_FORMAL_WAR,
-    etc. — **one-way actions only**. The three response-able actions
-    (DECLARE_FRIENDSHIP, DIPLOMATIC_DELEGATION, RESIDENT_EMBASSY) are
-    refused outright: this builder's proposer-side ``AddResponse`` flow is
-    silently ignored by the engine (live-verified — its OK:ACCEPTED print
-    was a false positive; see DIPLO_EXECUTION_PLAN.md §1). Accepted
-    proposals to managed civs are completed target-local instead via the
-    recipe builders below, at accept time on the target's turn.
+    Three flows, three templates (each linear, no in-chunk branching):
+
+    - ``build_send_diplo_proposal.lua`` — the three response-able actions
+      (DECLARE_FRIENDSHIP, DIPLOMATIC_DELEGATION, RESIDENT_EMBASSY) toward
+      NON-MANAGED (built-in AI) players: validate, then only what the native
+      UI's button does — a bare ``RequestSession``
+      (DiplomacyActionView.lua ``OnSelectInitialDiplomacyStatement``; the
+      UI sends no SendAction and no AddResponse). The engine's AI answers on
+      later frames and applies the effect from its own response; the chunk
+      prints ``OK:SESSION_OPENED|<sid>|<localPlayer>|<name>`` and stops.
+      Python (``GameState._await_diplo_ai_answer``) polls the validity-flip
+      oracle and tears the session + leader screen down. The old
+      proposer-side 2x AddResponse flow was silently ignored by the engine
+      (live-verified — its OK:ACCEPTED print was a false positive; see
+      DIPLO_EXECUTION_PLAN.md §1). Managed targets never reach this builder
+      (server routing → diplo mailbox, executed target-local at accept
+      time).
+    - ``build_send_war_declaration.lua`` — DECLARE_*_WAR: CanDeclareWarOn
+      check, open + playback, session left open for the leader animation;
+      Python schedules the delayed close + dismiss
+      (``_cleanup_war_diplomacy`` in game_state).
+    - ``build_send_diplo_statement.lua`` — one-way statements (DENOUNCE and
+      any pass-through): validate, open, playback, same-chunk close + sweep;
+      Python schedules the delayed DAV dismiss (``_cleanup_diplo_screen``).
 
     Open Borders is NOT supported here — it's a trade deal, not a diplomatic
     action. Use propose_trade with AGREEMENT/OPEN_BORDERS items instead.
-
-    The Lua lives in ``build_send_diplo_action.lua`` (loaded via
-    ``load_lua_template``); see its header for the RequestSession string
-    quirks and the flow notes. War declarations (DECLARE_*_WAR) leave the
-    session open so the leader animation plays — Python schedules cleanup
-    afterwards (``_cleanup_war_diplomacy`` in game_state).
     """
-    if action_name in RESPONSEABLE_DIPLO_ACTIONS:
-        return (
-            f'print("ERR:NOT_SUPPORTED|{action_name} is a response-able '
-            "action: the proposer-side AddResponse flow is silently ignored "
-            "by the engine. Accepted proposals to managed civs are executed "
-            'at accept time on the target\'s turn (respond_to_diplo_action '
-            'completes them); pure-AI targets cannot be proposed to from '
-            'this path.") '
-            f'print("{SENTINEL}")'
-        )
     # Map action_name to the correct RequestSession string
     # Game source: DiplomacyActionView.lua line 472 uses "DECLARE_FRIEND"
     is_war = action_name.endswith("_WAR") and action_name.startswith("DECLARE_")
-    session_str = DIPLO_SESSION_STRING_MAP.get(action_name, action_name)
+    if action_name in RESPONSEABLE_DIPLO_ACTIONS:
+        template = "build_send_diplo_proposal.lua"
+    elif is_war:
+        template = "build_send_war_declaration.lua"
+    else:
+        template = "build_send_diplo_statement.lua"
     return (
-        load_lua_template("build_send_diplo_action.lua")
+        load_lua_template(template)
         .replace("__MCP_TARGET_TAG__", str(other_player_id))
         .replace("__MCP_ACTION_TAG__", action_name)
-        .replace("__MCP_SESSION_STRING_TAG__", session_str)
-        .replace("__MCP_IS_WAR_TAG__", "true" if is_war else "false")
-        .replace("__MCP_VALIDITY_BLOCK_TAG__", _diplo_action_validity_lua())
+        .replace(
+            "__MCP_SESSION_STRING_TAG__",
+            DIPLO_SESSION_STRING_MAP.get(action_name, action_name),
+        )
+        # The war template has no validity slot (it carries its own
+        # CanDeclareWarOn checks); the replace is then a no-op.
+        .replace(
+            "__MCP_VALIDITY_BLOCK_TAG__",
+            "" if is_war else _diplo_action_validity_lua(),
+        )
         .replace("__MCP_SENTINEL_TAG__", SENTINEL)
     )
 
