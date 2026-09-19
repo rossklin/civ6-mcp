@@ -36,7 +36,7 @@ class TestSetCityProductionVerification:
         """CanStartOperation=true, verify confirms → return original OK."""
         gs = _gs(
             write_lines=[["OK:PRODUCING|BUILDING_MONUMENT|6 turns"]],
-            read_lines=[["CONFIRMED|6 turns"]],
+            read_lines=[["CONFIRMED"]],
         )
         result = asyncio.run(
             gs.set_city_production(65536, "BUILDING", "BUILDING_MONUMENT")

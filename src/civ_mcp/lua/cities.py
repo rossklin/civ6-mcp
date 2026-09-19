@@ -258,7 +258,7 @@ if pCity == nil then print("NOT_FOUND"); print("{SENTINEL}"); return end
 local bq = pCity:GetBuildQueue()
 local cur = bq:CurrentlyBuilding()
 if cur == "{item_name}" then
-    print("CONFIRMED|" .. bq:GetTurnsLeft() .. " turns")
+    print("CONFIRMED")
 else
     print("NOT_SET|current=" .. tostring(cur) .. "|expected={item_name}")
 end

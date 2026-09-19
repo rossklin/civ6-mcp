@@ -512,11 +512,10 @@ class GameState:
                     lq.build_verify_production(city_id, item_name)
                 )
                 if any("CONFIRMED" in l for l in verify_lines):
-                    turns = ""
-                    for vl in verify_lines:
-                        if vl.startswith("CONFIRMED|"):
-                            turns = vl.split("|", 1)[1]
-                    return f"PRODUCING|{item_name}|{turns} (bypassed stale CanStartOperation)"
+                    return (
+                        f"PRODUCING|{item_name} (bypassed stale "
+                        "CanStartOperation)"
+                    )
                 else:
                     hint = ""
                     if itype == "DISTRICT":
