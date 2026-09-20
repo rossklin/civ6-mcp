@@ -10,6 +10,7 @@ from civ_mcp.lua.cities import parse_city_snapshot_response
 from civ_mcp.lua.overview import parse_gameover_response, parse_overview_response
 from civ_mcp.lua.units import (
     parse_attack_outcome,
+    parse_capture_outcome,
     parse_threat_scan_response,
     parse_units_response,
 )
@@ -271,6 +272,26 @@ class TestParseAttackOutcome:
         outcome = parse_attack_outcome(lines)
         assert outcome is not None
         assert outcome.is_city is True
+
+    def test_captured_city(self):
+        # The target district's city now belongs to the local player
+        lines = ["OUTCOME|att_hp:100|att_max:100|enemy:CAPTURED_CITY"]
+        outcome = parse_attack_outcome(lines)
+        assert outcome is not None
+        assert outcome.enemy_present is False
+        assert outcome.enemy_type == "CAPTURED_CITY"
+
+
+class TestParseCaptureOutcome:
+    def test_ours_lines_collected(self):
+        # OURS| lists local-player units on the target tile — the ownership
+        # evidence that verifies a civilian capture (no damage lands).
+        assert parse_capture_outcome(
+            ["OURS|UNIT_WARRIOR", "OURS|UNIT_SETTLER", "---END---"]
+        ) == ["UNIT_WARRIOR", "UNIT_SETTLER"]
+
+    def test_no_ours_lines_empty(self):
+        assert parse_capture_outcome(["---END---"]) == []
 
     def test_no_outcome_line(self):
         assert parse_attack_outcome(["some other line"]) is None

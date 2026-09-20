@@ -6,9 +6,6 @@ from civ_mcp.lua._helpers import (
     _LUA_OCCUPANCY_CLASS,
     _LUA_RES_VISIBLE,
     SENTINEL,
-    _bail,
-    _bail_lua,
-    _lua_get_unit,
     _lua_get_unit_gamecore,
     load_lua_template,
     lua_quote,
@@ -372,130 +369,54 @@ if u then print("POS|" .. u:GetX() .. "|" .. u:GetY()) else print("POS|GONE") en
 
 
 def build_attack_unit(unit_id: int, target_x: int, target_y: int) -> str:
-    return f"""
-{_lua_get_unit(unit_id)}
-local ux, uy = unit:GetX(), unit:GetY()
-local dist = Map.GetPlotDistance(ux, uy, {target_x}, {target_y})
--- Find hostile unit on target tile (prefer military over civilian)
-local enemy = nil
-local enemyName = "unknown"
-local tgtUnits = Map.GetUnitsAt({target_x}, {target_y})
-if tgtUnits then
-    local fallback = nil
-    local fallbackName = "unknown"
-    for other in tgtUnits:Units() do
-        if other:GetOwner() ~= me then
-            local eInfo = GameInfo.Units[other:GetType()]
-            local eName = eInfo and eInfo.UnitType or "UNKNOWN"
-            local eCombat = eInfo and eInfo.Combat or 0
-            if eCombat > 0 then
-                enemy = other
-                enemyName = eName
-                break
-            elseif fallback == nil then
-                fallback = other
-                fallbackName = eName
-            end
-        end
-    end
-    if enemy == nil and fallback then enemy = fallback; enemyName = fallbackName end
-end
-if enemy == nil then
-    {_bail(f"ERR:NO_ENEMY|No hostile unit at ({target_x},{target_y})")}
-end
--- Check diplomatic status — can only attack units you're at war with (barbarians always attackable)
-local enemyOwner = enemy:GetOwner()
-if enemyOwner ~= 63 then
-    local pDiplo = Players[me]:GetDiplomacy()
-    if not pDiplo:IsAtWarWith(enemyOwner) then
-        local ownerCfg = PlayerConfigurations[enemyOwner]
-        local ownerName = ownerCfg and Locale.Lookup(ownerCfg:GetCivilizationDescription()) or ("player " .. enemyOwner)
-        {_bail_lua('"ERR:NOT_AT_WAR|Cannot attack " .. enemyName .. " — you are at peace with " .. ownerName .. ". Declare war first or target a different unit."')}
-    end
-end
-local enemyHP = enemy:GetMaxDamage() - enemy:GetDamage()
-local enemyMaxHP = enemy:GetMaxDamage()
-local myHP = unit:GetMaxDamage() - unit:GetDamage()
-local params = {{}}
-params[UnitOperationTypes.PARAM_X] = {target_x}
-params[UnitOperationTypes.PARAM_Y] = {target_y}
--- Determine attack type
-local unitInfo = GameInfo.Units[unit:GetType()]
-local isRanged = UnitManager.CanStartOperation(unit, UnitOperationTypes.RANGE_ATTACK, nil, true)
-local isAir = (not isRanged) and UnitManager.CanStartOperation(unit, UnitOperationTypes.AIR_ATTACK, nil, params)
-if isRanged then
-    if unit:GetMovesRemaining() <= 0 then
-        {_bail("ERR:NO_MOVES|Unit has no movement points for ranged attack. Ranged attacks require movement. Move and attack on separate turns, or attack before moving.")}
-    end
-    local rng = unitInfo and unitInfo.Range or 1
-    if dist > rng then
-        {_bail_lua('"ERR:OUT_OF_RANGE|Target at distance " .. dist .. " but range is " .. rng .. ". Move closer first."')}
-    end
-    -- LOS check: CanStartOperation with target params is authoritative;
-    -- GetOperationTargets returns empty for some valid targets (naval units, etc.)
-    local losParams = {{}}
-    losParams[UnitOperationTypes.PARAM_X] = {target_x}
-    losParams[UnitOperationTypes.PARAM_Y] = {target_y}
-    local canRanged = UnitManager.CanStartOperation(unit, UnitOperationTypes.RANGE_ATTACK, nil, losParams)
-    if canRanged then
-        UnitManager.RequestOperation(unit, UnitOperationTypes.RANGE_ATTACK, params)
-        print("OK:RANGE_ATTACK|target:" .. enemyName .. " at ({target_x},{target_y})|pre_hp:" .. enemyHP .. "/" .. enemyMaxHP .. "|your HP:" .. myHP .. "|range:" .. rng .. " dist:" .. dist)
-        print("{SENTINEL}"); return
-    elseif dist <= 1 then
-        -- Ranged failed at melee range: fall through to melee attack below
-        isRanged = false
-    else
-        {_bail_lua(f'"ERR:NO_LOS|Cannot ranged-attack target at ({target_x},{target_y}) from (" .. ux .. "," .. uy .. "). LOS blocked or unit already attacked this turn."')}
-    end
-end
-if isAir then
-    -- Air units (jet bombers, jet fighters, bombers, fighters): use AIR_ATTACK operation.
-    -- Combat resolves asynchronously in the UI so post-combat HP reads may be stale.
-    local rng = unitInfo and unitInfo.Range or 1
-    if dist > rng then
-        {_bail_lua('"ERR:OUT_OF_RANGE|Target at distance " .. dist .. " but air range is " .. rng .. ". Rebase closer first."')}
-    end
-    UnitManager.RequestOperation(unit, UnitOperationTypes.AIR_ATTACK, params)
-    print("OK:AIR_ATTACK|target:" .. enemyName .. " at ({target_x},{target_y})|pre_hp:" .. enemyHP .. "/" .. enemyMaxHP .. "|bomber HP:" .. myHP .. "|range:" .. rng .. " dist:" .. dist)
-else
-    -- Melee: let CanStartOperation be the authority on adjacency/validity.
-    -- Map.GetPlotDistance can misreport distance on offset hex grids, so we
-    -- do not use it as a gate here — only as a diagnostic in the error message.
-    local myCS = unitInfo and unitInfo.Combat or 0
-    -- Movement check: melee attack requires movement points (ranged does not)
-    if unit:GetMovesRemaining() <= 0 then
-        {_bail("ERR:NO_MOVES|Unit has no movement points for melee attack. Melee requires movement to close distance. Wait until next turn.")}
-    end
-    params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
-    if not UnitManager.CanStartOperation(unit, UnitOperationTypes.MOVE_TO, nil, params) then
-        {_bail_lua('"ERR:ATTACK_BLOCKED|Cannot attack " .. enemyName .. " at ({target_x},{target_y}) (map dist=" .. dist .. "). Unit not adjacent or blocked by popup/diplomacy."')}
-    end
-    UnitManager.RequestOperation(unit, UnitOperationTypes.MOVE_TO, params)
-    -- Verify unit reached adjacency (MOVE_TO resolves synchronously for movement)
-    local newX, newY = unit:GetX(), unit:GetY()
-    local newDist = Map.GetPlotDistance(newX, newY, {target_x}, {target_y})
-    if newDist > 1 then
-        print("ERR:STOPPED_SHORT|Unit moved to (" .. newX .. "," .. newY .. ") but could not reach target at ({target_x},{target_y}) — " .. newDist .. " tiles away. Movement exhausted by terrain. Try again next turn from closer position.")
-        print("{SENTINEL}"); return
-    end
-    -- Post-combat HP is NOT readable in InGame state within the same turn
-    -- (combat resolves asynchronously). Only pre-attack HP is reported here;
-    -- the caller reads the true post-combat state from GameCore.
-    print("OK:MELEE_ATTACK|target:" .. enemyName .. " at ({target_x},{target_y})|pre_hp:" .. enemyHP .. "/" .. enemyMaxHP .. "|your HP:" .. myHP .. "|CS:" .. myCS)
-end
-print("{SENTINEL}")
-"""
+    """InGame context: attack the hostile unit on a tile, or capture an
+    unescorted civilian there.
+
+    The Lua lives in ``attack_unit.lua`` (loaded via ``load_lua_template``)
+    and ports the target-validity rules the game-state listing (``units.lua``,
+    checked against the game's own UI source) presents attack options by:
+
+    * hostility = barbarian/free-city owner (>= 62), at war, or religious
+      attacker vs religious target — theological combat needs no war (the
+      old inline builder wrongly required war for every attack);
+    * occupancy-class tile classification: combat targets the military
+      defender; an adjacent melee-capable attacker captures an unescorted
+      civilian (a move onto the tile, no damage); religious attackers engage
+      only the religious unit — military units cannot attack religious units
+      (that path is UNITCOMMAND_CONDEMN_HERETIC or theological combat);
+    * operation routing mirrors the UI (Civ6Common.RequestMoveOperation):
+      DOMAIN_AIR -> AIR_ATTACK, ranged fire (RangedCombat > 0) at any
+      distance in range — adjacent included — -> RANGE_ATTACK, everything
+      else (melee, capture, theological — no dedicated theological
+      operation exists) -> MOVE_TO attack-move, each gated by the engine's
+      CanStartOperation with the target params.
+
+    Emits ``OK:RANGE_ATTACK`` / ``OK:AIR_ATTACK`` / ``OK:MELEE_ATTACK`` /
+    ``OK:THEOLOGICAL_ATTACK`` / ``OK:CAPTURE`` (the ``pre_hp:``/``your HP:``
+    fields feed game_state.attack_unit's post-combat GameCore poll; for a
+    defensible-district target ``pre_hp`` is the defense layer that takes
+    damage — walls first, else district HP) or ``ERR:*`` with a specific
+    reason. Whether a strike landed is not provable in Lua state; the
+    GameCore poll gives the concrete outcome (combat HP deltas, district
+    defense HP, or the ownership change of a capture).
+    """
+    return (
+        load_lua_template("attack_unit.lua")
+        .replace("__LUA_OCCUPANCY_CLASS__", _LUA_OCCUPANCY_CLASS)
+        .replace("__UNIT_ID__", str(unit_id))
+        .replace("__TARGET_X__", str(target_x))
+        .replace("__TARGET_Y__", str(target_y))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def build_attack_followup_query(target_x: int, target_y: int) -> str:
-    """InGame context: get actual HP of units at target tile after combat.
+    """InGame context: list the units at a tile with their current HP.
 
-    Also checks for city defenses (walls/garrison) at the target — when
-    attacking a walled city, damage goes to walls first so the garrison
-    unit's HP stays unchanged even though the attack succeeded.
-
-    Runs in InGame context because enemy city district APIs
-    (GetDistricts, GetMaxDamage) are not available in GameCore.
+    Used by city_attack's post-combat report — a city ranged attack can
+    only ever target units (cities/districts cannot attack other
+    cities/districts), so units are all it needs to read back. District
+    defense stats for unit attacks live in build_attack_outcome_query.
     """
     return f"""
 local found = false
@@ -510,27 +431,6 @@ for i = 0, 63 do
                 found = true
             end
         end
-        pcall(function()
-            for _, c in Players[i]:GetCities():Members() do
-                if c:GetX() == {target_x} and c:GetY() == {target_y} then
-                    local ccIdx = GameInfo.Districts["DISTRICT_CITY_CENTER"].Index
-                    for _, d in c:GetDistricts():Members() do
-                        if d:GetType() == ccIdx then
-                            pcall(function()
-                                local wMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
-                                local wHP = wMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
-                                local gMax = d:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
-                                local gHP = gMax - (d:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
-                                if wMax > 0 or gMax > 0 then
-                                    print("CITY_DEF|wall:" .. wHP .. "/" .. wMax .. "|garrison:" .. gHP .. "/" .. gMax)
-                                end
-                            end)
-                            break
-                        end
-                    end
-                end
-            end
-        end)
     end
 end
 if not found then print("EMPTY") end
@@ -541,17 +441,28 @@ print("{SENTINEL}")
 def build_attack_outcome_query(
     attacker_unit_id: int, target_x: int, target_y: int
 ) -> str:
-    """GameCore context: read true post-combat HP after an attack resolves.
+    """GameCore context: read true post-combat state after an attack.
 
     InGame state does not reflect post-combat HP within the same turn, but
-    GameCore (authoritative sim state) does. Reads the attacker's real HP and
-    any enemy unit remaining on the target tile (our own units on the tile are
-    skipped — after a melee kill the attacker advances onto the target tile).
+    GameCore (authoritative sim state) does. Reads the attacker's real HP
+    and the enemy at the target tile. A defensible district (city center,
+    encampment, ... - GameInfo HitPoints > 0) outranks units on its tile:
+    combat hits the district while its defenses stand, so the district's
+    defense layer (walls first, else district HP) becomes the enemy stats —
+    matching the pre_hp the attack Lua reports for district targets. A
+    district whose city now belongs to the local player was captured
+    (``enemy:CAPTURED_CITY``).
 
-    Emits ``OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N`` or
-    ``OUTCOME|att_hp:N|att_max:N|enemy:KILLED`` when no enemy remains, plus
-    ``CITY|1`` when the target tile is a city center (caller fetches wall HP
-    from InGame via build_attack_followup_query).
+    Emits ``OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N``,
+    ``...|enemy:CAPTURED_CITY`` after a city capture, or ``...|enemy:KILLED``
+    when no enemy remains. (Civilian-capture verification lives in
+    build_capture_outcome_query instead — ownership, not damage.)
+
+    Note: district defense reads (GetDistricts/GetMaxDamage) are
+    pcall-guarded — every other district read in this repo runs in InGame
+    context, and the old claim that they are unavailable in GameCore is
+    unverified. If they do fail here, district attacks degrade to
+    unresolved (no stats) rather than misreporting.
     """
     return f"""
 local me = Game.GetLocalPlayer()
@@ -564,42 +475,102 @@ end
 local enemyFound = false
 local enemyName = "KILLED"
 local enemyHP, enemyMax = 0, 0
-for i = 0, 63 do
-    if Players[i] and Players[i]:IsAlive() and i ~= me then
-        for _, u in Players[i]:GetUnits():Members() do
-            if u:GetX() == {target_x} and u:GetY() == {target_y} then
-                local entry = GameInfo.Units[u:GetType()]
-                enemyName = entry and entry.UnitType or "UNKNOWN"
-                enemyMax = u:GetMaxDamage()
-                enemyHP = enemyMax - u:GetDamage()
-                enemyFound = true
-                break
+-- Defensible district first: combat targets it, not the garrisoned units.
+pcall(function()
+    local plot = Map.GetPlot({target_x}, {target_y})
+    if plot then
+        local dIdx = plot:GetDistrictType()
+        if dIdx and dIdx >= 0 then
+            local dInfo = GameInfo.Districts[dIdx]
+            if dInfo and (dInfo.HitPoints or 0) > 0 then
+                local dOwner = plot:GetOwner()
+                if dOwner == me then
+                    enemyName = "CAPTURED_CITY"
+                    enemyFound = true
+                elseif dOwner ~= nil and dOwner >= 0 then
+                    for _, c in Players[dOwner]:GetCities():Members() do
+                        for _, d in c:GetDistricts():Members() do
+                            if d:GetX() == {target_x} and d:GetY() == {target_y} then
+                                enemyName = dInfo.DistrictType
+                                local wMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
+                                local wHP = wMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
+                                local gMax = d:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
+                                local gHP = gMax - (d:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
+                                if wMax > 0 then
+                                    enemyHP, enemyMax = wHP, wMax
+                                else
+                                    enemyHP, enemyMax = gHP, gMax
+                                end
+                                enemyFound = true
+                                break
+                            end
+                        end
+                        if enemyFound then break end
+                    end
+                end
             end
         end
     end
-    if enemyFound then break end
+end)
+if not enemyFound then
+    for i = 0, 63 do
+        if Players[i] and Players[i]:IsAlive() and i ~= me then
+            for _, u in Players[i]:GetUnits():Members() do
+                if u:GetX() == {target_x} and u:GetY() == {target_y} then
+                    local entry = GameInfo.Units[u:GetType()]
+                    enemyName = entry and entry.UnitType or "UNKNOWN"
+                    enemyMax = u:GetMaxDamage()
+                    enemyHP = enemyMax - u:GetDamage()
+                    enemyFound = true
+                    break
+                end
+            end
+        end
+        if enemyFound then break end
+    end
 end
 local out = "OUTCOME|att_hp:" .. attHP .. "|att_max:" .. attMax .. "|enemy:"
-if enemyFound then
+if enemyName == "CAPTURED_CITY" then
+    out = out .. "CAPTURED_CITY"
+elseif enemyFound then
     out = out .. enemyName .. "|enemy_hp:" .. enemyHP .. "|enemy_max:" .. enemyMax
 else
     out = out .. "KILLED"
 end
 print(out)
-local plot = Map.GetPlot({target_x}, {target_y})
-if plot and plot:IsCity() then print("CITY|1") end
+print("{SENTINEL}")
+"""
+
+
+def build_capture_outcome_query(target_x: int, target_y: int) -> str:
+    """GameCore context: list local-player units on a tile (capture check).
+
+    A civilian capture lands no damage, so it is verified by ownership: the
+    captured unit joins the local player and shows up here together with the
+    capturing unit. Emits one ``OURS|TYPE`` line per local-player unit at
+    the tile.
+    """
+    return f"""
+local me = Game.GetLocalPlayer()
+for _, u in Players[me]:GetUnits():Members() do
+    if u:GetX() == {target_x} and u:GetY() == {target_y} then
+        local entry = GameInfo.Units[u:GetType()]
+        print("OURS|" .. (entry and entry.UnitType or "UNKNOWN"))
+    end
+end
 print("{SENTINEL}")
 """
 
 
 def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
-    """Parse OUTCOME| line (and optional CITY|) from build_attack_outcome_query."""
+    """Parse OUTCOME| line (and legacy CITY|) from build_attack_outcome_query."""
     outcome: AttackOutcome | None = None
     is_city = False
     for line in lines:
         if line.startswith("OUTCOME|"):
             # OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N
             # OUTCOME|att_hp:N|att_max:N|enemy:KILLED
+            # OUTCOME|att_hp:N|att_max:N|enemy:CAPTURED_CITY
             parts = line.split("|")
             fields: dict[str, str] = {}
             for p in parts[1:]:
@@ -609,11 +580,12 @@ def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
             att_hp = int(fields.get("att_hp", "-1") or "-1")
             att_max = int(fields.get("att_max", "-1") or "-1")
             enemy = fields.get("enemy", "KILLED")
-            if enemy == "KILLED" or "enemy_hp" not in fields:
+            if enemy == "KILLED" or enemy == "CAPTURED_CITY" or "enemy_hp" not in fields:
                 outcome = AttackOutcome(
                     attacker_hp=att_hp,
                     attacker_max=att_max,
                     enemy_present=False,
+                    enemy_type=enemy,
                     is_city=is_city,
                 )
             else:
@@ -631,6 +603,15 @@ def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
             if outcome is not None:
                 outcome.is_city = True
     return outcome
+
+
+def parse_capture_outcome(lines: list[str]) -> list[str]:
+    """Parse OURS| lines from build_capture_outcome_query.
+
+    Local-player unit types standing on the tile; a civilian capture is
+    verified when the captured unit's type appears among them.
+    """
+    return [line[5:] for line in lines if line.startswith("OURS|")]
 
 
 def parse_blocked_diagnostic(lines: list[str]) -> str:

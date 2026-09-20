@@ -11,7 +11,9 @@
 -- occupancyClass helper, injected from _helpers.py's _LUA_OCCUPANCY_CLASS
 -- snippet) and gated by the engine's own CanStartOperation with the same
 -- operation the UI's move chain would use (RANGE_ATTACK for ranged fire at
--- distance; the MOVE_TO attack-move otherwise - there is no dedicated
+-- ANY distance in range, adjacent included - the UI's move path tries
+-- RANGE_ATTACK first with no distance branch; the MOVE_TO attack-move
+-- otherwise - there is no dedicated
 -- theological operation, the engine resolves religious-vs-religious as
 -- theological combat, needs no war, and only apostles/inquisitors may
 -- initiate it). Classification: military
@@ -118,8 +120,10 @@ for i, u in Players[id]:GetUnits():Members() do
                             end
                             -- Engine validity gate - the same operation the
                             -- UI's own move chain (Civ6Common.RequestMoveOperation)
-                            -- would use: RANGE_ATTACK for ranged fire at
-                            -- distance, otherwise the MOVE_TO attack-move
+                            -- would use: RANGE_ATTACK for ranged fire at ANY
+                            -- distance in range (adjacent included - the UI
+                            -- tries RANGE_ATTACK first with no distance
+                            -- branch), otherwise the MOVE_TO attack-move
                             -- (there is no dedicated theological operation -
                             -- the engine resolves religious-vs-religious as
                             -- theological combat). CanStartOperation is the
@@ -127,7 +131,7 @@ for i, u in Players[id]:GetUnits():Members() do
                             -- apostles and inquisitors may initiate
                             -- theological combat) and on ranged LOS.
                             local engOK = true
-                            if rs > 0 and d > 1 then
+                            if rs > 0 and simName ~= nil then
                                 local lp = {}
                                 lp[UnitOperationTypes.PARAM_X] = tx
                                 lp[UnitOperationTypes.PARAM_Y] = ty
@@ -151,7 +155,7 @@ for i, u in Players[id]:GetUnits():Members() do
                                     -- engine can't evaluate (busy/invalid); we
                                     -- then emit a target with zeroed estimate.
                                     local eCombatType = nil
-                                    if rs > 0 and d > 1 then eCombatType = CombatTypes.RANGED end
+                                    if rs > 0 then eCombatType = CombatTypes.RANGED end
                                     local eDD, eDA, eR, eTheo, eMods = 0, 0, false, false, nil
                                     pcall(function()
                                         local sim = CombatManager.SimulateAttackInto(u:GetComponentID(), eCombatType, tx, ty)
@@ -212,7 +216,10 @@ for i, u in Players[id]:GetUnits():Members() do
                                         -- captured when a MELEE attack kills the
                                         -- escort (ranged kills do not capture).
                                         local capStr = ""
-                                        if civ ~= nil and cs > 0 and d == 1 then
+                                        -- Only MELEE kills capture the escort
+                                        -- (a ranged attacker's interaction is
+                                        -- always RANGED, which never captures).
+                                        if civ ~= nil and cs > 0 and rs == 0 and d == 1 then
                                             capStr = "~captures:" .. civ
                                         end
                                         local modStr = ""

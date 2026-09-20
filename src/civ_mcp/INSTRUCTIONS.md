@@ -263,7 +263,7 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 | Action | Effect | Notes |
 |--------|--------|-------|
 | `move_unit` | Move to tile | unit_id, target_x, target_y required |
-| `attack_unit` | Attack enemy | unit_id, target_x, target_y; shows actual post-combat outcome (estimates are shown in the game state units section); melee/ranged auto-detected |
+| `attack_unit` | Attack enemy | unit_id, target_x, target_y; shows actual post-combat outcome (estimates are shown in the game state units section); melee/ranged/air/theological auto-detected; also captures unescorted civilians by moving onto them (theological combat between religious units needs no war) |
 | `unit_action` | Any other unit action | Executes the actions listed per-unit as ">> unit_action:" in the Units section (fortify, heal, sleep, alert, auto-explore, disband, formations, promote, upgrade, builder ops, religious ops, coastal raid, plunder trade route, condemn heretic, corps/army, airlift, rebase/deploy, spy ops, activate great people, ...). The ">> not yet possible:" line lists actions the unit could perform once their stated requirement is met — the reason shown is the engine's own (e.g. `FORM_CORPS — requires Nationalism`) |
 | `skip_unit` | End unit's turn | Always works |
 | `found_city` | Settle | Settlers only |

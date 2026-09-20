@@ -341,9 +341,127 @@ class TestBuildUnitAction:
         assert 'GameInfo.Improvements["IMPROVEMENT_MINE"]' in ok_lua
 
 
+class TestBuildAttackUnit:
+    """attack_unit.lua ports the target-validity rules from the units.lua
+    listing (checked against the game's own UI source). Tag checks pin the
+    substitution; content checks pin the corrected rules — the old inline
+    builder required war for EVERY attack (wrongly blocking theological
+    combat, which needs none) and picked the enemy by Combat>0 instead of by
+    occupancy class. No Lua runtime here — live behavior is verified
+    in-game."""
+
+    def test_substitution(self):
+        lua = lq.build_attack_unit(7, 12, 4)
+        assert "UnitManager.GetUnit(me, 7)" in lua
+        assert "local tx, ty = 12, 4" in lua
+        for tag in (
+            "__UNIT_ID__",
+            "__TARGET_X__",
+            "__TARGET_Y__",
+            "__MCP_SENTINEL_TAG__",
+            "__LUA_OCCUPANCY_CLASS__",
+        ):
+            assert tag not in lua
+
+    def test_hostility_rule_allows_theological_combat_without_war(self):
+        lua = lq.build_attack_unit(7, 12, 4)
+        # Hostility = barbarian/free-city owner, OR at war, OR religious
+        # attacker vs religious target (theological combat needs no war)
+        assert "otherOwner >= 62" in lua
+        assert "or (aIsReligious and oClass == \"RELIGIOUS\")" in lua
+        # The old unconditional war gate is gone
+        assert "enemyOwner ~= 63" not in lua
+
+    def test_tile_classification_by_occupancy_class(self):
+        lua = lq.build_attack_unit(7, 12, 4)
+        assert 'occupancyClass(entry) == "RELIGIOUS"' in lua
+        assert '"FORMATION_CLASS_CIVILIAN"' in lua
+        # Military units cannot attack religious units (and vice versa)
+        assert "ERR:RELIGIOUS_TARGET" in lua
+        assert "ERR:WRONG_ATTACKER_TYPE" in lua
+        # Unescorted civilians are captured by moving onto the tile
+        assert "isCapture" in lua
+        assert "ERR:CAPTURE_NOT_POSSIBLE" in lua
+
+    def test_operation_routing_matches_ui(self):
+        lua = lq.build_attack_unit(7, 12, 4)
+        assert 'entry.Domain == "DOMAIN_AIR"' in lua  # AIR_ATTACK routing
+        assert "UnitOperationTypes.AIR_ATTACK" in lua
+        assert "UnitOperationTypes.RANGE_ATTACK" in lua
+        # MOVE_TO attack-move for melee/capture/theological (UI parity)
+        assert "MOVE_IGNORE_UNEXPLORED_DESTINATION" in lua
+        # Engine authority in every branch
+        assert lua.count("CanStartOperation") >= 3
+
+    def test_ranged_attacks_apply_at_any_distance(self):
+        """Ranged units ranged-attack even when adjacent (the UI's
+        RequestMoveOperation tries RANGE_ATTACK first with no distance
+        branch) — both the executor and the units.lua listing gate on
+        capability, not distance."""
+        exec_lua = lq.build_attack_unit(7, 12, 4)
+        assert "not isCapture and not isTheological and rs > 0 then" in exec_lua
+        state_lua = lq.build_units_query()
+        assert "if rs > 0 and simName ~= nil then" in state_lua
+        for lua in (exec_lua, state_lua):
+            assert "rs > 0 and d > 1" not in lua
+            assert "rs > 0 and dist > 1" not in lua
+        # The engine sim's forced combat type follows the same rule
+        assert "if rs > 0 then eCombatType = CombatTypes.RANGED end" in state_lua
+        # Only MELEE kills capture an escorted civilian — a ranged
+        # attacker's interaction is always RANGED, which never captures
+        assert "cs > 0 and rs == 0 and d == 1" in state_lua
+
+    def test_single_request_no_restrike(self):
+        """Whether a strike landed is settled by the GameCore poll, never by
+        re-requesting the operation — a two-attacks-per-turn promotion would
+        double-strike. Exactly one RequestOperation per attack path."""
+        lua = lq.build_attack_unit(7, 12, 4)
+        assert "ERR:STOPPED_SHORT" in lua
+        assert lua.count("UnitManager.RequestOperation") == 3
+
+    def test_defensible_district_is_combat_target(self):
+        """A hostile defensible district (GameInfo HitPoints > 0 - city
+        center, encampment) IS the combat target: garrisoned units are not
+        separately targetable and take no damage while its defenses stand.
+        pre_hp/enemy stats report the layer that takes damage (walls first,
+        else district HP). City capture surfaces as enemy:CAPTURED_CITY in
+        the outcome query, and capture verification is a separate
+        ownership-only query."""
+        lua = lq.build_attack_unit(7, 12, 4)
+        assert "(dInfo.HitPoints or 0) > 0" in lua
+        assert "DISTRICT_OUTER" in lua
+        assert "DISTRICT_GARRISON" in lua
+        assert "if distName ~= nil and not aIsReligious then" in lua
+        outcome = lq.build_attack_outcome_query(7, 12, 4)
+        assert "CAPTURED_CITY" in outcome
+        assert "DISTRICT_OUTER" in outcome
+        assert "OURS|" not in outcome  # ownership check lives elsewhere
+        cap = lq.build_capture_outcome_query(12, 4)
+        assert 'print("OURS|"' in cap
+
+    def test_outcome_tags_for_post_combat_poll(self):
+        lua = lq.build_attack_unit(7, 12, 4)
+        # game_state.attack_unit polls GameCore for these outcome prefixes
+        for tag in (
+            "MELEE_ATTACK",
+            "RANGE_ATTACK",
+            "AIR_ATTACK",
+            "THEOLOGICAL_ATTACK",
+        ):
+            assert f"OK:{tag}|" in lua
+        # CAPTURE is a move, not damage — no poll, but reported
+        assert "OK:CAPTURE|" in lua
+        # pre_hp:/your HP: fields feed _extract_pre_hp/_extract_attacker_pre_hp
+        assert "pre_hp:" in lua
+        assert "your HP:" in lua
+
+
 class _StubConnection:
-    def __init__(self, lines):
+    def __init__(self, lines, read_lines=None):
         self._lines = lines
+        # The GameCore poll (execute_read) often reports different state
+        # than the InGame write; default to the same lines for simplicity.
+        self._read_lines = read_lines if read_lines is not None else lines
         self.lua_sent = None
 
     async def execute_write(self, lua):
@@ -351,7 +469,7 @@ class _StubConnection:
         return self._lines
 
     async def execute_read(self, lua):
-        return self._lines
+        return self._read_lines
 
 
 class TestGameStateUnitAction:
@@ -384,3 +502,108 @@ class TestGameStateUnitAction:
         )
         assert "UnitManager.GetUnit(me, 5)" in conn.lua_sent
         assert "tu:GetID() == 11" in conn.lua_sent
+
+
+class TestGameStateAttackUnit:
+    """The GameCore poll settles the outcomes the Lua layer cannot prove:
+    damage (any attack changes at least one combatant's HP or the district
+    defense HP), city capture (CAPTURED_CITY), and civilian capture by
+    ownership change (OURS| from the dedicated capture query)."""
+
+    def test_capture_verified_by_ownership(self):
+        conn = _StubConnection(
+            ["OK:CAPTURE|unit:UNIT_SETTLER at (12,4)", "---END---"],
+            read_lines=[
+                "OURS|UNIT_WARRIOR",
+                "OURS|UNIT_SETTLER",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert result.startswith("CAPTURE|unit:UNIT_SETTLER")
+        assert "captured — the unit is yours" in result
+
+    def test_capture_failure_reported_by_ownership(self):
+        # No OURS|UNIT_SETTLER at the tile — the order silently no-opped
+        conn = _StubConnection(
+            ["OK:CAPTURE|unit:UNIT_SETTLER at (12,4)", "---END---"],
+            read_lines=["---END---"],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "capture did NOT complete" in result
+        assert "UNIT_SETTLER" in result
+
+    def test_no_damage_reports_failure(self):
+        # Both HPs unchanged in GameCore -> the strike did not land; the
+        # failure string is kept separate from any combat stats
+        conn = _StubConnection(
+            [
+                "OK:MELEE_ATTACK|target:UNIT_WARRIOR at (12,4)|pre_hp:100/100|your HP:100|CS:30",
+                "---END---",
+            ],
+            read_lines=[
+                "OUTCOME|att_hp:100|att_max:100|enemy:UNIT_WARRIOR|enemy_hp:100|enemy_max:100",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "Combat could not resolve" in result
+
+    def test_city_capture_reported(self):
+        conn = _StubConnection(
+            [
+                "OK:MELEE_ATTACK|target:DISTRICT_CITY_CENTER at (12,4)|pre_hp:200/200|your HP:100|CS:30",
+                "---END---",
+            ],
+            read_lines=[
+                "OUTCOME|att_hp:100|att_max:100|enemy:CAPTURED_CITY",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "city CAPTURED" in result
+
+    def test_district_damage_resolves(self):
+        # Walls take the damage; the formatter covers district stats out of
+        # the box because they ride the enemy* variables
+        conn = _StubConnection(
+            [
+                "OK:RANGE_ATTACK|target:DISTRICT_CITY_CENTER at (12,4)|pre_hp:100/100|your HP:100|range:2 dist:2",
+                "---END---",
+            ],
+            read_lines=[
+                "OUTCOME|att_hp:100|att_max:100|enemy:DISTRICT_CITY_CENTER|enemy_hp:82|enemy_max:100",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "enemy HP: 100 -> 82/100" in result
+        assert "your HP: 100 -> 100" in result
+
+    def test_melee_damage_resolves_normally(self):
+        conn = _StubConnection(
+            [
+                "OK:MELEE_ATTACK|target:UNIT_WARRIOR at (12,4)|pre_hp:100/100|your HP:100|CS:30",
+                "---END---",
+            ],
+            read_lines=[
+                "OUTCOME|att_hp:86|att_max:100|enemy:UNIT_WARRIOR|enemy_hp:62|enemy_max:100",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "enemy HP: 100 -> 62/100" in result
+        assert "your HP: 100 -> 86" in result
+        assert "could not resolve" not in result

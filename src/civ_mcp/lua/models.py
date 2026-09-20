@@ -234,11 +234,11 @@ class AttackOutcome:
 
     attacker_hp: int
     attacker_max: int
-    enemy_present: bool  # False when the target was killed
-    enemy_type: str = ""
+    enemy_present: bool  # False when the target was killed or its city captured
+    enemy_type: str = ""  # CAPTURED_CITY marks a captured city/district target
     enemy_hp: int = 0
     enemy_max: int = 0
-    is_city: bool = False  # target tile is a city center (fetch wall HP from InGame)
+    is_city: bool = False  # target tile is a city center (legacy CITY| flag)
 
 
 @dataclass

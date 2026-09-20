@@ -304,16 +304,50 @@ class GameState:
         # Combat estimates now live in the game state (units section), not here.
         # Post-combat HP is unreadable from InGame within the same turn (async
         # combat resolution), but GameCore (execute_read) reflects the true
-        # state once resolved. Poll GameCore for the actual outcome.
+        # state once resolved. Poll GameCore for the actual outcome. Every
+        # attack kind has a GameCore-verifiable effect: damage changes at
+        # least one combatant's HP, and a civilian capture changes the
+        # civilian's ownership (OURS| lines) — no damage lands for a capture.
         is_melee = result.startswith("MELEE_ATTACK")
         is_ranged = result.startswith("RANGE_ATTACK")
         is_air = result.startswith("AIR_ATTACK")
-        if not (is_melee or is_ranged or is_air):
+        is_theological = result.startswith("THEOLOGICAL_ATTACK")
+        is_capture = result.startswith("CAPTURE")
+        if not (
+            is_melee or is_ranged or is_air or is_theological or is_capture
+        ):
             return result
         pre_enemy_hp = _extract_pre_hp(result)
         pre_att_hp = _extract_attacker_pre_hp(result)
         outcome: lq.AttackOutcome | None = None
         resolved = False
+        if is_capture:
+            # No damage lands — verify by ownership: the captured unit joins
+            # the local player and appears in the OURS| lines at the tile.
+            captured_type = _extract_captured_type(result)
+            for _ in range(4):
+                await asyncio.sleep(0.4)
+                try:
+                    out_lines = await self.conn.execute_read(
+                        lq.build_capture_outcome_query(target_x, target_y)
+                    )
+                except Exception as e:
+                    log.debug("Capture outcome read failed: %s", e)
+                    continue
+                if captured_type in lq.parse_capture_outcome(out_lines):
+                    resolved = True
+                    break
+            if resolved:
+                return (
+                    result
+                    + "\n  Post-combat: captured — the unit is yours (verify with get_units)"
+                )
+            return result + (
+                f"\n  Post-combat: capture did NOT complete — {captured_type} shows no"
+                f" ownership change at ({target_x},{target_y}); the order may have been"
+                " silently blocked (popup/diplomacy) or movement rules prevented"
+                " entering the tile. Verify with get_units and re-order next turn"
+            )
         for _ in range(4):
             await asyncio.sleep(0.4)
             try:
@@ -339,26 +373,12 @@ class GameState:
             ):
                 resolved = True
                 break  # attacker took damage
-        outcome_str = _format_attack_outcome(
-            outcome, pre_enemy_hp, pre_att_hp, resolved
-        )
-        # City targets: wall/garrison HP comes from InGame (district defense
-        # APIs are InGame-only). Fetch once when the target tile is a city.
-        if outcome and outcome.is_city:
-            try:
-                await asyncio.sleep(0.2)
-                followup = await self.conn.execute_write(
-                    lq.build_attack_followup_query(target_x, target_y)
-                )
-                city_def = _extract_city_defense(followup)
-                if city_def:
-                    w_hp, w_max, g_hp, g_max = city_def
-                    if w_max > 0:
-                        outcome_str += f" | walls {w_hp}/{w_max}"
-                    if g_max > 0:
-                        outcome_str += f" | garrison {g_hp}/{g_max}"
-            except Exception as e:
-                log.debug("City defense followup failed: %s", e)
+        if resolved:
+            outcome_str = _format_attack_outcome(
+                outcome, pre_enemy_hp, pre_att_hp
+            )
+        else:
+            outcome_str = "Combat could not resolve, probably insufficient movement to reach the target."
         return result + "\n  Post-combat: " + outcome_str
 
     async def city_attack(self, city_id: int, target_x: int, target_y: int) -> str:
@@ -1742,13 +1762,6 @@ def _format_attack_followup(lines: list[str], attacker_owner: int = 0) -> str:
                 parts.append(f"{label}{fields[1]} {fields[2]}")
             elif len(fields) >= 3:
                 parts.append(f"{fields[1]} {fields[2]}")
-    city_def = _extract_city_defense(lines)
-    if city_def:
-        wall_hp, wall_max, gar_hp, gar_max = city_def
-        if wall_max > 0:
-            parts.append(f"Walls {wall_hp}/{wall_max}")
-        if gar_max > 0:
-            parts.append(f"City garrison {gar_hp}/{gar_max}")
     if not parts:
         return "Target eliminated"
     return ", ".join(parts)
@@ -1774,18 +1787,31 @@ def _extract_attacker_pre_hp(result: str) -> int | None:
     return None
 
 
+def _extract_captured_type(result: str) -> str:
+    """Extract the captured civilian's unit type from a CAPTURE result.
+
+    The Lua line is ``CAPTURE|unit:UNIT_SETTLER at (x,y)``; the type is the
+    ownership key checked against the GameCore OURS| lines.
+    """
+    import re
+
+    m = re.search(r"unit:([A-Za-z0-9_]+)", result)
+    return m.group(1) if m else ""
+
+
 def _format_attack_outcome(
     outcome: lq.AttackOutcome | None,
     pre_enemy_hp: int | None,
     pre_att_hp: int | None,
-    resolved: bool,
 ) -> str:
     """Build the human-readable post-combat line from a GameCore outcome read."""
     if outcome is None:
         return "outcome unavailable (GameCore read failed) — verify with get_units"
     parts: list[str] = []
     if not outcome.enemy_present:
-        if pre_enemy_hp is not None:
+        if outcome.enemy_type == "CAPTURED_CITY":
+            parts.append("city CAPTURED — it is yours (verify with get_cities)")
+        elif pre_enemy_hp is not None:
             parts.append(f"enemy HP: {pre_enemy_hp} -> KILLED")
         else:
             parts.append("enemy KILLED")
@@ -1801,8 +1827,6 @@ def _format_attack_outcome(
             parts.append(f"your HP: {pre_att_hp} -> {outcome.attacker_hp}")
         else:
             parts.append(f"your HP: {outcome.attacker_hp}/{outcome.attacker_max}")
-    if not resolved:
-        parts.append("(HP unchanged — combat may not have resolved; verify with get_units)")
     return " | ".join(parts)
 
 
@@ -1830,27 +1854,4 @@ def _extract_post_hp(followup_lines: list[str], attacker_owner: int = 0) -> int 
                     return int(hp_part)
                 except ValueError:
                     pass
-    return None
-
-
-def _extract_city_defense(
-    followup_lines: list[str],
-) -> tuple[int, int, int, int] | None:
-    """Extract wall and garrison HP from CITY_DEF followup line.
-
-    Returns ``(wall_hp, wall_max, garrison_hp, garrison_max)`` or *None*
-    when the target tile has no city defenses.
-    """
-    for line in followup_lines:
-        if line.startswith("CITY_DEF|"):
-            # CITY_DEF|wall:74/100|garrison:197/200
-            wall_hp = wall_max = gar_hp = gar_max = 0
-            for part in line.split("|")[1:]:
-                if part.startswith("wall:"):
-                    hp, mx = part[5:].split("/")
-                    wall_hp, wall_max = int(hp), int(mx)
-                elif part.startswith("garrison:"):
-                    hp, mx = part[9:].split("/")
-                    gar_hp, gar_max = int(hp), int(mx)
-            return (wall_hp, wall_max, gar_hp, gar_max)
     return None
