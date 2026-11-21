@@ -119,7 +119,7 @@ Messaging (managed-player chat; see MESSAGES in state):
 
 Governance:
 - `{"action": "set_policies", "params": {"assignments": {"<slot_index>": "POLICY_TYPE"}}}` — assignments maps EVERY slot of your current government to the policy to place in it (slot indices and types are in the Policies section of game state). A government is only valid with all slots filled, so the assignment must be complete: all slots are refilled in one atomic change and there is no partial update.
-- `{"action": "change_government", "params": {"government_type": "GOVERNMENT_OLIGARCHY"}}`
+- `{"action": "change_government", "params": {"government_type": "GOVERNMENT_OLIGARCHY"}}` — unlocked governments with their slot layouts and bonuses are listed in the Policies section. The result reports the new government's slots (cards carried over from the old government and which slots are EMPTY); follow up with `set_policies` to fill every slot.
 - `{"action": "appoint_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL"}}`
 - `{"action": "assign_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "city_id": 3}}`
 - `{"action": "promote_governor", "params": {"governor_type": "GOVERNOR_THE_CARDINAL", "promotion_type": "PROMOTION_..."}}`

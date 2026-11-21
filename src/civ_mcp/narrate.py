@@ -609,63 +609,6 @@ def narrate_deal_options(opts: lq.DealOptions) -> str:
         )
     return "\n".join(lines)
 
-def narrate_policies(gov: lq.GovernmentStatus) -> str:
-    lines = [f"Government: {gov.government_name} ({gov.government_type})"]
-
-    # Policy unlock status: whether rearranging policies this turn is free or
-    # costs gold/faith. set_policies calls UNLOCK_POLICIES before applying
-    # changes, so a nonzero cost here is what that call will charge.
-    if gov.policy_unlock_cost <= 0:
-        lines.append("Policies: free to change this turn.")
-    else:
-        cur = gov.policy_unlock_currency.lower()
-        if gov.can_unlock_policies:
-            lines.append(
-                f"Policies LOCKED — set_policies will cost "
-                f"{gov.policy_unlock_cost} {cur} to unlock."
-            )
-        else:
-            lines.append(
-                f"Policies LOCKED — set_policies costs "
-                f"{gov.policy_unlock_cost} {cur} (cannot afford yet)."
-            )
-
-    if gov.slots:
-        lines.append(f"\n{len(gov.slots)} policy slots:")
-        for s in gov.slots:
-            slot_label = s.slot_type.replace("SLOT_", "").title()
-            if s.current_policy:
-                lines.append(
-                    f"  Slot {s.slot_index} ({slot_label}): {s.current_policy_name} ({s.current_policy})"
-                )
-            else:
-                lines.append(f"  Slot {s.slot_index} ({slot_label}): EMPTY")
-
-    if gov.available_policies:
-        by_type: dict[str, list[lq.PolicyInfo]] = {}
-        for p in gov.available_policies:
-            by_type.setdefault(p.slot_type, []).append(p)
-        lines.append("\nAvailable policies:")
-        for slot_type in [
-            "SLOT_MILITARY",
-            "SLOT_ECONOMIC",
-            "SLOT_DIPLOMATIC",
-            "SLOT_WILDCARD",
-        ]:
-            policies = by_type.get(slot_type, [])
-            if policies:
-                label = slot_type.replace("SLOT_", "").title()
-                lines.append(f"  {label}:")
-                for p in policies:
-                    lines.append(f"    {p.name} ({p.policy_type}): {p.description}")
-
-    lines.append(
-        "\nUse set_policies to fill ALL slots at once, e.g. {\"action\": \"set_policies\", \"params\": {\"assignments\": {\"0\": \"POLICY_AGOGE\", \"1\": \"POLICY_URBAN_PLANNING\"}}}"
-    )
-    lines.append("Wildcard slots can accept any policy type.")
-    return "\n".join(lines)
-
-
 def narrate_governors(gov: lq.GovernorStatus) -> str:
     lines = [
         f"Governor Points: {gov.points_available} available, {gov.points_spent} spent"

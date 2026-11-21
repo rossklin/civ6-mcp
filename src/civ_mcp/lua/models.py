@@ -672,45 +672,6 @@ class DealOptions:
     current_alliance: str | None = None
 
 @dataclass
-class PolicySlot:
-    """A government policy slot with its current policy."""
-
-    slot_index: int
-    slot_type: (
-        str  # "SLOT_MILITARY", "SLOT_ECONOMIC", "SLOT_DIPLOMATIC", "SLOT_WILDCARD"
-    )
-    current_policy: str | None
-    current_policy_name: str | None
-
-
-@dataclass
-class PolicyInfo:
-    """An available (unlocked) policy."""
-
-    policy_type: str  # e.g. "POLICY_AGOGE"
-    name: str
-    description: str
-    slot_type: str  # compatible slot type
-
-
-@dataclass
-class GovernmentStatus:
-    """Current government and policy configuration."""
-
-    government_name: str
-    government_type: str
-    slots: list[PolicySlot] = field(default_factory=list)
-    available_policies: list[PolicyInfo] = field(default_factory=list)
-    # Cost to unlock policy changes this turn.  0 means already unlocked (free
-    # to rearrange — e.g. a civic just completed); >0 means locked and
-    # ``set_policies`` will charge this much of ``policy_unlock_currency``
-    # (gold or faith) via UNLOCK_POLICIES before applying the change.
-    policy_unlock_cost: int = 0
-    policy_unlock_currency: str = "GOLD"  # "GOLD" or "FAITH"
-    can_unlock_policies: bool = True  # free, or the player can afford the cost
-
-
-@dataclass
 class GovernorInfo:
     """An available governor type."""
 
@@ -1181,7 +1142,6 @@ class FullGameState:
 
     # Governance
     governors: GovernorStatus | None = None
-    policies: GovernmentStatus | None = None
     city_states: EnvoyStatus | None = None
 
     # Planning

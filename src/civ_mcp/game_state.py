@@ -1274,7 +1274,30 @@ class GameState:
     async def change_government(self, government_type: str) -> str:
         lua = lq.build_change_government(government_type)
         lines = await self.conn.execute_write(lua)
-        return _action_result(lines)
+        result = _action_result(lines)
+        if result.startswith("Error"):
+            return result
+
+        # Report the new slot layout so the agent can build the complete
+        # set_policies assignment without re-fetching the full game state.
+        # RequestChangeGovernment is asynchronous, so the new government may
+        # take a few frames to become readable: retry briefly until the
+        # report shows the requested government.
+        wanted = f"({government_type.upper()})"
+        report: list[str] = []
+        for _ in range(5):
+            report = await self.conn.execute_write(lq.build_policies_query())
+            # First text line is "Government: <name> (<type>)"; the response
+            # may arrive as one multi-line string, so split before checking.
+            if report and wanted in "\n".join(report).split("\n", 1)[0]:
+                break
+            await asyncio.sleep(0.3)
+        else:
+            result += (
+                "\nWARN: the new government is not readable yet — the layout "
+                "below may still show the previous government."
+            )
+        return result + "\n" + "\n".join(report)
 
     # ------------------------------------------------------------------
     # Great People (InGame context)
@@ -1649,6 +1672,10 @@ class GameState:
         text = narrate_full_state(state)
 
         # Then run queries in the new format that output the correct format directly
+        # Append the government/policies query output
+        lines: list[str] = await self.conn.execute_write(lq.build_policies_query())
+        text = text + "\n\n## Policies\n" + "\n".join(lines)
+
         # Append the diplomacy query output. Managed ids are baked into the
         # Lua as a lookup table: managed civs are effectively "us", so their
         # relationship state, modifiers and agendas are hidden.

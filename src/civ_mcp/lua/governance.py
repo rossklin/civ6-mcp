@@ -16,81 +16,22 @@ from civ_mcp.lua.models import (
     DedicationChoice,
     DedicationStatus,
     EnvoyStatus,
-    GovernmentStatus,
     GovernorInfo,
     GovernorPromotion,
     GovernorStatus,
-    PolicyInfo,
-    PolicySlot,
 )
 
 
 def build_policies_query() -> str:
-    """Read current government, policy slots, and available policies (InGame context)."""
-    return """
-local me = Game.GetLocalPlayer()
-local pCulture = Players[me]:GetCulture()
-local govIdx = pCulture:GetCurrentGovernment()
-local govName = "None"
-local govType = "NONE"
-if govIdx and govIdx >= 0 then
-    local govEntry = GameInfo.Governments[govIdx]
-    if govEntry then
-        govName = Locale.Lookup(govEntry.Name)
-        govType = govEntry.GovernmentType
-    end
-end
-local numSlots = pCulture:GetNumPolicySlots()
-print("GOV|" .. govType .. "|" .. govName:gsub("|","/") .. "|" .. numSlots)
--- Policy unlock cost: 0 = free to change this turn (civic just completed or
--- already unlocked); >0 = locked, set_policies will charge this much gold/faith.
-local unlockCost = 0
-pcall(function() unlockCost = pCulture:GetCostToUnlockPolicies() or 0 end)
-local unlockByFaith = (GlobalParameters.GOVERNMENT_UNLOCK_WITH_FAITH ~= 0)
-local currency = unlockByFaith and "FAITH" or "GOLD"
-local balance = 0
-if unlockByFaith then
-    pcall(function() balance = Players[me]:GetReligion():GetFaithBalance() or 0 end)
-else
-    pcall(function() balance = Players[me]:GetTreasury():GetGoldBalance() or 0 end)
-end
-local canUnlock = (unlockCost <= 0) and 1 or (balance >= unlockCost and 1 or 0)
-print("UNLOCK|" .. unlockCost .. "|" .. currency .. "|" .. canUnlock)
-local slotNames = {[0]="SLOT_ECONOMIC", [1]="SLOT_MILITARY", [2]="SLOT_DIPLOMATIC", [3]="SLOT_WILDCARD", [4]="SLOT_WILDCARD"}
-for s = 0, numSlots - 1 do
-    local slotType = slotNames[pCulture:GetSlotType(s)] or ("SLOT_" .. pCulture:GetSlotType(s))
-    local policyIdx = pCulture:GetSlotPolicy(s)
-    local policyType = "NONE"
-    local policyName = "Empty"
-    if policyIdx >= 0 then
-        local pe = GameInfo.Policies[policyIdx]
-        if pe then
-            policyType = pe.PolicyType
-            policyName = Locale.Lookup(pe.Name)
-        end
-    end
-    print("SLOT|" .. s .. "|" .. slotType .. "|" .. policyType .. "|" .. policyName:gsub("|","/"))
-end
-for policy in GameInfo.Policies() do
-    if pCulture:IsPolicyUnlocked(policy.Index) then
-        local canSlot = false
-        for s = 0, numSlots - 1 do
-            if pCulture:CanSlotPolicy(policy.Index, s) then
-                canSlot = true
-                break
-            end
-        end
-        if canSlot then
-            local slotType = "SLOT_WILDCARD"
-            if policy.GovernmentSlotType then slotType = policy.GovernmentSlotType end
-            local name = Locale.Lookup(policy.Name)
-            local desc = Locale.Lookup(policy.Description):gsub("|", "/"):gsub("\\n", " ")
-            print("AVAIL|" .. policy.PolicyType .. "|" .. name:gsub("|","/") .. "|" .. desc .. "|" .. slotType)
-        end
-    end
-end
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+    """Government & policy status as ready-to-show text (InGame context).
+
+    The template (policies.lua) prints the final text directly: current
+    government, policy unlock cost, slots with their cards, every unlocked
+    government (slot layout + bonuses) and every unlocked policy card. Used
+    for the Policies section of get_full_game_state and as the follow-up
+    report of change_government.
+    """
+    return load_lua_template("policies.lua").replace("__MCP_SENTINEL_TAG__", SENTINEL)
 
 
 def build_set_policies(assignments: dict[int, str]) -> str:
@@ -101,7 +42,7 @@ def build_set_policies(assignments: dict[int, str]) -> str:
     slots filled, so all slots are cleared and refilled in one atomic
     RequestPolicyChanges batch. Partial assignments are refused by the Lua
     (ERR:MISSING_SLOT); slot indices and types for the current government
-    come from build_policies_query.
+    come from the Policies section (policies.lua).
 
     The template (set_policies.lua) holds all the Lua — structural checks,
     per-slot pre-checks (CanSlotPolicy OR currently-active-in-any-slot: the
@@ -404,39 +345,6 @@ print("{SENTINEL}")
 """
 
 
-def build_available_governments_query() -> str:
-    """List unlocked governments with slot info (InGame context)."""
-    return """
-local me = Game.GetLocalPlayer()
-local pCulture = Players[me]:GetCulture()
-local curGov = pCulture:GetCurrentGovernment()
-for row in GameInfo.Governments() do
-    local unlocked = pCulture:IsGovernmentUnlocked(row.Index)
-    if unlocked then
-        local isCurrent = (row.Index == curGov)
-        local slots = {}
-        for slotRow in GameInfo.Government_SlotCounts() do
-            if slotRow.GovernmentType == row.GovernmentType then
-                for i = 1, slotRow.NumSlots do
-                    table.insert(slots, slotRow.GovernmentSlotType)
-                end
-            end
-        end
-        local slotStr = table.concat(slots, ",")
-        local name = Locale.Lookup(row.Name)
-        local bonus = ""
-        if row.BonusType then
-            local bRow = GameInfo.GovernmentBonuses and GameInfo.GovernmentBonuses[row.BonusType]
-            if bRow then bonus = Locale.Lookup(bRow.Description or "") end
-        end
-        local tag = isCurrent and "CURRENT" or "AVAILABLE"
-        print("GOV|" .. row.GovernmentType .. "|" .. row.Index .. "|" .. tag .. "|" .. name .. "|" .. slotStr .. "|" .. bonus)
-    end
-end
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
-
-
 def build_change_government(gov_type: str) -> str:
     """Switch government type (InGame context)."""
     return f"""
@@ -451,64 +359,6 @@ pCulture:RequestChangeGovernment(row.Index)
 print("OK:GOVERNMENT_CHANGED|{gov_type}|" .. Locale.Lookup(row.Name))
 print("{SENTINEL}")
 """
-
-
-def parse_policies_response(lines: list[str]) -> GovernmentStatus:
-    """Parse GOV|, SLOT|, AVAIL| lines from build_policies_query."""
-    gov_name = "None"
-    gov_type = "NONE"
-    slots: list[PolicySlot] = []
-    available: list[PolicyInfo] = []
-    unlock_cost = 0
-    unlock_currency = "GOLD"
-    can_unlock = True
-
-    for line in lines:
-        if line.startswith("GOV|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                gov_type = parts[1]
-                gov_name = parts[2]
-        elif line.startswith("UNLOCK|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                unlock_cost = _int(parts[1]) or 0
-                unlock_currency = parts[2] or "GOLD"
-                can_unlock = parts[3] == "1"
-        elif line.startswith("SLOT|"):
-            parts = line.split("|")
-            if len(parts) >= 5:
-                policy_type = None if parts[3] == "NONE" else parts[3]
-                policy_name = None if parts[4] == "Empty" else parts[4]
-                slots.append(
-                    PolicySlot(
-                        slot_index=int(parts[1]),
-                        slot_type=parts[2],
-                        current_policy=policy_type,
-                        current_policy_name=policy_name,
-                    )
-                )
-        elif line.startswith("AVAIL|"):
-            parts = line.split("|")
-            if len(parts) >= 5:
-                available.append(
-                    PolicyInfo(
-                        policy_type=parts[1],
-                        name=parts[2],
-                        description=parts[3],
-                        slot_type=parts[4],
-                    )
-                )
-
-    return GovernmentStatus(
-        government_name=gov_name,
-        government_type=gov_type,
-        slots=slots,
-        available_policies=available,
-        policy_unlock_cost=unlock_cost,
-        policy_unlock_currency=unlock_currency,
-        can_unlock_policies=can_unlock,
-    )
 
 
 def parse_governors_response(lines: list[str]) -> GovernorStatus:

@@ -82,7 +82,6 @@ from civ_mcp.lua.great_people import (  # noqa: F401
 from civ_mcp.lua.governance import (  # noqa: F401
     build_appoint_governor,
     build_assign_governor,
-    build_available_governments_query,
     build_change_government,
     build_choose_dedication,
     build_city_states_query,
@@ -95,7 +94,6 @@ from civ_mcp.lua.governance import (  # noqa: F401
     parse_city_states_response,
     parse_dedications_response,
     parse_governors_response,
-    parse_policies_response,
 )
 from civ_mcp.lua.map import (  # noqa: F401
     build_district_advisor_query,
@@ -154,7 +152,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     GameNotification,
     GameOverStatus,
     GameOverview,
-    GovernmentStatus,
     GovernorInfo,
     GovernorPromotion,
     GovernorStatus,
@@ -169,8 +166,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     PantheonStatus,
     PendingDeal,
     PlayerRow,
-    PolicyInfo,
-    PolicySlot,
     PromotionOption,
     PurchasableTile,
     ReligionBeliefOption,

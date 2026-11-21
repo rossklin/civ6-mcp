@@ -44,7 +44,6 @@ _SECTIONS: list[tuple[str, str, bool]] = [
     ("religion_status", "religion_status", True),
     ("pantheon_status", "pantheon_status", True),
     ("governors", "governors", True),
-    ("policies", "policies", True),
     ("city_states", "city_states", True),
     ("builder_tasks", "builder_tasks", True),
     ("great_people", "great_people", True),
