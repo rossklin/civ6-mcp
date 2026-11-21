@@ -926,7 +926,7 @@ async def execute_end_turn(gs: GameState, seat: Seat | None = None) -> str:
                     # Empty-queue detection: RequestOperation can silently
                     # no-op, leaving cities with size==0 queues that block
                     # turn advancement. Name them in the blocker so the
-                    # agent doesn't have to round-trip get_cities.
+                    # agent doesn't have to round-trip get_full_game_state.
                     try:
                         empty_lines = await gs.conn.execute_write(
                             f"local me = Game.GetLocalPlayer(); "

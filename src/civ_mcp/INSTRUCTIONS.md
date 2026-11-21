@@ -253,7 +253,7 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 - Attacking consumes all remaining movement.
 - Attacking a target that is too far away will cause your unit to move towards it, expending all movement without completing the attack.
 - Ranged attacks don't take damage; melee attacks do
-- Forests/mountains block ranged LOS — targets with blocked LOS are filtered from `get_units` attack lists
+- Forests/mountains block ranged LOS — targets with blocked LOS are filtered from attack lists
 - Fortified units: +4 defense
 - Healing: any unit that passes its turn will heal unless in enemy territory, higher healing in owned or allied territory. Exception: naval     units will not heal outside owned or allied territory.
 - Combat estimates include promotion CS bonuses, flanking (+2 per adjacent friendly to defender), support (+2 per defender's adjacent friendly), and forest/jungle defense (+3)
@@ -271,7 +271,7 @@ Do not `WebFetch` any domains other than www.civilopedia.net, doing so would cau
 
 Common improvements: `IMPROVEMENT_FARM`, `IMPROVEMENT_MINE`, `IMPROVEMENT_QUARRY`, `IMPROVEMENT_PLANTATION`, `IMPROVEMENT_PASTURE`, `IMPROVEMENT_CAMP`, `IMPROVEMENT_FISHING_BOATS`, `IMPROVEMENT_LUMBER_MILL`
 
-Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REMOVE_FEATURE"}}` to chop/harvest the feature first, then `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_IMPROVEMENT", "improvement": "IMPROVEMENT_FARM"}}` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` in `get_units` output — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
+Feature removal: Forest, jungle, and marsh tiles block most improvements (e.g. Farm). Use `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REMOVE_FEATURE"}}` to chop/harvest the feature first, then `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_BUILD_IMPROVEMENT", "improvement": "IMPROVEMENT_FARM"}}` to build. Lumber Mill and Camp work on forest/jungle without removal. Check `valid_improvements` — if FARM isn't listed on a tile you expect it, the tile likely has a blocking feature. Removing a feature grants a large one-time resource boost. Forest gives production, while jungle gives half production half food. Bonus resources give the same type as their yield. Removing features can be very effective for getting your empire boosted.
 
 Builders repair tile improvements via `{"action": "unit_action", "params": {"unit_id": 0, "unit_action": "UNITOPERATION_REPAIR"}}`. Pillaged **district buildings** (Workshop, Arena, etc.) are repaired via `set_city_production`.
 

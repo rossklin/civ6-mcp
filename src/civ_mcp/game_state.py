@@ -340,13 +340,13 @@ class GameState:
             if resolved:
                 return (
                     result
-                    + "\n  Post-combat: captured — the unit is yours (verify with get_units)"
+                    + "\n  Post-combat: captured — the unit is yours"
                 )
             return result + (
                 f"\n  Post-combat: capture did NOT complete — {captured_type} shows no"
                 f" ownership change at ({target_x},{target_y}); the order may have been"
                 " silently blocked (popup/diplomacy) or movement rules prevented"
-                " entering the tile. Verify with get_units and re-order next turn"
+                " entering the tile."
             )
         for _ in range(4):
             await asyncio.sleep(0.4)
@@ -593,8 +593,7 @@ class GameState:
                                 f" Prerequisite district is pillaged:"
                                 f" {pillaged_dists}. Repair it first via"
                                 " set_city_production(city_id, 'DISTRICT',"
-                                " 'DISTRICT_NAME', x, y) — use get_cities"
-                                " to find district coordinates."
+                                " 'DISTRICT_NAME', x, y)."
                             )
                         else:
                             bld_info = item_name.replace("BUILDING_", "")
@@ -1806,11 +1805,11 @@ def _format_attack_outcome(
 ) -> str:
     """Build the human-readable post-combat line from a GameCore outcome read."""
     if outcome is None:
-        return "outcome unavailable (GameCore read failed) — verify with get_units"
+        return "outcome unavailable (GameCore read failed)"
     parts: list[str] = []
     if not outcome.enemy_present:
         if outcome.enemy_type == "CAPTURED_CITY":
-            parts.append("city CAPTURED — it is yours (verify with get_cities)")
+            parts.append("city CAPTURED — it is yours")
         elif pre_enemy_hp is not None:
             parts.append(f"enemy HP: {pre_enemy_hp} -> KILLED")
         else:
