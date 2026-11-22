@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import _LUA_VICTORY_ENABLED, SENTINEL, _int
+from civ_mcp.lua._helpers import (
+    _LUA_MAX_RELIGIONS,
+    _LUA_VICTORY_ENABLED,
+    SENTINEL,
+    _int,
+)
 from civ_mcp.lua.models import (
     DemographicEntry,
     SpaceProject,
@@ -267,7 +272,8 @@ for i = 0, 62 do
         if Players[i]:GetReligion():GetReligionTypeCreated() >= 0 then nRels = nRels + 1 end
     end
 end
-print("RELSLOTS|" .. nRels .. "|" .. (math.floor(nMajors / 2) + 1))
+{_LUA_MAX_RELIGIONS}
+print("RELSLOTS|" .. nRels .. "|" .. maxReligions())
 {_LUA_VICTORY_ENABLED}
 print("{SENTINEL}")
 """

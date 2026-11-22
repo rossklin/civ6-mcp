@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import SENTINEL, _int
+from civ_mcp.lua._helpers import _LUA_MAX_RELIGIONS, SENTINEL, _int
 from civ_mcp.lua.models import (
     AgentExtras,
     CityRow,
@@ -120,8 +120,8 @@ for i = 0, 62 do
         end
     end
 end
-local maxRel = math.floor(nMajors / 2) + 1
-print("RELSLOTS|" .. nReligions .. "|" .. maxRel)
+{MAX_RELIGIONS}
+print("RELSLOTS|" .. nReligions .. "|" .. maxReligions())
 local eraManager = Game.GetEras()
 local eraIdx = eraManager:GetCurrentEra()
 local eraEntry = GameInfo.Eras[eraIdx]
@@ -173,7 +173,7 @@ if #vEnabled < #vtypes then
     print("VENABLED|" .. table.concat(vEnabled, ","))
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{MAX_RELIGIONS}", _LUA_MAX_RELIGIONS)
 
 
 def build_gameover_check_gamecore() -> str:

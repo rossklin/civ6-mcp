@@ -168,6 +168,28 @@ local function occupancyClass(info)
     return info.FormationClass
 end"""
 
+# Maximum number of religions in this game — defines maxReligions().
+# Mirrors the game's own ReligionScreen.lua: the limit comes from the map
+# size (Map_GreatPersonClasses.MaxWorldInstances for Great Prophets), NOT
+# from the number of players. Returns 0 when the lookup finds nothing, same
+# as the game UI; callers treat 0 as "unknown" and omit the slot count.
+_LUA_MAX_RELIGIONS = """\
+local function maxReligions()
+    local found = nil
+    pcall(function()
+        local mapSize = GameInfo.Maps[Map.GetMapSize()]
+        local mapSizeType = mapSize and mapSize.MapSizeType
+        if mapSizeType then
+            for row in GameInfo.Map_GreatPersonClasses() do
+                if row.MapSizeType == mapSizeType and row.GreatPersonClassType == "GREAT_PERSON_CLASS_PROPHET" then
+                    found = row.MaxWorldInstances
+                end
+            end
+        end
+    end)
+    return found or 0
+end"""
+
 # Victory-enabled check — prints VENABLED| lines for each enabled victory type.
 # Yield label table + formatters for trade route yield display.
 # fmtY: format array of {YieldIndex, Amount} objects (from GetOutgoingRoutes).
