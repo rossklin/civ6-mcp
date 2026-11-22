@@ -6,7 +6,6 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-import civ_mcp.narrate as nr
 from civ_mcp import handoff, lua as lq
 from civ_mcp.connection import LuaError
 from civ_mcp.game_lifecycle import cleanup_old_autosaves, save_game
@@ -1696,21 +1695,6 @@ async def build_post_turn_report(
         events.extend(victory_events)
     except Exception:
         log.warning("Victory proximity check failed", exc_info=True)
-
-    # Every 10 turns: full victory progress snapshot
-    if turn_after is not None and turn_after % 10 == 0:
-        try:
-            vp = await gs.get_victory_progress()
-            summary = nr.narrate_victory_progress(vp)
-            events.append(
-                lq.TurnEvent(
-                    priority=3,
-                    category="victory",
-                    message=f"10-TURN VICTORY SNAPSHOT (T{turn_after}):\n{summary}",
-                )
-            )
-        except Exception:
-            log.warning("10-turn victory check failed", exc_info=True)
 
     # Growth alerts from post-turn city state
     if snap_after:

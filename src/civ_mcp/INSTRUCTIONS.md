@@ -405,7 +405,7 @@ WC fires synchronously inside `end_turn()` — register votes **before** calling
 
 All victories trigger immediately when the condition is met — they do not wait for a turn boundary or WC session. A rival reaching 20 DVP wins before your next turn. The only counter is stripping DVP at a World Congress *before* they reach 20.
 
-`end_turn` runs a victory proximity scan every turn and a full snapshot every 10 turns. These warnings are the primary signal for invisible victories — worth paying attention to.
+`end_turn` runs a victory proximity scan every turn and warns in the turn report when a rival is close to winning. These warnings are the primary signal for invisible victories — worth paying attention to. Full standings are in the Victory Progress section of `get_full_game_state`.
 
 ## Additional getters
 Some parts of the game state were deemed rarely needed and kept in separate getters:
