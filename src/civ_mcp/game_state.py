@@ -30,7 +30,6 @@ from civ_mcp.lua.diplomacy import (
 )
 from civ_mcp.narrate import (
     narrate_goody_rewards,
-    narrate_move_discoveries,
     narrate_settle_candidates,
 )
 from civ_mcp.narrate_unified import narrate_full_state
@@ -169,15 +168,17 @@ class GameState:
     # ------------------------------------------------------------------
 
     async def move_unit(self, unit_id: int, target_x: int, target_y: int) -> str:
-        # Pre-move: install the tribal-village (goody hut) reward listener and
-        # snapshot the reward sequence. Best-effort — never blocks the move.
-        # The listener is idempotent and re-installs after a save load, so this
-        # also recovers from a recycled Lua state.
+        # Pre-move, in one round trip: snapshot what is revealed/visible (for
+        # the post-move discovery report), and install the tribal-village
+        # (goody hut) reward listener + snapshot its reward sequence.
+        # Best-effort — never blocks the move. The listener is idempotent and
+        # re-installs after a save load, so this also recovers from a recycled
+        # Lua state.
         goody_before_seq: int = -1
         goody_expect: bool = False
         try:
             snap_lines = await self.conn.execute_read(
-                lq.build_goody_snapshot_query(target_x, target_y)
+                lq.build_pre_move_snapshot_query(target_x, target_y)
             )
             for sline in snap_lines:
                 if sline.startswith("GOODY_SEQ|"):
@@ -261,40 +262,34 @@ class GameState:
                     result += "\n" + reward_text
             except Exception:
                 log.debug("Goody reward capture failed", exc_info=True)
-        # Post-move: visibility diff for discovery feedback
-        blocked = "|BLOCKED" in result
-        if not blocked and self.spatial is not None and self.spatial._revealed_seeded:
+        # Post-move: report what the move made visible. The game itself diffs
+        # visibility against the pre-move snapshot (GameCore, which is fresh
+        # right after a move), so no sight range has to be assumed. Only when
+        # something changed do we spend a second query to describe those
+        # tiles, using the same describer as the map dump (InGame).
+        if "|BLOCKED" not in result and "now_at:" in result:
             try:
-                # Extract actual position from result
-                now_match = re.search(r"now_at:(\d+),(\d+)", result)
-                if now_match:
-                    vis_x, vis_y = int(now_match.group(1)), int(now_match.group(2))
-                    vis_lines = await self.conn.execute_read(
-                        lq.build_post_move_visibility_query(vis_x, vis_y)
+                diff_lines = await self.conn.execute_read(
+                    lq.build_visibility_diff_query()
+                )
+                new_tiles, unit_tiles = lq.parse_visibility_diff(diff_lines)
+                if new_tiles or unit_tiles:
+                    desc_lines = await self.conn.execute_write(
+                        lq.build_describe_tiles_query(new_tiles + unit_tiles)
                     )
-                    vis_tiles = lq.parse_post_move_visibility(vis_lines)
-                    all_revealed = {(x, y) for x, y, _ in vis_tiles}
-                    newly_revealed = self.spatial.mark_revealed(all_revealed)
-                    if newly_revealed:
-                        new_tile_data = [
-                            (x, y, m)
-                            for x, y, m in vis_tiles
-                            if (x, y) in newly_revealed
-                        ]
-                        discovery_text = narrate_move_discoveries(
-                            new_tile_data, len(newly_revealed)
-                        )
-                        if discovery_text:
-                            result += "\n" + discovery_text
-                        # Record discovery event in spatial tracker
+                    described = lq.parse_described_tiles(desc_lines)
+                    result += _format_move_visibility(new_tiles, unit_tiles, described)
+                if new_tiles and self.spatial is not None:
+                    now_match = re.search(r"now_at:(\d+),(\d+)", result)
+                    if now_match:
                         await self.spatial.record_discovery(
                             "unit_action",
-                            (vis_x, vis_y),
-                            newly_revealed,
+                            (int(now_match.group(1)), int(now_match.group(2))),
+                            set(new_tiles),
                             0,
                         )
             except Exception:
-                log.debug("Post-move visibility diff failed", exc_info=True)
+                log.warning("Post-move visibility report failed", exc_info=True)
         return result
 
     async def attack_unit(self, unit_id: int, target_x: int, target_y: int) -> str:
@@ -1699,11 +1694,7 @@ class GameState:
         text = text + "\n\n## Research & Civics\n" + "\n".join(lines)
 
         # Append the map query output
-        lines: list[str] = await self.conn.execute_write(
-            load_lua_template("map.lua").replace(
-                "__MCP_SENTINEL_TAG__", lq.SENTINEL
-            )
-        )
+        lines: list[str] = await self.conn.execute_write(lq.build_map_query())
         text = text + """
 
 ## Map
@@ -1747,6 +1738,33 @@ Note: neighbours with "cliffs" have a cliff crossing, which is impassable.
             log.warning("Failed to append diary to full game state", exc_info=True)
 
         return text
+
+
+def _format_move_visibility(
+    new_tiles: list[tuple[int, int]],
+    unit_tiles: list[tuple[int, int]],
+    described: dict[tuple[int, int], str],
+) -> str:
+    """Text appended to a move result for what the move made visible.
+
+    *new_tiles* were revealed for the first time; *unit_tiles* were already
+    explored but just came into view with a foreign unit on them.
+    *described* maps a tile to its map-dump line (already indented). A tile
+    with no description (the describing query ran a frame early, or failed)
+    is still listed by coordinate so the count stays truthful.
+    """
+
+    def block(header: str, tiles: list[tuple[int, int]]) -> str:
+        if not tiles:
+            return ""
+        lines = [header]
+        for xy in tiles:
+            lines.append(described.get(xy, f"  ({xy[0]},{xy[1]}): (no detail)"))
+        return "\n" + "\n".join(lines)
+
+    return block(
+        f"Revealed {len(new_tiles)} new tile(s):", new_tiles
+    ) + block("Foreign units now in view:", unit_tiles)
 
 
 def _action_result(lines: list[str]) -> str:

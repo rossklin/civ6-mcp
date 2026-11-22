@@ -10,6 +10,7 @@ from civ_mcp.lua._helpers import (
     _int,
     _lua_get_city,
     _lua_get_unit,
+    load_lua_template,
 )
 from civ_mcp.lua.models import (
     DistrictPlacement,
@@ -1303,38 +1304,40 @@ def parse_ownership_delta(lines: list[str]) -> OwnershipDelta:
     )
 
 
-def build_revealed_tiles_seed_query() -> str:
-    """GameCore: return all currently revealed tile coordinates.
+def build_map_query() -> str:
+    """InGame: every explored tile as one text line (map.lua)."""
+    return (
+        load_lua_template("map.lua")
+        .replace("__LUA_TILE_DESCRIBE__", load_lua_template("tile_describe.lua"))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
-    Used once per session to seed the spatial tracker's revealed-tile set.
-    Output: ``REVEALED|x1,y1;x2,y2;...`` (semicolon-separated pairs).
+
+def build_describe_tiles_query(tiles: list[tuple[int, int]]) -> str:
+    """InGame: the given tiles, each as the same text line the map dump uses.
+
+    Output lines are ``TILE|x,y|<map line>`` (describe_tiles.lua); tiles that
+    are not revealed produce no line.
     """
-    return """
-local me = Game.GetLocalPlayer()
-local vis = PlayersVisibility[me]
-local parts = {}
-for idx = 0, Map.GetPlotCount() - 1 do
-    local p = Map.GetPlotByIndex(idx)
-    if vis:IsRevealed(p:GetX(), p:GetY()) then
-        table.insert(parts, p:GetX() .. "," .. p:GetY())
-    end
-end
-print("REVEALED|" .. table.concat(parts, ";"))
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+    pairs = ", ".join(f"{{{int(x)}, {int(y)}}}" for x, y in tiles)
+    return (
+        load_lua_template("describe_tiles.lua")
+        .replace("__LUA_TILE_DESCRIBE__", load_lua_template("tile_describe.lua"))
+        .replace("__MCP_TILES__", pairs)
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
-def parse_revealed_tiles_seed(lines: list[str]) -> set[tuple[int, int]]:
-    """Parse the bulk revealed-tiles response into a coordinate set."""
-    tiles: set[tuple[int, int]] = set()
+def parse_described_tiles(lines: list[str]) -> dict[tuple[int, int], str]:
+    """Parse ``TILE|x,y|<line>`` output into {(x, y): line}."""
+    out: dict[tuple[int, int], str] = {}
     for line in lines:
-        if not line.startswith("REVEALED|"):
+        if not line.startswith("TILE|"):
             continue
-        data = line[len("REVEALED|") :]
-        if not data:
-            break
-        for pair in data.split(";"):
-            xy = pair.split(",")
-            if len(xy) == 2:
-                tiles.add((int(xy[0]), int(xy[1])))
-    return tiles
+        parts = line.split("|", 2)
+        if len(parts) < 3:
+            continue
+        xy = parts[1].split(",")
+        if len(xy) == 2:
+            out[(int(xy[0]), int(xy[1]))] = parts[2]
+    return out

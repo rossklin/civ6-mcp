@@ -142,9 +142,6 @@ class SpatialTracker:
         self._event_spatial = EVENT_SPATIAL
         self._turn: int | None = None
         self._game: str | None = None
-        # Revealed-tile set for visibility diffs
-        self._revealed: set[tuple[int, int]] = set()
-        self._revealed_seeded: bool = False
 
     @property
     def bound(self) -> bool:
@@ -159,20 +156,6 @@ class SpatialTracker:
         if self._game == game_id:
             return
         self._game = game_id
-        # Reset revealed set for new game
-        self._revealed.clear()
-        self._revealed_seeded = False
-
-    def seed_revealed(self, tiles: set[tuple[int, int]]) -> None:
-        """Bulk-load revealed tiles from a Lua query at game start."""
-        self._revealed = set(tiles)
-        self._revealed_seeded = True
-
-    def mark_revealed(self, tiles: set[tuple[int, int]]) -> set[tuple[int, int]]:
-        """Add tiles to revealed set. Returns the newly revealed subset."""
-        newly = tiles - self._revealed
-        self._revealed |= tiles
-        return newly
 
     async def record(
         self,
