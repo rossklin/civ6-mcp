@@ -37,6 +37,20 @@ local function CityProductionOptions(cityId)
         if ok and cost and cost > 0 then return math.floor(cost) end
         return -1
     end
+    -- Actual production cost of an item in this city: the cost the game's own
+    -- ProductionPanel shows, including scaling (settlers/builders get dearer
+    -- with each one built, districts with tech/civic progress). The build
+    -- queue exposes it per item kind, keyed by the row INDEX (not the hash):
+    -- GetUnitCost / GetBuildingCost / GetDistrictCost / GetProjectCost.
+    -- Falls back to the unscaled database cost if the call fails.
+    local function prodCost(getter, row)
+        local cost = row.Cost
+        pcall(function()
+            local c = bq[getter](bq, row.Index)
+            if c and c > 0 then cost = math.floor(c) end
+        end)
+        return cost
+    end
     -- Check Trader cap: game silently rejects Traders when count >= route capacity
     local pTrade = Players[me]:GetTrade()
     local traderCount = 0
@@ -57,8 +71,7 @@ local function CityProductionOptions(cityId)
                 if canStart then
                     local t = bq:GetTurnsLeft(unit.Hash)
                     local gc = getGoldCost(unit.Hash, true)
-                    local adjCost = unit.Cost
-                    pcall(function() local c = bq:GetProductionCost(unit.Hash); if c > 0 then adjCost = math.floor(c) end end)
+                    local adjCost = prodCost("GetUnitCost", unit)
                     registerOutput("UNITS:", unit.UnitType .. "|" .. adjCost .. "|" .. t .. "|" .. gc)
                 end
             end
@@ -76,8 +89,7 @@ local function CityProductionOptions(cityId)
                 if not bldg.IsWonder then
                     gc = getGoldCost(bldg.Hash, false)
                 end
-                local adjCost = bldg.Cost
-                pcall(function() local c = bq:GetProductionCost(bldg.Hash); if c > 0 then adjCost = math.floor(c) end end)
+                local adjCost = prodCost("GetBuildingCost", bldg)
                 registerOutput("BUILDINGS:", bldg.BuildingType .. "|" .. adjCost .. "|" .. t .. "|" .. gc)
             end
         end
@@ -85,16 +97,14 @@ local function CityProductionOptions(cityId)
     for dist in GameInfo.Districts() do
         if bq:CanProduce(dist.Hash, true) then
             local t = bq:GetTurnsLeft(dist.Hash)
-            local adjCost = dist.Cost
-            pcall(function() local c = bq:GetProductionCost(dist.Hash); if c > 0 then adjCost = math.floor(c) end end)
+            local adjCost = prodCost("GetDistrictCost", dist)
             registerOutput("DISTRICTS:", dist.DistrictType .. "|" .. adjCost .. "|" .. t .. "|-1")
         end
     end
     for proj in GameInfo.Projects() do
         if bq:CanProduce(proj.Hash, true) then
             local t = bq:GetTurnsLeft(proj.Hash)
-            local adjCost = proj.Cost
-            pcall(function() local c = bq:GetProductionCost(proj.Hash); if c > 0 then adjCost = math.floor(c) end end)
+            local adjCost = prodCost("GetProjectCost", proj)
             registerOutput("PROJECTS:", proj.ProjectType .. "|" .. adjCost .. "|" .. t .. "|-1")
         end
     end
@@ -111,8 +121,7 @@ local function CityProductionOptions(cityId)
                 local canRepair = CityManager.CanStartOperation(pCity, CityOperationTypes.BUILD, repParams, true)
                 if canRepair then
                     local t = bq:GetTurnsLeft(dInfo.Hash)
-                    local adjCost = dInfo.Cost
-                    pcall(function() local c = bq:GetProductionCost(dInfo.Hash); if c > 0 then adjCost = math.floor(c) end end)
+                    local adjCost = prodCost("GetDistrictCost", dInfo)
                     registerOutput("REPAIRS (DISTRICTS)", dInfo.DistrictType .. "|" .. adjCost .. "|" .. t)
                 end
             end
@@ -125,8 +134,7 @@ local function CityProductionOptions(cityId)
             local canRepair = CityManager.CanStartOperation(pCity, CityOperationTypes.BUILD, repCheck, true)
             if canRepair then
                 local t = bq:GetTurnsLeft(bldg.Hash)
-                local adjCost = bldg.Cost
-                pcall(function() local c = bq:GetProductionCost(bldg.Hash); if c > 0 then adjCost = math.floor(c) end end)
+                local adjCost = prodCost("GetBuildingCost", bldg)
                 registerOutput("REPAIRS (BUILDINGS)", bldg.BuildingType .. "|" .. adjCost .. "|" .. t)
             end
         end

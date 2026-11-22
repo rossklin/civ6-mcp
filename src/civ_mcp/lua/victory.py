@@ -170,8 +170,8 @@ for i = 0, 62 do
                                 building = true
                                 pcall(function()
                                     turnsLeft = bq:GetTurnsLeft(projRow.Hash)
-                                    cost = math.floor(bq:GetProductionCost(projRow.Hash))
-                                    local prog = bq:GetProductionProgress(projRow.Hash)
+                                    cost = math.floor(bq:GetProjectCost(projRow.Index))
+                                    local prog = bq:GetProjectProgress(projRow.Index)
                                     if cost > 0 then progPct = math.floor(prog * 100 / cost) end
                                 end)
                                 cityBuild = Locale.Lookup(city:GetName())
@@ -188,8 +188,8 @@ for i = 0, 62 do
                                 pcall(function()
                                     for _, city in p:GetCities():Members() do
                                         local bq = city:GetBuildQueue()
-                                        local c = bq:GetProductionCost(projRow.Hash)
-                                        if c and c > 0 then
+                                        local c = bq:GetProjectCost(projRow.Index)
+                                        if bq:CanProduce(projRow.Hash, true) and c and c > 0 then
                                             cost = math.floor(c)
                                             canBuild = true
                                             break
