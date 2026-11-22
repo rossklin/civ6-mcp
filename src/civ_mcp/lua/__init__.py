@@ -93,7 +93,6 @@ from civ_mcp.lua.governance import (  # noqa: F401
     build_set_policies,
     parse_city_states_response,
     parse_dedications_response,
-    parse_governors_response,
 )
 from civ_mcp.lua.map import (  # noqa: F401
     build_district_advisor_query,
@@ -126,7 +125,6 @@ from civ_mcp.lua.map import (  # noqa: F401
 
 # Re-export all models
 from civ_mcp.lua.models import (  # noqa: F401
-    AppointedGovernor,
     AgentExtras,
     AttackOutcome,
     AttackTarget,
@@ -152,9 +150,6 @@ from civ_mcp.lua.models import (  # noqa: F401
     GameNotification,
     GameOverStatus,
     GameOverview,
-    GovernorInfo,
-    GovernorPromotion,
-    GovernorStatus,
     GPAdvisorCity,
     GPAdvisorResult,
     GreatPersonInfo,

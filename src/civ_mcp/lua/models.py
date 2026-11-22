@@ -675,54 +675,6 @@ class DealOptions:
     current_alliance: str | None = None
 
 @dataclass
-class GovernorInfo:
-    """An available governor type."""
-
-    governor_type: str
-    name: str
-    title: str
-    description: str = ""
-    base_ability: str = ""  # name of the base (level 0) promotion
-    base_ability_desc: str = ""  # description of the base promotion
-    promotions: list["GovernorPromotion"] = field(default_factory=list)
-
-
-@dataclass
-class GovernorPromotion:
-    """A promotion available for a governor."""
-
-    promotion_type: str
-    name: str
-    description: str
-    level: int = 0  # 0 = base ability, 1-3 = promotion tiers
-    column: int = 0  # position in the promotion tree
-
-
-@dataclass
-class AppointedGovernor:
-    """A governor the player has appointed."""
-
-    governor_type: str
-    name: str
-    assigned_city_id: int  # -1 = unassigned
-    assigned_city_name: str  # "Unassigned" if not placed
-    is_established: bool
-    turns_to_establish: int = 0
-    available_promotions: list[GovernorPromotion] = field(default_factory=list)
-
-
-@dataclass
-class GovernorStatus:
-    """Full governor status for the player."""
-
-    points_available: int
-    points_spent: int
-    can_appoint: bool
-    appointed: list[AppointedGovernor] = field(default_factory=list)
-    available_to_appoint: list[GovernorInfo] = field(default_factory=list)
-
-
-@dataclass
 class PromotionOption:
     """A promotion available for a unit."""
 
@@ -1144,7 +1096,6 @@ class FullGameState:
     pantheon_status: PantheonStatus | None = None
 
     # Governance
-    governors: GovernorStatus | None = None
     city_states: EnvoyStatus | None = None
 
     # Planning

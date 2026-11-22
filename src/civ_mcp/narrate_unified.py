@@ -63,12 +63,8 @@ def narrate_full_state(state: FullGameState) -> str:
             parts.append(nr.narrate_builder_tasks(tasks, builders_info))
 
     # ── Governors ──────────────────────────────────────────────────
-    if state.governors is not None:
-        parts.append("\n## Governors\n")
-        parts.append(nr.narrate_governors(state.governors))
-
     # ── Policies ───────────────────────────────────────────────────
-    # Rendered directly by policies.lua and appended in
+    # Both rendered directly by governors.lua / policies.lua and appended in
     # GameState.get_full_game_state (no parser/narrator roundtrip).
 
     # ── City-States ────────────────────────────────────────────────

@@ -11,14 +11,10 @@ from civ_mcp.lua._helpers import (
     lua_quote,
 )
 from civ_mcp.lua.models import (
-    AppointedGovernor,
     CityStateInfo,
     DedicationChoice,
     DedicationStatus,
     EnvoyStatus,
-    GovernorInfo,
-    GovernorPromotion,
-    GovernorStatus,
 )
 
 
@@ -74,70 +70,21 @@ def build_set_policies(assignments: dict[int, str]) -> str:
     )
 
 
-def build_governors_query() -> str:
-    """Read governor status, appointed governors, and available types (InGame context)."""
-    return """
-local me = Game.GetLocalPlayer()
-local pGovs = Players[me]:GetGovernors()
-local pts = pGovs:GetGovernorPoints()
-local spent = pGovs:GetGovernorPointsSpent()
-local canAppoint = pGovs:CanAppoint() and "1" or "0"
-print("STATUS|" .. pts .. "|" .. spent .. "|" .. canAppoint)
-local appointedTypes = {}
-for row in GameInfo.Governors() do
-    if row.TransitionStrength and row.TransitionStrength > 0 and pGovs:HasGovernor(row.Hash) then
-        appointedTypes[row.GovernorType] = true
-        local g = pGovs:GetGovernor(row.Hash)
-        local gName = Locale.Lookup(row.Name)
-        local gTitle = Locale.Lookup(row.Title)
-        local cityID = -1
-        local cityName = "Unassigned"
-        local established = "0"
-        local turnsLeft = 0
-        local assignedCity = g:GetAssignedCity()
-        if assignedCity then
-            cityID = assignedCity:GetID()
-            cityName = Locale.Lookup(assignedCity:GetName())
-            established = g:IsEstablished() and "1" or "0"
-            if not g:IsEstablished() then turnsLeft = g:GetTurnsToEstablish() end
-        end
-        print("APPOINTED|" .. row.GovernorType .. "|" .. gName:gsub("|","/") .. "|" .. gTitle:gsub("|","/") .. "|" .. cityID .. "|" .. cityName:gsub("|","/") .. "|" .. established .. "|" .. turnsLeft)
-        for promo in GameInfo.GovernorPromotionSets() do
-            if promo.GovernorType == row.GovernorType then
-                local promoRow = GameInfo.GovernorPromotions[promo.GovernorPromotion]
-                if promoRow and not g:HasPromotion(promoRow.Index) then
-                    local pName = Locale.Lookup(promoRow.Name)
-                    local pDesc = Locale.Lookup(promoRow.Description):gsub("|", "/"):gsub("\\n", " ")
-                    local lvl = promoRow.Level or 0
-                    local col = promoRow.Column or 0
-                    print("GOV_PROMO|" .. row.GovernorType .. "|" .. promoRow.GovernorPromotionType .. "|" .. pName:gsub("|","/") .. "|" .. pDesc .. "|" .. lvl .. "|" .. col)
-                end
-            end
-        end
-    end
-end
-for gov in GameInfo.Governors() do
-    if gov.TransitionStrength and gov.TransitionStrength > 0 and not appointedTypes[gov.GovernorType] then
-        local gName = Locale.Lookup(gov.Name)
-        local gTitle = Locale.Lookup(gov.Title)
-        local gDesc = gov.Description and Locale.Lookup(gov.Description):gsub("|", "/"):gsub("\\n", " ") or ""
-        print("AVAILABLE|" .. gov.GovernorType .. "|" .. gName:gsub("|","/") .. "|" .. gTitle:gsub("|","/") .. "|" .. gDesc)
-        for promo in GameInfo.GovernorPromotionSets() do
-            if promo.GovernorType == gov.GovernorType then
-                local promoRow = GameInfo.GovernorPromotions[promo.GovernorPromotion]
-                if promoRow then
-                    local pName = Locale.Lookup(promoRow.Name)
-                    local pDesc = Locale.Lookup(promoRow.Description):gsub("|", "/"):gsub("\\n", " ")
-                    local lvl = promoRow.Level or 0
-                    local col = promoRow.Column or 0
-                    print("GOV_PROMO|" .. gov.GovernorType .. "|" .. promoRow.GovernorPromotionType .. "|" .. pName:gsub("|","/") .. "|" .. pDesc .. "|" .. lvl .. "|" .. col)
-                end
-            end
-        end
-    end
-end
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+def build_governors_query(include_unappointed: bool = False) -> str:
+    """Governor status as ready-to-show text (InGame context).
+
+    The template (governors.lua) prints the final text directly: governor
+    points, every appointed governor with its full promotion tree (each
+    promotion tagged OWNED / AVAILABLE / LOCKED with its prerequisites), and
+    optionally the governors not yet appointed. ``include_unappointed`` is
+    False for the Governors section of get_full_game_state and True for the
+    get_available_governors tool.
+    """
+    return (
+        load_lua_template("governors.lua")
+        .replace("__MCP_INCLUDE_UNAPPOINTED__", "true" if include_unappointed else "false")
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def build_appoint_governor(governor_type: str) -> str:
@@ -158,7 +105,7 @@ local postPts = pGovs:GetGovernorPointsSpent()
 if postPts > prePts then
     print("OK:APPOINTED|" .. Locale.Lookup(gov.Name) .. " (" .. Locale.Lookup(gov.Title) .. ")")
 else
-    print("OK:APPOINT_REQUESTED|" .. Locale.Lookup(gov.Name) .. " — verify with get_governors()")
+    print("OK:APPOINT_REQUESTED|" .. Locale.Lookup(gov.Name) .. " — check the Governors section of the game state")
 end
 print("{SENTINEL}")
 """
@@ -359,85 +306,6 @@ pCulture:RequestChangeGovernment(row.Index)
 print("OK:GOVERNMENT_CHANGED|{gov_type}|" .. Locale.Lookup(row.Name))
 print("{SENTINEL}")
 """
-
-
-def parse_governors_response(lines: list[str]) -> GovernorStatus:
-    """Parse STATUS|, APPOINTED|, GOV_PROMO|, AVAILABLE| lines from build_governors_query."""
-    pts_avail = 0
-    pts_spent = 0
-    can_appoint = False
-    appointed: list[AppointedGovernor] = []
-    available: list[GovernorInfo] = []
-    # Collect promotions keyed by governor_type, then attach after
-    promos_by_gov: dict[str, list[GovernorPromotion]] = {}
-
-    for line in lines:
-        if line.startswith("STATUS|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                pts_total = int(parts[1])
-                pts_spent = int(parts[2])
-                pts_avail = pts_total - pts_spent
-                can_appoint = parts[3] == "1"
-        elif line.startswith("APPOINTED|"):
-            parts = line.split("|")
-            if len(parts) >= 7:
-                appointed.append(
-                    AppointedGovernor(
-                        governor_type=parts[1],
-                        name=parts[2],
-                        assigned_city_id=int(parts[4]),
-                        assigned_city_name=parts[5],
-                        is_established=parts[6] == "1",
-                        turns_to_establish=int(parts[7]) if len(parts) >= 8 else 0,
-                    )
-                )
-        elif line.startswith("GOV_PROMO|"):
-            parts = line.split("|")
-            if len(parts) >= 5:
-                gov_type = parts[1]
-                promos_by_gov.setdefault(gov_type, []).append(
-                    GovernorPromotion(
-                        promotion_type=parts[2],
-                        name=parts[3],
-                        description=parts[4],
-                        level=int(parts[5]) if len(parts) > 5 else 0,
-                        column=int(parts[6]) if len(parts) > 6 else 0,
-                    )
-                )
-        elif line.startswith("AVAILABLE|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                available.append(
-                    GovernorInfo(
-                        governor_type=parts[1],
-                        name=parts[2],
-                        title=parts[3],
-                        description=parts[4] if len(parts) > 4 else "",
-                    )
-                )
-
-    # Attach promotions to their governors
-    for gov in appointed:
-        gov.available_promotions = promos_by_gov.get(gov.governor_type, [])
-
-    # Attach promotions to available governors, split out base ability
-    for gov in available:
-        all_promos = promos_by_gov.get(gov.governor_type, [])
-        for p in all_promos:
-            if p.level == 0:
-                gov.base_ability = p.name
-                gov.base_ability_desc = p.description
-            else:
-                gov.promotions.append(p)
-
-    return GovernorStatus(
-        points_available=pts_avail,
-        points_spent=pts_spent,
-        can_appoint=can_appoint,
-        appointed=appointed,
-        available_to_appoint=available,
-    )
 
 
 def parse_city_states_response(lines: list[str]) -> EnvoyStatus:

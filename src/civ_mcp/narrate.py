@@ -609,54 +609,6 @@ def narrate_deal_options(opts: lq.DealOptions) -> str:
         )
     return "\n".join(lines)
 
-def narrate_governors(gov: lq.GovernorStatus) -> str:
-    lines = [
-        f"Governor Points: {gov.points_available} available, {gov.points_spent} spent"
-    ]
-    if gov.can_appoint:
-        lines.append("** Can appoint a new governor! **")
-
-    if gov.appointed:
-        lines.append(f"\nAppointed ({len(gov.appointed)}):")
-        for g in gov.appointed:
-            if g.assigned_city_id >= 0:
-                est = (
-                    " (established)"
-                    if g.is_established
-                    else f" ({g.turns_to_establish} turns to establish)"
-                )
-                lines.append(
-                    f"  {g.name} ({g.governor_type}) — {g.assigned_city_name}{est}"
-                )
-            else:
-                lines.append(f"  {g.name} ({g.governor_type}) — Unassigned")
-            if g.available_promotions:
-                lines.append("    Available promotions:")
-                for p in g.available_promotions:
-                    lines.append(
-                        f"      {p.name} ({p.promotion_type}): {p.description}"
-                    )
-
-    if gov.available_to_appoint:
-        lines.append(f"\nAvailable to appoint ({len(gov.available_to_appoint)}):")
-        for g in gov.available_to_appoint:
-            lines.append(f"  {g.name} — {g.title} ({g.governor_type})")
-            if g.description:
-                lines.append(f"    {g.description}")
-            if g.base_ability:
-                lines.append(f"    Base: {g.base_ability} — {g.base_ability_desc}")
-            if g.promotions:
-                for p in sorted(g.promotions, key=lambda x: (x.level, x.column)):
-                    lines.append(
-                        f"    L{p.level}: {p.name} ({p.promotion_type}) — {p.description}"
-                    )
-
-    lines.append(
-        "\nUse appoint_governor/assign_governor/promote_governor(governor_type, promotion_type)."
-    )
-    return "\n".join(lines)
-
-
 def narrate_city_states(status: lq.EnvoyStatus) -> str:
     lines = [f"Envoy tokens available: {status.tokens_available}"]
     if not status.city_states:

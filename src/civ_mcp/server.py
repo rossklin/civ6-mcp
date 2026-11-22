@@ -2901,16 +2901,17 @@ async def get_pathing_estimate(
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_available_governors(ctx: Context) -> str:
-    """Get available governors and their bonuses.
+    """Get all governors, including the ones not yet appointed.
 
-    Shows which governors are unlocked, their promotion trees, and
-    the bonuses they provide. Use appoint_governor to assign one to a city.
+    Shows governor points, every appointed governor and every governor still
+    available to appoint, each with its full promotion tree: what each
+    promotion does, which are owned, which can be taken now and what the
+    locked ones require. Use appoint_governor to appoint one.
     """
     gs = _get_game(ctx)
 
     async def _run():
-        status = await gs.get_governors()
-        return nr.narrate_governors(status)
+        return await gs.get_governors(include_unappointed=True)
 
     return await _logged(ctx, "get_available_governors", {}, _run)
 

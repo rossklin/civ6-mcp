@@ -1088,10 +1088,11 @@ class GameState:
     # Governor methods (InGame context)
     # ------------------------------------------------------------------
 
-    async def get_governors(self) -> lq.GovernorStatus:
-        lua = lq.build_governors_query()
+    async def get_governors(self, include_unappointed: bool = False) -> str:
+        """Governor status as ready-to-show text (rendered by governors.lua)."""
+        lua = lq.build_governors_query(include_unappointed)
         lines = await self.conn.execute_write(lua)
-        return lq.parse_governors_response(lines)
+        return "\n".join(lines)
 
     async def appoint_governor(self, governor_type: str) -> str:
         lua = lq.build_appoint_governor(governor_type)
@@ -1667,11 +1668,13 @@ class GameState:
 
         # First run section queries in the old format, that go through the parser/narrator roundabout
         state = await fetch_full_state(self.conn)
-        # Unset available governors because they should be accessed through the get_available_governors tool
-        state.governors.available_to_appoint = []
         text = narrate_full_state(state)
 
         # Then run queries in the new format that output the correct format directly
+        # Append the governors query output. Governors not yet appointed are
+        # left out here: they are served by the get_available_governors tool.
+        text = text + "\n\n## Governors\n" + await self.get_governors()
+
         # Append the government/policies query output
         lines: list[str] = await self.conn.execute_write(lq.build_policies_query())
         text = text + "\n\n## Policies\n" + "\n".join(lines)
