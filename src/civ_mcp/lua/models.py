@@ -573,6 +573,9 @@ class VictoryProgress:
     """Full victory progress snapshot."""
 
     players: list[VictoryPlayerProgress]
+    # Player id this snapshot was taken for (-1 = unknown). In a shared game
+    # the agent's civ is not player 0, so "us" must come from the query.
+    our_player_id: int = -1
     # Culture victory details (our perspective)
     our_tourists_from: dict[str, int] = field(
         default_factory=dict

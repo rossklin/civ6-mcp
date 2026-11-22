@@ -1163,8 +1163,9 @@ def narrate_victory_progress(vp: lq.VictoryProgress) -> str:
             lines.append(f"Disabled: {', '.join(disabled)}")
     lines.append("")
 
-    # Find our player (player_id 0 typically, or first non-Unmet)
-    us = next((p for p in vp.players if p.name != "Unmet"), None)
+    # Our player is the one the query ran for. Never guess from list order:
+    # in a shared game the first listed civ is the human, not the agent.
+    us = next((p for p in vp.players if p.player_id == vp.our_player_id), None)
 
     # --- Science Victory ---
     if all_enabled or "VICTORY_TECHNOLOGY" in ev:
@@ -1281,11 +1282,12 @@ def narrate_victory_progress(vp: lq.VictoryProgress) -> str:
     lines.append("")
     lines.append("RIVAL INTELLIGENCE (met civilizations)")
     for p in sorted(vp.players, key=lambda p: p.score, reverse=True):
-        marker = " <--" if us and p.player_id == us.player_id else ""
+        if us and p.player_id == us.player_id:
+            continue  # we are not our own rival
         lines.append(
             f"  {p.name}: {p.num_cities} cities | "
             f"Sci {p.science_yield:.0f} Cul {p.culture_yield:.0f} Gold {p.gold_yield:+.0f} | "
-            f"Mil {p.military_strength}{marker}"
+            f"Mil {p.military_strength}"
         )
 
     # --- Demographics (all civilizations, anonymized) ---

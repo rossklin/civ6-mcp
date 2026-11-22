@@ -77,6 +77,7 @@ def build_victory_progress_query() -> str:
     """Build a Lua query for victory progress of all players (InGame context).
 
     Outputs lines:
+      ME|pid   (the player this report is for — NOT necessarily player 0)
       PLAYER|pid|name|score|sciVP|sciNeeded|diploVP|tourism|milStr|techs|civics|relCities|staycationers|hasReligion
       CULTURE|civName|ourTourists|theirStaycationers|dominant
       CAPITAL|civName|holdsOwn
@@ -86,6 +87,7 @@ def build_victory_progress_query() -> str:
 local me = Game.GetLocalPlayer()
 local pDiplo = Players[me]:GetDiplomacy()
 local pCul = Players[me]:GetCulture()
+print("ME|" .. me)
 
 local dPop, dMil, dFood, dGold, dLand, dProd = {{}}, {{}}, {{}}, {{}}, {{}}, {{}}
 for i = 0, 62 do
@@ -284,9 +286,12 @@ def parse_victory_progress_response(lines: list[str]) -> VictoryProgress:
     demographics: dict[str, DemographicEntry] = {}
     space_projects: list[SpaceProject] = []
     enabled_victories: set[str] = set()
+    our_player_id = -1
 
     for line in lines:
-        if line.startswith("PLAYER|"):
+        if line.startswith("ME|"):
+            our_player_id = _int(line.split("|")[1])
+        elif line.startswith("PLAYER|"):
             p = line.split("|")
             if len(p) < 14:
                 continue
@@ -375,6 +380,7 @@ def parse_victory_progress_response(lines: list[str]) -> VictoryProgress:
 
     return VictoryProgress(
         players=players,
+        our_player_id=our_player_id,
         our_tourists_from=our_tourists,
         their_staycationers=their_stay,
         capitals_held=capitals,
