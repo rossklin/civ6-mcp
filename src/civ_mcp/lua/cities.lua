@@ -182,9 +182,12 @@ for i, c in Players[me]:GetCities():Members() do
         turnsLeft = bq:GetTurnsLeft()
     end
     local g = c:GetGrowth()
+    -- Amenities as the game's city panel reports them (CitySupport.lua):
+    -- GetAmenities() is what the city HAS, GetAmenitiesNeeded() what its
+    -- population requires; the net of the two drives happiness.
+    local amHave = g:GetAmenities() or 0
     local amNeed = 0
     pcall(function() amNeed = g:GetAmenitiesNeeded() end)
-    local amTotal = amNeed + g:GetAmenities()
     -- City defense info
     local defStr, garHP, garMax, wallHP, wallMax = 0, 0, 0, 0, 0
     local ccIdx = GameInfo.Districts["DISTRICT_CITY_CENTER"].Index
@@ -235,13 +238,22 @@ for i, c in Players[me]:GetCities():Members() do
     end
     
     table.insert(cityCoords, {name=nm, x=c:GetX(), y=c:GetY()})
-    local loy, loyMax, loyPT, loyFlip = 100, 100, 0, 0
+    -- Loyalty. GetTurnsToConversion() is only meaningful while the city is
+    -- actually losing loyalty (the game's CityBannerManager checks
+    -- GetConversionOutcome() == LOSING_LOYALTY before using it); for a
+    -- stable city it reads 0, which must not be shown as "flips in 0".
+    local loy, loyMax, loyPT = 100, 100, 0
+    local loyFlip = nil  -- turns until the city flips, nil when not at risk
     local cult = c:GetCulturalIdentity()
     if cult then
         loy = cult:GetLoyalty()
         loyMax = cult:GetMaxLoyalty()
         loyPT = cult:GetLoyaltyPerTurn()
-        loyFlip = cult:GetTurnsToConversion()
+        pcall(function()
+            if cult:GetConversionOutcome() == IdentityConversionOutcome.LOSING_LOYALTY then
+                loyFlip = cult:GetTurnsToConversion()
+            end
+        end)
     end
     local garrisonUnit = ""
     local garFound = false
@@ -263,10 +275,13 @@ for i, c in Players[me]:GetCities():Members() do
 
     local baseInfo = string.format("%s (pop %d) at (%d,%d)", nm, c:GetPopulation(), c:GetX(), c:GetY())
     local yields = string.format("Food %.1f Prod  %.1f Gold %.1f Sci %.1f Cul %.1f Faith %.1f", c:GetYield(0), c:GetYield(1), c:GetYield(2), c:GetYield(3), c:GetYield(4), c:GetYield(5))
-    local growth = string.format("Housing %.1f Amenities %.1f | Growth: %.1f food/t, %d turns to grow", g:GetHousing(), amTotal, g:GetFoodSurplus(), g:GetTurnsUntilGrowth())
+    local growth = string.format("Housing %.1f Amenities %.0f (needs %.0f, net %+.0f) | Growth: %.1f food/t, %d turns to grow", g:GetHousing(), amHave, amNeed, amHave - amNeed, g:GetFoodSurplus(), g:GetTurnsUntilGrowth())
     local producingStr = string.format("building: %s (%d turns left)", producing, turnsLeft)
     local defense = string.format("HP:%d/%d Wall:%d/%d Def:%d Gar:%s", garHP, garMax, wallHP, wallMax, defStr, garrisonUnit)
-    local loyalty = string.format("Loyalty:%.1f/%.1f, per turn:%.1f, turns to flip:%d", loy, loyMax, loyPT, loyFlip)
+    local loyalty = string.format("Loyalty:%.1f/%.1f (%+.1f/turn)", loy, loyMax, loyPT)
+    if loyFlip ~= nil then
+        loyalty = loyalty .. string.format(" !! LOSING LOYALTY - flips in %.0f turns", loyFlip)
+    end
     
     print(string.format("\n%s - %s | %s | %s | %s | %s", baseInfo, yields, growth, producingStr, defense, loyalty))
     if #allBuildings > 0 then

@@ -1114,7 +1114,9 @@ def build_diary_full_query() -> str:
         # Amenities needed
         "    local amNeed = 0 "
         "    pcall(function() amNeed = g:GetAmenitiesNeeded() end) "
-        "    local amTotal = amNeed + g:GetAmenities() "
+        # GetAmenities() already is what the city has (the game UI's net is
+        # GetAmenities() - GetAmenitiesNeeded()); do not add the need to it.
+        "    local amTotal = g:GetAmenities() "
         # Print PCITY
         '    print("PCITY|" .. i .. "|" .. cID '
         '      .. "|" .. cName .. "|" .. cPop '
