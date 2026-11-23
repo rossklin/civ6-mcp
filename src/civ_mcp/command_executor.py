@@ -28,6 +28,29 @@ _PARAM_ALIASES: dict[str, str] = {
 }
 
 
+# Longest result a single command may contribute to the batch output. Sized
+# for legitimate multi-line results (a scout move listing a dozen revealed
+# tiles, a city's production list, a district placement error with its valid
+# tiles) while still bounding a runaway one.
+_MAX_RESULT_CHARS = 4000
+
+
+def _cap_result(result: str) -> str:
+    """Bound a command result, cutting at a line break and saying so.
+
+    A cut never lands mid-line, and the note tells the agent how many lines
+    are missing so a shortened list is not mistaken for a complete one.
+    """
+    if len(result) <= _MAX_RESULT_CHARS:
+        return result
+    kept = result[:_MAX_RESULT_CHARS]
+    cut = kept.rfind("\n")
+    if cut > 0:
+        kept = kept[:cut]
+    dropped = result[len(kept) :].count("\n")
+    return f"{kept}\n... ({dropped} more line(s) not shown)"
+
+
 def _convert_params(params: dict[str, Any]) -> dict[str, Any]:
     """Rename legacy param names and handle other transforms."""
     converted: dict[str, Any] = {}
@@ -101,9 +124,8 @@ async def execute_commands(gs: GameState, commands_json: str) -> str:
         # Execute
         try:
             result = await method(**converted)
-            # Truncate very long results for readability
-            if isinstance(result, str) and len(result) > 500:
-                result = result[:497] + "..."
+            if isinstance(result, str):
+                result = _cap_result(result)
             results.append(f"[{i + 1}/{total}] {action}: {result}")
         except TypeError as e:
             results.append(
