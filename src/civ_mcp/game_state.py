@@ -1282,7 +1282,9 @@ class GameState:
         wanted = f"({government_type.upper()})"
         report: list[str] = []
         for _ in range(5):
-            report = await self.conn.execute_write(lq.build_policies_query())
+            report = await self.conn.execute_write(
+                lq.build_policies_query(slots_only=True)
+            )
             # First text line is "Government: <name> (<type>)"; the response
             # may arrive as one multi-line string, so split before checking.
             if report and wanted in "\n".join(report).split("\n", 1)[0]:

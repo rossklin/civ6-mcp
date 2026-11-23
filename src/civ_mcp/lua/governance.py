@@ -18,16 +18,21 @@ from civ_mcp.lua.models import (
 )
 
 
-def build_policies_query() -> str:
+def build_policies_query(slots_only: bool = False) -> str:
     """Government & policy status as ready-to-show text (InGame context).
 
     The template (policies.lua) prints the final text directly: current
     government, policy unlock cost, slots with their cards, every unlocked
-    government (slot layout + bonuses) and every unlocked policy card. Used
-    for the Policies section of get_full_game_state and as the follow-up
-    report of change_government.
+    government (slot layout + bonuses) and every unlocked policy card. That
+    is the Policies section of get_full_game_state. With ``slots_only`` it
+    stops after the slots — the short report appended to a change_government
+    result.
     """
-    return load_lua_template("policies.lua").replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    return (
+        load_lua_template("policies.lua")
+        .replace("__MCP_SLOTS_ONLY__", "true" if slots_only else "false")
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def build_set_policies(assignments: dict[int, str]) -> str:

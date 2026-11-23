@@ -92,8 +92,21 @@ for s = 0, numSlots - 1 do
         emit("  Slot " .. s .. " (" .. label .. "): EMPTY")
     end
 end
+local function finish()
+    print(table.concat(out, "\n"))
+    print("__MCP_SENTINEL_TAG__")
+end
 if emptySlots > 0 then
     emit("!! " .. emptySlots .. " slot(s) EMPTY - no card is in effect until every slot is filled: call set_policies with an assignment for ALL " .. numSlots .. " slots.")
+end
+
+-- Slots-only mode (the flag below is filled in by build_policies_query):
+-- the report appended to a change_government result stops here. The agent
+-- already has the card list from the game state, and a command result has
+-- to stay short.
+if __MCP_SLOTS_ONLY__ then
+    finish()
+    return
 end
 
 -- Unlocked governments
@@ -201,5 +214,4 @@ end
 emit("")
 emit("Use set_policies to fill ALL slots at once, keyed by slot index, e.g. {\"action\": \"set_policies\", \"params\": {\"assignments\": {\"0\": \"POLICY_AGOGE\", \"1\": \"POLICY_URBAN_PLANNING\"}}}")
 
-print(table.concat(out, "\n"))
-print("__MCP_SENTINEL_TAG__")
+finish()
