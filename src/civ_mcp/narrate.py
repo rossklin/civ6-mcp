@@ -182,7 +182,6 @@ def narrate_spies(spies: list[lq.SpyInfo]) -> str:
     return "\n".join(lines)
 
 
-_ACTION_ID_PREFIXES = ("UNITOPERATION_", "UNITCOMMAND_")
 # needs -> the params unit_action expects for that action (see units.lua)
 _NEEDS_HINT = {
     "plot": "(x,y)",
@@ -193,19 +192,16 @@ _NEEDS_HINT = {
 }
 
 
-def _short_action_id(action_id: str) -> str:
-    """Strip the DB kind prefix for display: UNITCOMMAND_GIFT -> GIFT."""
-    for prefix in _ACTION_ID_PREFIXES:
-        if action_id.startswith(prefix):
-            return action_id[len(prefix) :]
-    return action_id
-
-
 def _format_unit_actions(actions: list[lq.UnitActionInfo]) -> str:
-    """Render available actions as one compact list for the state output."""
+    """Render available actions as one compact list for the state output.
+
+    Action ids are shown in full (UNITOPERATION_FORTIFY, UNITCOMMAND_DELETE):
+    that is exactly what the unit_action command takes, and the prefix cannot
+    be guessed — UPGRADE exists as both a command and an operation.
+    """
     parts = []
     for a in actions:
-        s = _short_action_id(a.action_id) + _NEEDS_HINT.get(a.needs, "")
+        s = a.action_id + _NEEDS_HINT.get(a.needs, "")
         if a.detail:
             s += f"[{a.detail}]"
         parts.append(s)
@@ -295,7 +291,7 @@ def narrate_units(
                 shown = []
                 for a in blocked[:6]:
                     reason = f" — {a.reasons[0][:70]}" if a.reasons else ""
-                    shown.append(_short_action_id(a.action_id) + reason)
+                    shown.append(a.action_id + reason)
                 lines.append(
                     f"    >> not yet possible: {'; '.join(shown)}"
                 )

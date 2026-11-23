@@ -122,16 +122,25 @@ class TestNarrateUnitActions:
         units = lq.parse_units_response(_SAMPLE_LINES)
         text = narrate_units(units)
         warrior_block = text.split("[id:7]")[1].split("[id:12]")[0]
-        # Prefixes stripped, needs hints appended, detail kept
-        assert "FORTIFY" in warrior_block
-        assert "CONDEMN_HERETIC" in warrior_block
-        assert "COASTAL_RAID(x,y)" in warrior_block
-        assert "ENTER_FORMATION(target_unit_id)[partners:12]" in warrior_block
-        assert "WMD_STRIKE(wmd_type,x,y)[types:WMD_NUCLEAR_DEVICE]" in warrior_block
+        # Full ids (exactly what the unit_action command takes — the prefix
+        # cannot be guessed), needs hints appended, detail kept
+        unit_action_line = next(
+            ln for ln in warrior_block.splitlines() if ">> unit_action:" in ln
+        )
+        assert unit_action_line.strip() == (
+            ">> unit_action: UNITOPERATION_FORTIFY, UNITOPERATION_ALERT, "
+            "UNITCOMMAND_CONDEMN_HERETIC, "
+            "UNITCOMMAND_ENTER_FORMATION(target_unit_id)[partners:12], "
+            "UNITOPERATION_COASTAL_RAID(x,y), "
+            "UNITOPERATION_WMD_STRIKE(wmd_type,x,y)[types:WMD_NUCLEAR_DEVICE]"
+        )
         # Disabled actions land on the "not yet possible" line with the
         # engine's reason; enabled ones never mix in
-        assert "not yet possible: FORM_CORPS — Requires the Nationalism civic" in warrior_block
-        assert "UPGRADE — Requires 320 Gold" in warrior_block
+        assert (
+            "not yet possible: UNITCOMMAND_FORM_CORPS — Requires the Nationalism civic"
+            in warrior_block
+        )
+        assert "UNITCOMMAND_UPGRADE — Requires 320 Gold" in warrior_block
         unit_action_line = next(
             ln for ln in warrior_block.splitlines() if ">> unit_action:" in ln
         )
