@@ -93,5 +93,5 @@ for _, a in ipairs(assignments) do
     addList[a[1]] = GameInfo.Policies[a[2]].Hash
 end
 pCulture:RequestPolicyChanges(clearList, addList)
-print("OK:POLICIES_SET|Policies updated. Use get_policies to verify.")
+print("OK:POLICIES_SET|Policies updated. The Policies section of the game state shows the result.")
 print("__MCP_SENTINEL_TAG__")
