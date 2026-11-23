@@ -94,12 +94,14 @@ local spent = pGovs:GetGovernorPointsSpent()
 emit("Governor Points: " .. (total - spent) .. " available, " .. spent .. " spent")
 if pGovs:CanAppoint() then emit("** Can appoint a new governor! **") end
 
+-- Eligibility follows the game's GovernorPanel: CanEverAppointGovernor
+-- excludes governors tied to another civ (e.g. the Ottoman-only Ibrahim).
 local appointed, unappointed = {}, {}
 for row in GameInfo.Governors() do
     if row.TransitionStrength and row.TransitionStrength > 0 then
         if pGovs:HasGovernor(row.Hash) then
             table.insert(appointed, row)
-        else
+        elseif pGovs:CanEverAppointGovernor(row.Hash) then
             table.insert(unappointed, row)
         end
     end
