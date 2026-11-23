@@ -159,7 +159,7 @@ Moving into a tile costs movement points depending on the terrain and features. 
 
 Before moving a builder, settler, or trader to a new tile, consider if there are threats. Civilians have zero combat strength — a single barbarian scout captures them. The cost of losing a builder (5-7 turns of production + charges) is almost always worse than taking one extra turn to check or escort. Conversely, you can (re-)capture a civilian unit once it is controlled by the barbarians or an enemy civ by moving onto it (or successfully attacking it's escorting military unit).
 
-You can use the move_unit command to initiate movement to a target that is further away than this turn's movement allows. The unit will then automatically continue towards that target at the end of each turn unless you give it other orders.
+You can use the move_unit command to initiate movement to a target that is further away than this turn's movement allows. The unit will then automatically continue towards that target at the end of each turn unless you give it other orders. A unit with such a queued move shows `[MOVING TO (x,y)]` in the Units section; if the tag is missing the unit has no standing order and needs a new one.
 
 `get_pathing_estimate(unit_id, target_x, target_y)` returns the quickest path to a target, using the game's actual pathfinding and considering terrain and other movement modifiers. Reasoning about every step when moving to a distant target can be very difficult. Prefer calling this tool when moving more than a couple tiles. But beware that it may generate a weird path to avoid temporary blockage such as units or unexplored tiles.
 

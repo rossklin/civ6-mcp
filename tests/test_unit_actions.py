@@ -149,6 +149,36 @@ class TestNarrateUnitActions:
         trader_block = text.split("[id:15]")[1]
         assert "unit_action:" not in trader_block
 
+    def test_queued_destination_is_parsed_and_shown(self):
+        units = lq.parse_units_response(
+            [
+                # 17th column: destination of a queued multi-turn move
+                "7|Warrior|UNIT_WARRIOR|10,20|0/2|100/100|20|0|0||||0||||11,21",
+                "8|Scout|UNIT_SCOUT|1,1|3/3|100/100|10|0|0||||0||||",
+                # older 16-column line still parses
+                "9|Builder|UNIT_BUILDER|2,2|2/2|100/100|0|0|3||||0|||",
+            ]
+        )
+        by_id = {u.unit_id: u for u in units}
+        assert by_id[7].queued_destination == (11, 21)
+        assert by_id[8].queued_destination is None
+        assert by_id[9].queued_destination is None
+        text = narrate_units(units)
+        assert "[MOVING TO (11,21)]" in text.split("[id:7]")[0]
+        assert text.count("MOVING TO") == 1
+
+    def test_fallback_reasons_for_builder_actions_are_in_the_template(self):
+        """The engine returns no reason for these common builder cases, so
+        units.lua names the cause itself (text only checkable live)."""
+        lua = lq.build_units_query()
+        for text in (
+            "this tile is outside your territory",
+            "this tile holds a district or city center",
+            "this tile has no feature to remove",
+        ):
+            assert text in lua
+        assert "UnitManager.GetQueuedDestination(u)" in lua
+
 
 class TestLuaTemplate:
     def test_template_contains_enumeration(self):

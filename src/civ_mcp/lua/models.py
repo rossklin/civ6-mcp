@@ -299,6 +299,9 @@ class UnitInfo:
     valid_improvements: list[str] = field(default_factory=list)
     available_actions: list[UnitActionInfo] = field(default_factory=list)
     religion: str = ""
+    # Destination of a queued multi-turn move (the unit keeps walking there
+    # at end of turn), None when nothing is queued.
+    queued_destination: tuple[int, int] | None = None
     formation_linked_to: int | None = (
         None  # unit_id of the other unit in the formation, if any
     )

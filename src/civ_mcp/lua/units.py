@@ -871,7 +871,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                     )
                 )
     # Pass 2: parse unit lines with formation lookup
-    # Line format: id|name|type|x,y|moves/max|hp/max|cs|rs|charges|targets|promo|canUp|upName|upCost|imps|religion
+    # Line format: id|name|type|x,y|moves/max|hp/max|cs|rs|charges|targets|promo|canUp|upName|upCost|imps|religion|queuedX,queuedY
     for line in lines:
         if line.startswith(("FORMATION|", "UACTION|")):
             continue
@@ -913,6 +913,10 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
             [v for v in valid_imps_raw.split(";") if v] if valid_imps_raw else []
         )
         religion = parts[15] if len(parts) > 15 else ""
+        queued_destination: tuple[int, int] | None = None
+        if len(parts) > 16 and "," in parts[16]:
+            qx, qy = parts[16].split(",")
+            queued_destination = (int(qx), int(qy))
         fm = formations.get(int(parts[0]))
         units.append(
             UnitInfo(
@@ -936,6 +940,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 valid_improvements=valid_imps,
                 available_actions=actions.get(int(parts[0]), []),
                 religion=religion,
+                queued_destination=queued_destination,
                 formation_linked_to=fm[0] if fm else None,
                 formation_linked_type=fm[1] if fm else "",
             )

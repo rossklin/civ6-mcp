@@ -241,6 +241,12 @@ def narrate_units(
             route_flag = (
                 f" [ON ROUTE: {tr.route_origin} -> {tr.route_dest} ({route_type})]"
             )
+        # A queued multi-turn move: the unit resumes it by itself at end of
+        # turn (UNITCOMMAND_CANCEL drops it; a new order replaces it).
+        queued_flag = ""
+        if u.queued_destination is not None:
+            qx, qy = u.queued_destination
+            queued_flag = f" [MOVING TO ({qx},{qy})]"
         charges = f" charges:{u.build_charges}" if u.build_charges > 0 else ""
         religion_flag = ""
         if u.religion:
@@ -257,7 +263,7 @@ def narrate_units(
         )
         lines.append(
             f"  {u.name} ({u.unit_type}) at ({u.x},{u.y}) —{strength} "
-            f"moves {moves_disp}{charges}{religion_flag}{status}{route_flag}{promo_flag}{upgrade_flag} "
+            f"moves {moves_disp}{charges}{religion_flag}{status}{route_flag}{queued_flag}{promo_flag}{upgrade_flag} "
             f"[id:{u.unit_id}]"
         )
         if u.formation_linked_to is not None:

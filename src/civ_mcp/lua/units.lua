@@ -344,7 +344,21 @@ for i, u in Players[id]:GetUnits():Members() do
             end
             if #meList > 0 then validImps = table.concat(meList, ";") end
         end
-        print(uid .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName)
+        -- Queued multi-turn move: the tile the unit will keep walking to at
+        -- end of turn (live-verified T85: UnitManager.GetQueuedDestination
+        -- returns a plot index, nil when nothing is queued - the same call
+        -- WorldInput.lua uses to draw the queued path).
+        local queued = ""
+        pcall(function()
+            local destIdx = UnitManager.GetQueuedDestination(u)
+            if destIdx then
+                local dp = Map.GetPlotByIndex(destIdx)
+                if dp and not (dp:GetX() == x and dp:GetY() == y) then
+                    queued = dp:GetX() .. "," .. dp:GetY()
+                end
+            end
+        end)
+        print(uid .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName .. "|" .. queued)
         -- Track tile occupancy + formation state (checked via game API, not heuristic)
         local key = x .. "," .. y
         if not tileUnits[key] then tileUnits[key] = {} end
@@ -625,8 +639,24 @@ for _, u2 in Players[id]:GetUnits():Members() do
                                 sp[UnitOperationTypes.PARAM_Y] = u2:GetY()
                                 sp[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = best
                                 local bNow, tRes2 = UnitManager.CanStartOperation(u2, h, nil, sp, true)
+                                local why = strictReasons(tRes2, false)
+                                if not bNow and why == "" then
+                                    -- The engine gives no failure reason for
+                                    -- the common cases (live-verified T85: a
+                                    -- builder on unowned land and one on a
+                                    -- city center both came back blank), so
+                                    -- name the cause from the tile itself.
+                                    local bPlot = Map.GetPlot(x2, u2:GetY())
+                                    if bPlot == nil or bPlot:GetOwner() ~= id then
+                                        why = "this tile is outside your territory"
+                                    elseif bPlot:GetDistrictType() >= 0 then
+                                        why = "this tile holds a district or city center"
+                                    else
+                                        why = "nothing can be built on this tile right now"
+                                    end
+                                end
                                 emitUAction(uid2, row, row.OperationType,
-                                    "improvement", nil, not bNow, strictReasons(tRes2, false))
+                                    "improvement", nil, not bNow, why)
                             end
                         end)
                     elseif row.CategoryInUI == "OFFENSIVESPY" then
@@ -684,9 +714,18 @@ for _, u2 in Players[id]:GetUnits():Members() do
                                     emitUAction(uid2, row, row.OperationType,
                                         uactionNeeds(row, h, false), nil, false, nil)
                                 else
+                                    local why = strictReasons(tRes, false)
+                                    if why == "" and row.OperationType == "UNITOPERATION_REMOVE_FEATURE" then
+                                        -- Blank from the engine (live-verified
+                                        -- T85); the usual cause is simply that
+                                        -- the tile has no feature.
+                                        local fPlot = Map.GetPlot(x2, u2:GetY())
+                                        if fPlot ~= nil and fPlot:GetFeatureType() < 0 then
+                                            why = "this tile has no feature to remove"
+                                        end
+                                    end
                                     emitUAction(uid2, row, row.OperationType,
-                                        uactionNeeds(row, h, false), nil, true,
-                                        strictReasons(tRes, false))
+                                        uactionNeeds(row, h, false), nil, true, why)
                                 end
                             end
                         end)
