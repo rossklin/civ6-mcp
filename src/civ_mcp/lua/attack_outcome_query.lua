@@ -9,7 +9,10 @@
 --   __TARGET_CLASS__     -> what the attack engaged: MILITARY (defender or
 --                           district), RELIGIOUS (theological combat) or
 --                           SUPPORT (a lone support unit)
---   __LUA_OCCUPANCY_CLASS__ -> shared occupancyClass helper (_helpers.py)
+--   LUA_OCCUPANCY_CLASS tag -> shared occupancyClass helper (_helpers.py).
+--                           Not spelled with its double underscores here:
+--                           the multi-line helper would be substituted
+--                           into this comment and break the script.
 --
 -- InGame state does not reflect post-combat HP within the same turn, but
 -- GameCore (authoritative sim state) does. Reads the attacker's real HP and

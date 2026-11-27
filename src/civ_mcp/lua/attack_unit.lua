@@ -3,7 +3,10 @@
 -- This file is a TEMPLATE loaded by build_attack_unit() in units.py.
 -- Tags substituted before the Lua is sent to the game:
 --   __MCP_SENTINEL_TAG__    -> the response sentinel (see _helpers.SENTINEL)
---   __LUA_OCCUPANCY_CLASS__ -> shared occupancyClass helper (_helpers.py)
+--   LUA_OCCUPANCY_CLASS tag -> shared occupancyClass helper (_helpers.py).
+--                           Not spelled with its double underscores here:
+--                           the multi-line helper would be substituted
+--                           into this comment and break the script.
 --   __UNIT_ID__             -> engine unit id (UnitManager.GetUnit key)
 --   __TARGET_X__            -> target tile X
 --   __TARGET_Y__            -> target tile Y
