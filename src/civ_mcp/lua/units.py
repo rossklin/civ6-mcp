@@ -73,7 +73,7 @@ def build_unit_action(
     (UnitPanel.OnUnitActionClicked -> ``UnitManager.RequestCommand`` /
     ``RequestOperation``). ``unit_action`` is a full DB id of the kind shown
     in the unit's ``unit_action`` list in game state, e.g.
-    ``"UNITCOMMAND_CONDEMN_HERETIC"`` or ``"UNITOPERATION_PLUNDER_TRADE_ROUTE"``.
+    ``"UNITCOMMAND_CONDEMN_HERETIC"`` or ``"UNITCOMMAND_PLUNDER_TRADE_ROUTE"``.
 
     Optional params supply the action's target (see the template's header
     for the per-kind parameter keys):
