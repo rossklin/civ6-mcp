@@ -238,8 +238,6 @@ class AttackOutcome:
     enemy_type: str = ""  # CAPTURED_CITY marks a captured city/district target
     enemy_hp: int = 0
     enemy_max: int = 0
-    is_city: bool = False  # target tile is a city center (legacy CITY| flag)
-
 
 @dataclass
 class GoodyReward:

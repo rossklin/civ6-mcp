@@ -1,6 +1,7 @@
 """Units domain — Lua builders and parsers."""
 
 from __future__ import annotations
+import logging
 
 from civ_mcp.lua._helpers import (
     _LUA_OCCUPANCY_CLASS,
@@ -22,6 +23,7 @@ from civ_mcp.lua.models import (
     UnitInfo,
 )
 
+log = logging.getLogger(__name__)
 
 def build_units_query() -> str:
     """InGame context: lists all units with upgrade and builder improvement info.
@@ -563,9 +565,8 @@ print("{SENTINEL}")
 
 
 def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
-    """Parse OUTCOME| line (and legacy CITY|) from build_attack_outcome_query."""
+    """Parse OUTCOME| line from build_attack_outcome_query."""
     outcome: AttackOutcome | None = None
-    is_city = False
     for line in lines:
         if line.startswith("OUTCOME|"):
             # OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N
@@ -586,7 +587,6 @@ def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
                     attacker_max=att_max,
                     enemy_present=False,
                     enemy_type=enemy,
-                    is_city=is_city,
                 )
             else:
                 outcome = AttackOutcome(
@@ -596,12 +596,9 @@ def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
                     enemy_type=enemy,
                     enemy_hp=int(fields["enemy_hp"] or "0"),
                     enemy_max=int(fields.get("enemy_max", "0") or "0"),
-                    is_city=is_city,
                 )
-        elif line.startswith("CITY|"):
-            is_city = True
-            if outcome is not None:
-                outcome.is_city = True
+        else:
+            log.warning("parse_attack_outcome: ignoring unexpected line: %s", line)
     return outcome
 
 
