@@ -6,6 +6,10 @@
 --   __ATTACKER_UNIT_ID__ -> engine unit id of the attacker (FindID key)
 --   __TARGET_X__         -> target tile X
 --   __TARGET_Y__         -> target tile Y
+--   __TARGET_CLASS__     -> what the attack engaged: MILITARY (defender or
+--                           district), RELIGIOUS (theological combat) or
+--                           SUPPORT (a lone support unit)
+--   __LUA_OCCUPANCY_CLASS__ -> shared occupancyClass helper (_helpers.py)
 --
 -- InGame state does not reflect post-combat HP within the same turn, but
 -- GameCore (authoritative sim state) does. Reads the attacker's real HP and
@@ -15,19 +19,19 @@
 -- defense layer (walls first, else district HP) becomes the enemy stats -
 -- matching the pre_hp attack_unit.lua reports for district targets. A
 -- district whose city now belongs to the local player was captured.
+-- Otherwise the enemy is the unit of the occupancy class the attack engaged
+-- (religious unit for theological combat, a lone support unit, else the
+-- military defender).
 --
 -- Emits OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N,
 -- ...|enemy:CAPTURED_CITY after a city capture, or ...|enemy:KILLED when no
--- enemy remains.
---
--- District defense reads (GetDistricts/GetMaxDamage) are pcall-guarded:
--- every other district read in this repo runs in InGame context, and the old
--- claim that they are unavailable in GameCore is unverified. If they do fail
--- here, district attacks degrade to unresolved (no stats) rather than
--- misreporting.
+-- enemy remains - or ERR:DISTRICT_LOOKUP|reason when the district defense
+-- read fails (those APIs are unverified in GameCore; every other district
+-- read in this repo runs in InGame context).
 
 local me = Game.GetLocalPlayer()
 local tx, ty = __TARGET_X__, __TARGET_Y__
+local targetClass = "__TARGET_CLASS__"
 local attacker = Players[me]:GetUnits():FindID(__ATTACKER_UNIT_ID__)
 local attHP, attMax = -1, -1
 if attacker then
@@ -37,10 +41,14 @@ end
 local enemyFound = false
 local enemyName = "KILLED"
 local enemyHP, enemyMax = 0, 0
--- Defensible district first: combat targets it, not the garrisoned units.
-pcall(function()
-    local plot = Map.GetPlot(tx, ty)
-    if plot then
+local plot = Map.GetPlot(tx, ty)
+-- Defensible district first: combat targets it, not the garrisoned units
+-- (only a MILITARY-class attack engages a district). CityManager.GetDistrictAt
+-- resolves the district straight from the tile. A failed district read is
+-- reported as ERR:DISTRICT_LOOKUP - it must not fall through to the unit
+-- lookup, which would misreport a garrisoned unit as the target.
+if plot and targetClass == "MILITARY" then
+    local ok, err = pcall(function()
         local dIdx = plot:GetDistrictType()
         if dIdx and dIdx >= 0 then
             local dInfo = GameInfo.Districts[dIdx]
@@ -50,36 +58,57 @@ pcall(function()
                     enemyName = "CAPTURED_CITY"
                     enemyFound = true
                 elseif dOwner ~= nil and dOwner >= 0 then
-                    for _, c in Players[dOwner]:GetCities():Members() do
-                        for _, d in c:GetDistricts():Members() do
-                            if d:GetX() == tx and d:GetY() == ty then
-                                enemyName = dInfo.DistrictType
-                                local wMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
-                                local wHP = wMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
-                                local gMax = d:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
-                                local gHP = gMax - (d:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
-                                if wMax > 0 then
-                                    enemyHP, enemyMax = wHP, wMax
-                                else
-                                    enemyHP, enemyMax = gHP, gMax
-                                end
-                                enemyFound = true
-                                break
-                            end
-                        end
-                        if enemyFound then break end
+                    local d = CityManager.GetDistrictAt(tx, ty)
+                    if d == nil then
+                        error("CityManager.GetDistrictAt returned nil for a " .. tostring(dInfo.DistrictType) .. " tile")
                     end
+                    enemyName = dInfo.DistrictType
+                    local wMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
+                    local wHP = wMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
+                    local gMax = d:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
+                    local gHP = gMax - (d:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
+                    if wMax > 0 then
+                        enemyHP, enemyMax = wHP, wMax
+                    else
+                        enemyHP, enemyMax = gHP, gMax
+                    end
+                    enemyFound = true
                 end
             end
         end
+    end)
+    if not ok then
+        print("ERR:DISTRICT_LOOKUP|" .. tostring(err))
+        print("__MCP_SENTINEL_TAG__")
+        return
     end
-end)
-if not enemyFound then
-    for i = 0, 63 do
-        if Players[i] and Players[i]:IsAlive() and i ~= me then
-            for _, u in Players[i]:GetUnits():Members() do
-                if u:GetX() == tx and u:GetY() == ty then
-                    local entry = GameInfo.Units[u:GetType()]
+end
+-- Otherwise the unit this attack engaged, picked by effective occupancy
+-- class exactly like attack_unit.lua: a theological attack engages the
+-- religious unit, an attack tagged target_class:SUPPORT the lone support
+-- unit, any other attack the military defender (neither religious, civilian
+-- nor support - FORMATION_CLASS_SUPPORT units such as siege towers stack
+-- with the defender like civilians do). A civilian, support or religious
+-- unit stacked with the defender is never the combat target, so it must not
+-- be read as the enemy - when the defender dies the tile reports KILLED
+-- even if its civilian is still there.
+-- (Map.GetUnitsAt takes the plot object in GameCore, as the game's own
+-- Maps/Utility/PlotFiltering.lua calls it.)
+__LUA_OCCUPANCY_CLASS__
+local function targetCategory(info)
+    local class = occupancyClass(info)
+    if class == "RELIGIOUS" then return "RELIGIOUS" end
+    if class == "FORMATION_CLASS_CIVILIAN" then return "CIVILIAN" end
+    if class == "FORMATION_CLASS_SUPPORT" then return "SUPPORT" end
+    return "MILITARY"
+end
+if not enemyFound and plot then
+    local tileUnits = Map.GetUnitsAt(plot)
+    if tileUnits then
+        for u in tileUnits:Units() do
+            if u:GetOwner() ~= me then
+                local entry = GameInfo.Units[u:GetType()]
+                if targetCategory(entry) == targetClass then
                     enemyName = entry and entry.UnitType or "UNKNOWN"
                     enemyMax = u:GetMaxDamage()
                     enemyHP = enemyMax - u:GetDamage()
@@ -88,7 +117,6 @@ if not enemyFound then
                 end
             end
         end
-        if enemyFound then break end
     end
 end
 local out = "OUTCOME|att_hp:" .. attHP .. "|att_max:" .. attMax .. "|enemy:"

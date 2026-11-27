@@ -343,15 +343,35 @@ class GameState:
                 " silently blocked (popup/diplomacy) or movement rules prevented"
                 " entering the tile."
             )
+        # Which occupancy class the attack engaged — the outcome query reads
+        # that unit (not whatever else shares the tile) as the enemy.
+        if is_theological:
+            target_class = "RELIGIOUS"
+        elif "|target_class:SUPPORT" in result:
+            target_class = "SUPPORT"
+        else:
+            target_class = "MILITARY"
         for _ in range(4):
             await asyncio.sleep(0.4)
             try:
                 out_lines = await self.conn.execute_read(
-                    lq.build_attack_outcome_query(unit_id, target_x, target_y)
+                    lq.build_attack_outcome_query(
+                        unit_id, target_x, target_y, target_class=target_class
+                    )
                 )
             except Exception as e:
                 log.debug("Attack outcome read failed: %s", e)
                 continue
+            query_err = next((l for l in out_lines if l.startswith("ERR:")), None)
+            if query_err is not None:
+                # The outcome query itself failed (not the attack) — say so
+                # instead of guessing an outcome.
+                log.warning("Attack outcome query failed: %s", query_err)
+                return (
+                    result
+                    + "\n  Post-combat: outcome could not be read — "
+                    + query_err
+                )
             outcome = lq.parse_attack_outcome(out_lines)
             if outcome is None:
                 continue

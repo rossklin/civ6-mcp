@@ -441,7 +441,10 @@ print("{SENTINEL}")
 
 
 def build_attack_outcome_query(
-    attacker_unit_id: int, target_x: int, target_y: int
+    attacker_unit_id: int,
+    target_x: int,
+    target_y: int,
+    target_class: str = "MILITARY",
 ) -> str:
     """GameCore context: read true post-combat state after an attack.
 
@@ -451,18 +454,27 @@ def build_attack_outcome_query(
     the attacker's real HP and the enemy at the target tile; a defensible
     district outranks units on its tile, and its defense layer (walls first,
     else district HP) becomes the enemy stats — matching the pre_hp the
-    attack Lua reports for district targets.
+    attack Lua reports for district targets. Otherwise the enemy is the unit
+    of the occupancy class the attack engaged, given by ``target_class``:
+    ``MILITARY`` (the defender — never a civilian, support or religious unit
+    stacked with it), ``RELIGIOUS`` (theological combat) or ``SUPPORT`` (a
+    lone support unit, tagged ``target_class:SUPPORT`` by the attack Lua).
 
     Emits ``OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N``,
-    ``...|enemy:CAPTURED_CITY`` after a city capture, or ``...|enemy:KILLED``
-    when no enemy remains. (Civilian-capture verification lives in
+    ``...|enemy:CAPTURED_CITY`` after a city capture, ``...|enemy:KILLED``
+    when no enemy remains, or ``ERR:DISTRICT_LOOKUP|reason`` when the
+    district defense read fails. (Civilian-capture verification lives in
     build_capture_outcome_query instead — ownership, not damage.)
     """
+    if target_class not in ("MILITARY", "RELIGIOUS", "SUPPORT"):
+        raise ValueError(f"Unknown target_class: {target_class!r}")
     return (
         load_lua_template("attack_outcome_query.lua")
+        .replace("__LUA_OCCUPANCY_CLASS__", _LUA_OCCUPANCY_CLASS)
         .replace("__ATTACKER_UNIT_ID__", str(attacker_unit_id))
         .replace("__TARGET_X__", str(target_x))
         .replace("__TARGET_Y__", str(target_y))
+        .replace("__TARGET_CLASS__", target_class)
         .replace("__MCP_SENTINEL_TAG__", SENTINEL)
     )
 

@@ -27,7 +27,10 @@
 --     ONLY the religious unit: military units cannot attack religious
 --     units (that interaction is UNITCOMMAND_CONDEMN_HERETIC or
 --     theological combat), and religious units cannot attack
---     military/civilian units. A hostile DEFENSIBLE DISTRICT (city center,
+--     military/civilian units. A SUPPORT unit (FORMATION_CLASS_SUPPORT)
+--     stacks with the defender like a civilian and is the target only
+--     when it stands alone - attacking a lone support unit kills it (the
+--     OK line then carries target_class:SUPPORT). A hostile DEFENSIBLE DISTRICT (city center,
 --     encampment, ... - GameInfo HitPoints > 0) outranks the units on its
 --     tile: combat targets the district, its garrisoned units are not
 --     separately targetable and take no damage while its defenses stand.
@@ -101,6 +104,7 @@ end
 -- interactions keep the war/barbarian/free-city gate.
 local defName, defHP, defMax = nil, 0, 0
 local civName, civHP, civMax = nil, 0, 0
+local supName, supHP, supMax = nil, 0, 0
 local relName, relHP, relMax = nil, 0, 0
 local relUnit = nil
 local sawForeignName, sawForeignOwner = nil, -1
@@ -133,6 +137,13 @@ if tgtUnits then
                 elseif oClass == "FORMATION_CLASS_CIVILIAN" then
                     if civName == nil then
                         civName, civHP, civMax = oName, oHP, oMax
+                    end
+                elseif oClass == "FORMATION_CLASS_SUPPORT" then
+                    -- Support units (siege tower, battering ram, ...) stack
+                    -- with a military defender like civilians do; they are
+                    -- never the defender while one is present.
+                    if supName == nil then
+                        supName, supHP, supMax = oName, oHP, oMax
                     end
                 elseif defName == nil then
                     defName, defHP, defMax = oName, oHP, oMax
@@ -206,9 +217,13 @@ end
 -- What does THIS attacker engage on the tile? (units.lua's selection; a
 -- hostile defensible district outranks everything - it IS the combat
 -- target. A religious attacker ignores the district: theological combat
--- engages the religious unit on the tile, never the district.)
+-- engages the religious unit on the tile, never the district. A support
+-- unit is the target only when no military defender shares its tile - an
+-- attack on a lone support unit kills it; it is routed like any military
+-- target and tagged target_class:SUPPORT so the caller's GameCore poll reads
+-- the support unit, not a defender, as the enemy.)
 local simName, simHP, simMax = nil, 0, 0
-local isCapture, isTheological = false, false
+local isCapture, isTheological, isSupport = false, false, false
 if distName ~= nil and not aIsReligious then
     simName, simHP, simMax = distName, distHP, distMax
 elseif defName ~= nil and not aIsReligious then
@@ -216,6 +231,9 @@ elseif defName ~= nil and not aIsReligious then
 elseif relName ~= nil and aIsReligious then
     simName, simHP, simMax = relName, relHP, relMax
     isTheological = true
+elseif supName ~= nil and not aIsReligious then
+    simName, simHP, simMax = supName, supHP, supMax
+    isSupport = true
 elseif civName ~= nil and cs > 0 and dist == 1 and not isAir then
     simName, simHP, simMax = civName, civHP, civMax
     isCapture = true
@@ -249,6 +267,7 @@ if simName == nil then
 end
 
 local myHP = unit:GetMaxDamage() - unit:GetDamage()
+local classNote = isSupport and "|target_class:SUPPORT" or ""
 local params = {}
 params[UnitOperationTypes.PARAM_X] = tx
 params[UnitOperationTypes.PARAM_Y] = ty
@@ -271,7 +290,7 @@ if isAir then
         return
     end
     UnitManager.RequestOperation(unit, UnitOperationTypes.AIR_ATTACK, params)
-    print("OK:AIR_ATTACK|target:" .. simName .. " at (" .. tx .. "," .. ty .. ")|pre_hp:" .. simHP .. "/" .. simMax .. "|your HP:" .. myHP .. "|range:" .. rng .. " dist:" .. dist)
+    print("OK:AIR_ATTACK|target:" .. simName .. " at (" .. tx .. "," .. ty .. ")|pre_hp:" .. simHP .. "/" .. simMax .. "|your HP:" .. myHP .. "|range:" .. rng .. " dist:" .. dist .. classNote)
     print("__MCP_SENTINEL_TAG__")
     return
 end
@@ -292,7 +311,7 @@ if not isCapture and not isTheological and rs > 0 then
         return
     end
     UnitManager.RequestOperation(unit, UnitOperationTypes.RANGE_ATTACK, params)
-    print("OK:RANGE_ATTACK|target:" .. simName .. " at (" .. tx .. "," .. ty .. ")|pre_hp:" .. simHP .. "/" .. simMax .. "|your HP:" .. myHP .. "|range:" .. rng .. " dist:" .. dist)
+    print("OK:RANGE_ATTACK|target:" .. simName .. " at (" .. tx .. "," .. ty .. ")|pre_hp:" .. simHP .. "/" .. simMax .. "|your HP:" .. myHP .. "|range:" .. rng .. " dist:" .. dist .. classNote)
     print("__MCP_SENTINEL_TAG__")
     return
 end
@@ -351,6 +370,6 @@ else
     -- kills its escort (matches the units.lua ~captures: target listing).
     local capNote = ""
     if civName ~= nil then capNote = "|captures:" .. civName .. " if the defender dies" end
-    print("OK:MELEE_ATTACK|target:" .. simName .. " at (" .. tx .. "," .. ty .. ")|pre_hp:" .. simHP .. "/" .. simMax .. "|your HP:" .. myHP .. "|CS:" .. cs .. capNote)
+    print("OK:MELEE_ATTACK|target:" .. simName .. " at (" .. tx .. "," .. ty .. ")|pre_hp:" .. simHP .. "/" .. simMax .. "|your HP:" .. myHP .. "|CS:" .. cs .. capNote .. classNote)
 end
 print("__MCP_SENTINEL_TAG__")
