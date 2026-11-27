@@ -2338,7 +2338,7 @@ async def execute_commands(ctx: Context, commands_json: str) -> str:
             "skip_unit", "skip_remaining_units",
             # Settling & cities
             "found_city", "resolve_city_capture", "set_city_production",
-            "purchase_item", "list_city_production", "set_city_focus",
+            "purchase_item", "set_city_focus",
             "purchase_tile", "city_attack",
             # Research & civics
             "set_research", "set_civic",

@@ -88,7 +88,6 @@ Settling & cities:
 - `{"action": "resolve_city_capture", "params": {"action": "keep"}}` — the `"action"` param (a params-level choice, not the command name): "keep" | "reject" | "raze" | "liberate_founder" | "liberate_previous"
 - `{"action": "set_city_production", "params": {"city_id": 3, "item_type": "UNIT", "item_name": "UNIT_WARRIOR", "target_x": 10, "target_y": 20}}` — `item_type`: "UNIT" | "BUILDING" | "DISTRICT"; `item_name` e.g. UNIT_WARRIOR, BUILDING_GRANARY, DISTRICT_CAMPUS. `target_x`/`target_y` (optional) are required for DISTRICTs and wonders.
 - `{"action": "purchase_item", "params": {"city_id": 3, "item_type": "BUILDING", "item_name": "BUILDING_GRANARY", "yield_type": "YIELD_GOLD"}}` — `item_type`: "UNIT" | "BUILDING"; `yield_type` (optional, default "YIELD_GOLD"): "YIELD_GOLD" | "YIELD_FAITH"
-- `{"action": "list_city_production", "params": {"city_id": 3}}` — what the city can build now
 - `{"action": "set_city_focus", "params": {"city_id": 3, "focus": "FOOD"}}` — `focus`: "DEFAULT" (clear) | "FOOD" | "PRODUCTION" | "GOLD" | "SCIENCE" | "CULTURE" | "FAITH"
 - `{"action": "purchase_tile", "params": {"city_id": 3, "x": 10, "y": 20}}` — buy a border tile with gold
 - `{"action": "city_attack", "params": {"city_id": 3, "target_x": 10, "target_y": 20}}` — ranged attack from a city (must build walls in city center first)
