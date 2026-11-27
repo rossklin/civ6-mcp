@@ -455,8 +455,19 @@ class TestBuildAttackUnit:
         re-requesting the operation — a two-attacks-per-turn promotion would
         double-strike. Exactly one RequestOperation per attack path."""
         lua = lq.build_attack_unit(7, 12, 4)
-        assert "ERR:STOPPED_SHORT" in lua
         assert lua.count("UnitManager.RequestOperation") == 3
+
+    def test_no_position_check_after_attack_move(self):
+        """The unit's position is stale in InGame right after the attack-move
+        order (live-observed), so the attack Lua must not judge "stopped
+        short" itself — the GameCore outcome query reports the attacker's
+        real position and distance instead."""
+        lua = lq.build_attack_unit(7, 12, 4)
+        assert "ERR:STOPPED_SHORT" not in lua
+        assert "newDist" not in lua
+        outcome = lq.build_attack_outcome_query(7, 12, 4)
+        assert '"|att_pos:"' in outcome
+        assert '"|att_dist:"' in outcome
 
     def test_defensible_district_is_combat_target(self):
         """A hostile defensible district (GameInfo HitPoints > 0 - city
@@ -593,6 +604,45 @@ class TestGameStateAttackUnit:
         gs.conn = conn
         result = asyncio.run(gs.attack_unit(7, 12, 4))
         assert "Combat could not resolve" in result
+
+    def test_charge_stopped_short_reports_real_position(self):
+        # No damage and the attacker is still 2 tiles out in GameCore -> the
+        # charge ran out of movement; the real position is reported
+        conn = _StubConnection(
+            [
+                "OK:MELEE_ATTACK|target:UNIT_WARRIOR at (12,4)|pre_hp:100/100|your HP:100|CS:30",
+                "---END---",
+            ],
+            read_lines=[
+                "OUTCOME|att_hp:100|att_max:100|att_pos:14,4|att_dist:2|enemy:UNIT_WARRIOR|enemy_hp:100|enemy_max:100",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "attack did NOT land" in result
+        assert "stopped at (14,4), 2 tiles from the target at (12,4)" in result
+        assert "order stays queued" in result
+        assert "could not resolve" not in result
+
+    def test_adjacent_no_damage_is_not_stopped_short(self):
+        # Adjacent (dist 1) but nothing landed -> generic unresolved message
+        conn = _StubConnection(
+            [
+                "OK:MELEE_ATTACK|target:UNIT_WARRIOR at (12,4)|pre_hp:100/100|your HP:100|CS:30",
+                "---END---",
+            ],
+            read_lines=[
+                "OUTCOME|att_hp:100|att_max:100|att_pos:13,4|att_dist:1|enemy:UNIT_WARRIOR|enemy_hp:100|enemy_max:100",
+                "---END---",
+            ],
+        )
+        gs = GameState.__new__(GameState)
+        gs.conn = conn
+        result = asyncio.run(gs.attack_unit(7, 12, 4))
+        assert "Combat could not resolve" in result
+        assert "attack did NOT land" not in result
 
     def test_city_capture_reported(self):
         conn = _StubConnection(

@@ -51,11 +51,12 @@
 --     empty for some valid targets, e.g. naval, so it is not used).
 --
 -- A melee attack-move toward a DISTANT target ("charging") is a legal
--- engine order (the unit closes and strikes when adjacent); it reports
--- ERR:STOPPED_SHORT when it cannot reach adjacency this turn. Whether a
--- strike actually landed is not provable in Lua state, so the caller's
--- GameCore poll gives the concrete outcome: damage on either combatant,
--- district defense HP, or the ownership change of a capture.
+-- engine order (the unit closes and strikes when adjacent; if it runs out
+-- of movement first, the order stays queued). Neither where the unit ended
+-- up nor whether a strike landed is provable in Lua state right after the
+-- order, so the caller's GameCore poll gives the concrete outcome: damage
+-- on either combatant, district defense HP, the ownership change of a
+-- capture, or the attacker's real position when the charge stopped short.
 --
 -- Emits OK:RANGE_ATTACK / OK:AIR_ATTACK / OK:MELEE_ATTACK /
 -- OK:THEOLOGICAL_ATTACK / OK:CAPTURE (the pre_hp:/your HP: fields feed
@@ -346,24 +347,15 @@ if not UnitManager.CanStartOperation(unit, UnitOperationTypes.MOVE_TO, nil, para
     return
 end
 UnitManager.RequestOperation(unit, UnitOperationTypes.MOVE_TO, params)
--- Movement resolves synchronously; combat (if struck) resolves async
--- (post-combat HP comes from the caller's GameCore poll). Capture moves the
--- unit onto the tile (dist 0); melee and theological both stay adjacent (1)
--- and advance onto the tile when they defeat the target (0); anything > 1
--- means the unit could not close this turn.
-local newX, newY = unit:GetX(), unit:GetY()
-local newDist = Map.GetPlotDistance(newX, newY, tx, ty)
-if newDist > 1 then
-    print("ERR:STOPPED_SHORT|Unit moved to (" .. newX .. "," .. newY .. ") but could not reach target at (" .. tx .. "," .. ty .. ") - " .. newDist .. " tiles away. Movement exhausted by terrain. Try again next turn from closer position.")
-    print("__MCP_SENTINEL_TAG__")
-    return
-end
--- Whether the strike actually landed is not provable here (attacking
--- zeroes movement and attacking needs movement, so a charge that ends
--- adjacent reads the same struck or halted; the engine can also silently
--- no-op the whole order). The caller's GameCore poll gives the concrete
--- outcome: damage on either combatant, district defense HP, or the
--- ownership change of a capture.
+-- Neither the move nor the combat is readable here: both resolve
+-- asynchronously, so unit:GetX()/GetY() right after RequestOperation still
+-- return the PRE-move position (live-observed: a scout charging 3 tiles read
+-- as not having moved at all). So no "did it get close enough" check is made
+-- in this script - a stale position would misreport a charge that reached
+-- the target and struck as stopped short. The caller's GameCore poll gives
+-- the concrete outcome: damage on either combatant, district defense HP, the
+-- ownership change of a capture, or - when nothing landed - where the
+-- attacker actually ended up (the OUTCOME line's att_pos/att_dist).
 if isCapture then
     print("OK:CAPTURE|unit:" .. simName .. " at (" .. tx .. "," .. ty .. ")")
 elseif isTheological then

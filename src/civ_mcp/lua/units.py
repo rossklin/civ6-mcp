@@ -460,7 +460,10 @@ def build_attack_outcome_query(
     stacked with it), ``RELIGIOUS`` (theological combat) or ``SUPPORT`` (a
     lone support unit, tagged ``target_class:SUPPORT`` by the attack Lua).
 
-    Emits ``OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N``,
+    Emits ``OUTCOME|att_hp:N|att_max:N|att_pos:X,Y|att_dist:N|enemy:TYPE|
+    enemy_hp:N|enemy_max:N`` (``att_pos``/``att_dist``: the attacker's real
+    position and distance to the target — the attack Lua cannot read them,
+    the position is stale in InGame right after an attack-move order),
     ``...|enemy:CAPTURED_CITY`` after a city capture, ``...|enemy:KILLED``
     when no enemy remains, or ``ERR:DISTRICT_LOOKUP|reason`` when the
     district defense read fails. (Civilian-capture verification lives in
@@ -516,12 +519,24 @@ def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
             att_hp = int(fields.get("att_hp", "-1") or "-1")
             att_max = int(fields.get("att_max", "-1") or "-1")
             enemy = fields.get("enemy", "KILLED")
+            # att_pos:X,Y / att_dist:N — absent in older lines, -1 = unknown
+            att_x, att_y = -1, -1
+            pos_x, sep, pos_y = fields.get("att_pos", "").partition(",")
+            if sep:
+                try:
+                    att_x, att_y = int(pos_x), int(pos_y)
+                except ValueError:
+                    att_x, att_y = -1, -1
+            att_dist = int(fields.get("att_dist", "-1") or "-1")
             if enemy == "KILLED" or enemy == "CAPTURED_CITY" or "enemy_hp" not in fields:
                 outcome = AttackOutcome(
                     attacker_hp=att_hp,
                     attacker_max=att_max,
                     enemy_present=False,
                     enemy_type=enemy,
+                    attacker_x=att_x,
+                    attacker_y=att_y,
+                    attacker_dist=att_dist,
                 )
             else:
                 outcome = AttackOutcome(
@@ -531,6 +546,9 @@ def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
                     enemy_type=enemy,
                     enemy_hp=int(fields["enemy_hp"] or "0"),
                     enemy_max=int(fields.get("enemy_max", "0") or "0"),
+                    attacker_x=att_x,
+                    attacker_y=att_y,
+                    attacker_dist=att_dist,
                 )
         else:
             log.warning("parse_attack_outcome: ignoring unexpected line: %s", line)

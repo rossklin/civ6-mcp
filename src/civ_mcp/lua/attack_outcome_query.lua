@@ -26,7 +26,9 @@
 -- (religious unit for theological combat, a lone support unit, else the
 -- military defender).
 --
--- Emits OUTCOME|att_hp:N|att_max:N|enemy:TYPE|enemy_hp:N|enemy_max:N,
+-- Emits OUTCOME|att_hp:N|att_max:N|att_pos:X,Y|att_dist:N|enemy:TYPE|enemy_hp:N|enemy_max:N
+-- (att_pos/att_dist = the attacker's real position and its distance to the
+-- target, -1 when the attacker is gone),
 -- ...|enemy:CAPTURED_CITY after a city capture, or ...|enemy:KILLED when no
 -- enemy remains - or ERR:DISTRICT_LOOKUP|reason when the district defense
 -- read fails (those APIs are unverified in GameCore; every other district
@@ -37,9 +39,16 @@ local tx, ty = __TARGET_X__, __TARGET_Y__
 local targetClass = "__TARGET_CLASS__"
 local attacker = Players[me]:GetUnits():FindID(__ATTACKER_UNIT_ID__)
 local attHP, attMax = -1, -1
+-- Attacker position/distance to the target, read here because the attack
+-- script cannot: the unit's position is stale in InGame right after the
+-- attack-move order. Lets the caller tell a charge that stopped short from
+-- one that reached the target. -1 when the attacker is gone.
+local attX, attY, attDist = -1, -1, -1
 if attacker then
     attMax = attacker:GetMaxDamage()
     attHP = attMax - attacker:GetDamage()
+    attX, attY = attacker:GetX(), attacker:GetY()
+    attDist = Map.GetPlotDistance(attX, attY, tx, ty)
 end
 local enemyFound = false
 local enemyName = "KILLED"
@@ -122,7 +131,8 @@ if not enemyFound and plot then
         end
     end
 end
-local out = "OUTCOME|att_hp:" .. attHP .. "|att_max:" .. attMax .. "|enemy:"
+local out = "OUTCOME|att_hp:" .. attHP .. "|att_max:" .. attMax
+    .. "|att_pos:" .. attX .. "," .. attY .. "|att_dist:" .. attDist .. "|enemy:"
 if enemyName == "CAPTURED_CITY" then
     out = out .. "CAPTURED_CITY"
 elseif enemyFound then

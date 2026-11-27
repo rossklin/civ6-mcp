@@ -238,6 +238,12 @@ class AttackOutcome:
     enemy_type: str = ""  # CAPTURED_CITY marks a captured city/district target
     enemy_hp: int = 0
     enemy_max: int = 0
+    # Attacker's real position and distance to the target tile (-1 = unknown
+    # or attacker gone). The attack Lua cannot read these: the position is
+    # stale in InGame right after an attack-move order.
+    attacker_x: int = -1
+    attacker_y: int = -1
+    attacker_dist: int = -1
 
 @dataclass
 class GoodyReward:

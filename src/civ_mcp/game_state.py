@@ -392,6 +392,23 @@ class GameState:
             outcome_str = _format_attack_outcome(
                 outcome, pre_enemy_hp, pre_att_hp
             )
+        elif (
+            (is_melee or is_theological)
+            and outcome is not None
+            and outcome.attacker_dist > 1
+        ):
+            # A charge that ran out of movement before reaching the target.
+            # Reported from the GameCore position: the attack Lua cannot
+            # tell, its own position read is stale right after the order.
+            outcome_str = (
+                f"attack did NOT land — your unit stopped at"
+                f" ({outcome.attacker_x},{outcome.attacker_y}),"
+                f" {outcome.attacker_dist} tiles from the target at"
+                f" ({target_x},{target_y}), out of movement. The attack-move"
+                " order stays queued and the unit will continue toward the"
+                " target next turn; cancel it with UNITCOMMAND_CANCEL if you"
+                " do not want that."
+            )
         else:
             outcome_str = "Combat could not resolve, probably insufficient movement to reach the target."
         return result + "\n  Post-combat: " + outcome_str
