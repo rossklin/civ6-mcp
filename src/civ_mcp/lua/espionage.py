@@ -74,11 +74,9 @@ for i, u in Players[me]:GetUnits():Members() do
                 opStr = table.concat(availOps, ",")
                 local ok_op, opIdx = pcall(function() return u:GetSpyOperation() end)
                 if ok_op and opIdx and opIdx >= 0 then
-                    for row in GameInfo.UnitOperations() do
-                        if row.Index == opIdx then
-                            currentOp = row.OperationType:gsub("UNITOPERATION_SPY_", ""):gsub("UNITOPERATION_", "")
-                            break
-                        end
+                    local opRow = GameInfo.UnitOperations[opIdx]
+                    if opRow then
+                        currentOp = opRow.OperationType:gsub("UNITOPERATION_SPY_", ""):gsub("UNITOPERATION_", "")
                     end
                     status = "on_mission"
                 end

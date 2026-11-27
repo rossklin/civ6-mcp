@@ -563,7 +563,7 @@ class TestGameStateUnitAction:
             )
         )
         assert "UnitManager.GetUnit(me, 5)" in conn.lua_sent
-        assert "tu:GetID() == 11" in conn.lua_sent
+        assert "UnitManager.GetUnit(me, 11)" in conn.lua_sent
 
 
 class TestGameStateAttackUnit:

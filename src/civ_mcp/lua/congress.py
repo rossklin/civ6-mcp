@@ -29,10 +29,7 @@ local ress = wc:GetResolutions()
 if ress then
     for _, res in ipairs(ress) do
         local rType = res.Type
-        local gRes = nil
-        for row in GameInfo.Resolutions() do
-            if row.Hash == rType then gRes = row end
-        end
+        local gRes = GameInfo.Resolutions[rType]
         local typeName = gRes and gRes.ResolutionType or ("HASH_" .. tostring(rType))
         local name = gRes and Locale.Lookup(gRes.Name) or "Unknown"
         local targetKind = gRes and (gRes.TargetKind or "") or ""

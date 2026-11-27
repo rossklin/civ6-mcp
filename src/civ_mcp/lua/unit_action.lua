@@ -149,13 +149,10 @@ if __HAS_PLOT__ then
 end
 
 if __HAS_TARGET_UNIT__ then
-    local target = nil
-    for _, tu in Players[me]:GetUnits():Members() do
-        if tu:GetID() == __TARGET_UNIT_ID__ and tu:GetX() ~= -9999 then
-            target = tu
-            break
-        end
-    end
+    -- Direct lookup by the engine's (owner, id) pair; a unit at x = -9999
+    -- is dead/being removed and does not count.
+    local target = UnitManager.GetUnit(me, __TARGET_UNIT_ID__)
+    if target ~= nil and target:GetX() == -9999 then target = nil end
     if target == nil then
         print("ERR:TARGET_UNIT_NOT_FOUND|No owned unit with id __TARGET_UNIT_ID__")
         print("__MCP_SENTINEL_TAG__")

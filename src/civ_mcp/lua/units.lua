@@ -51,13 +51,8 @@ for i, u in Players[id]:GetUnits():Members() do
                 -- Cultural GPs (Writers/Artists/Musicians) return 0 from
                 -- GetActionCharges(). Fall back to the individual definition.
                 pcall(function()
-                    local indIdx = gp:GetIndividual()
-                    for ind in GameInfo.GreatPersonIndividuals() do
-                        if ind.Index == indIdx then
-                            charges = ind.ActionCharges or 0
-                            break
-                        end
-                    end
+                    local ind = GameInfo.GreatPersonIndividuals[gp:GetIndividual()]
+                    if ind then charges = ind.ActionCharges or 0 end
                 end)
             end
         end
@@ -68,9 +63,8 @@ for i, u in Players[id]:GetUnits():Members() do
         local relName = ""
         local ok_r, rIdx = pcall(function() return u:GetReligionType() end)
         if ok_r and rIdx and rIdx >= 0 then
-            for row in GameInfo.Religions() do
-                if row.Index == rIdx then relName = row.ReligionType; break end
-            end
+            local relRow = GameInfo.Religions[rIdx]
+            if relRow then relName = relRow.ReligionType end
         end
         -- Attack-target scan (classified by occupancy class, see header).
         local targets = ""

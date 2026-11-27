@@ -404,31 +404,18 @@ print("{SENTINEL}")
 def build_verify_city_at(x: int, y: int) -> str:
     """Check if a city exists at the given coordinates; emit its ID if so.
 
-    ``plot:IsCity()`` confirms a city center occupies the tile, then we
-    locate the matching city object among the local player's cities to
-    call ``c:GetID()``. City IDs can be 0 (e.g. the capital), so the
-    parser distinguishes "found" from "not found" by line prefix rather
-    than by the ID value.
+    The Lua lives in ``verify_city_at.lua`` (loaded via
+    ``load_lua_template``) and reads the city straight from the tile with
+    ``CityManager.GetCityAt``; only the local player's city counts. City IDs
+    can be 0 (e.g. the capital), so the parser distinguishes "found" from
+    "not found" by line prefix rather than by the ID value.
     """
-    return f"""
-local me = Game.GetLocalPlayer()
-local plot = Map.GetPlot({x}, {y})
-local cityId = -1
-if plot and plot:IsCity() then
-    for _, c in Players[me]:GetCities():Members() do
-        if c:GetX() == {x} and c:GetY() == {y} then
-            cityId = c:GetID()
-            break
-        end
-    end
-end
-if cityId >= 0 then
-    print("OK:CITY_EXISTS|" .. cityId)
-else
-    print("OK:NO_CITY")
-end
-print("{SENTINEL}")
-"""
+    return (
+        load_lua_template("verify_city_at.lua")
+        .replace("__X__", str(x))
+        .replace("__Y__", str(y))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def parse_verify_city_at(lines: list[str]) -> int | None:

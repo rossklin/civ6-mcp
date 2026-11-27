@@ -179,27 +179,24 @@ do
                         sawDistrictOwner = dOwner
                         if dOwner >= 62
                             or Players[me]:GetDiplomacy():IsAtWarWith(dOwner) then
-                            for _, c in Players[dOwner]:GetCities():Members() do
-                                for _, d in c:GetDistricts():Members() do
-                                    if d:GetX() == tx and d:GetY() == ty then
-                                        distName = dInfo.DistrictType
-                                        -- Walls (outer defense) absorb damage
-                                        -- first; report the layer that takes
-                                        -- it so the caller's pre/post HP
-                                        -- comparison stays meaningful.
-                                        local wMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
-                                        local wHP = wMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
-                                        local gMax = d:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
-                                        local gHP = gMax - (d:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
-                                        if wMax > 0 then
-                                            distHP, distMax = wHP, wMax
-                                        else
-                                            distHP, distMax = gHP, gMax
-                                        end
-                                        break
-                                    end
+                            -- Straight from the tile (same getter the
+                            -- GameCore outcome query uses, live-verified).
+                            local d = CityManager.GetDistrictAt(tx, ty)
+                            if d ~= nil then
+                                distName = dInfo.DistrictType
+                                -- Walls (outer defense) absorb damage first;
+                                -- report the layer that takes it so the
+                                -- caller's pre/post HP comparison stays
+                                -- meaningful.
+                                local wMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
+                                local wHP = wMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
+                                local gMax = d:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
+                                local gHP = gMax - (d:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
+                                if wMax > 0 then
+                                    distHP, distMax = wHP, wMax
+                                else
+                                    distHP, distMax = gHP, gMax
                                 end
-                                if distName ~= nil then break end
                             end
                         end
                     end

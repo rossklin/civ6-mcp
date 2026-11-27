@@ -419,25 +419,16 @@ def build_attack_followup_query(target_x: int, target_y: int) -> str:
     only ever target units (cities/districts cannot attack other
     cities/districts), so units are all it needs to read back. District
     defense stats for unit attacks live in build_attack_outcome_query.
+
+    The Lua lives in ``attack_followup_query.lua`` (loaded via
+    ``load_lua_template``) and reads the units straight from the tile.
     """
-    return f"""
-local found = false
-for i = 0, 63 do
-    if Players[i] and Players[i]:IsAlive() then
-        for _, u in Players[i]:GetUnits():Members() do
-            if u:GetX() == {target_x} and u:GetY() == {target_y} then
-                local hp = u:GetMaxDamage() - u:GetDamage()
-                local entry = GameInfo.Units[u:GetType()]
-                local name = entry and entry.UnitType or "UNKNOWN"
-                print("UNIT|" .. name .. "|" .. hp .. "/" .. u:GetMaxDamage() .. "|owner:" .. i)
-                found = true
-            end
-        end
-    end
-end
-if not found then print("EMPTY") end
-print("{SENTINEL}")
-"""
+    return (
+        load_lua_template("attack_followup_query.lua")
+        .replace("__TARGET_X__", str(target_x))
+        .replace("__TARGET_Y__", str(target_y))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def build_attack_outcome_query(
@@ -489,17 +480,16 @@ def build_capture_outcome_query(target_x: int, target_y: int) -> str:
     captured unit joins the local player and shows up here together with the
     capturing unit. Emits one ``OURS|TYPE`` line per local-player unit at
     the tile.
+
+    The Lua lives in ``capture_outcome_query.lua`` (loaded via
+    ``load_lua_template``) and reads the units straight from the tile.
     """
-    return f"""
-local me = Game.GetLocalPlayer()
-for _, u in Players[me]:GetUnits():Members() do
-    if u:GetX() == {target_x} and u:GetY() == {target_y} then
-        local entry = GameInfo.Units[u:GetType()]
-        print("OURS|" .. (entry and entry.UnitType or "UNKNOWN"))
-    end
-end
-print("{SENTINEL}")
-"""
+    return (
+        load_lua_template("capture_outcome_query.lua")
+        .replace("__TARGET_X__", str(target_x))
+        .replace("__TARGET_Y__", str(target_y))
+        .replace("__MCP_SENTINEL_TAG__", SENTINEL)
+    )
 
 
 def parse_attack_outcome(lines: list[str]) -> AttackOutcome | None:
