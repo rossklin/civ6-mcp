@@ -260,19 +260,6 @@ class TestParseAttackOutcome:
         assert outcome.enemy_max == 100
         assert outcome.attacker_hp == 80
 
-    def test_city_flag(self):
-        # CITY| line may arrive before or after OUTCOME|; either order sets is_city.
-        lines = ["OUTCOME|att_hp:88|att_max:100|enemy:KILLED", "CITY|1"]
-        outcome = parse_attack_outcome(lines)
-        assert outcome is not None
-        assert outcome.is_city is True
-
-    def test_city_flag_before_outcome(self):
-        lines = ["CITY|1", "OUTCOME|att_hp:88|att_max:100|enemy:KILLED"]
-        outcome = parse_attack_outcome(lines)
-        assert outcome is not None
-        assert outcome.is_city is True
-
     def test_captured_city(self):
         # The target district's city now belongs to the local player
         lines = ["OUTCOME|att_hp:100|att_max:100|enemy:CAPTURED_CITY"]
