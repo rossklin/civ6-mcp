@@ -489,6 +489,18 @@ class TestBuildAttackUnit:
         cap = lq.build_capture_outcome_query(12, 4)
         assert 'print("OURS|"' in cap
 
+    def test_units_listing_includes_districts_and_lone_support(self):
+        """The attack listing in the game state follows attack_unit.lua: a
+        hostile defensible district in scan range is a target (with or
+        without units on its tile), and a support unit is a target only
+        when no military defender shares its tile."""
+        lua = lq.build_units_query()
+        assert "~kind:district~max:" in lua
+        assert "CityManager.GetDistrictAt(tx, ty)" in lua
+        assert "(dInfo.HitPoints or 0) <= 0" in lua
+        assert 'oClass == "FORMATION_CLASS_SUPPORT"' in lua
+        assert "elseif sup ~= nil and not aIsReligious then" in lua
+
     def test_outcome_tags_for_post_combat_poll(self):
         lua = lq.build_attack_unit(7, 12, 4)
         # game_state.attack_unit polls GameCore for these outcome prefixes

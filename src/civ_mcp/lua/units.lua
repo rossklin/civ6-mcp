@@ -16,7 +16,12 @@
 -- otherwise - there is no dedicated
 -- theological operation, the engine resolves religious-vs-religious as
 -- theological combat, needs no war, and only apostles/inquisitors may
--- initiate it). Classification: military
+-- initiate it). A hostile defensible district (city center, encampment -
+-- GameInfo HitPoints > 0) within the same scan range is a target too, and
+-- outranks the units on its tile: combat hits the district, its garrison is
+-- not separately targetable (kind:district, with the defense layer's HP/max
+-- and the owning city's name). A support unit is a target only when no
+-- military defender shares its tile. Classification: military
 -- targets carry an engine damage estimate (CombatManager.SimulateAttackInto -
 -- the same call the UI combat preview uses, authoritative for damage,
 -- modifiers, and combat type); an unescorted civilian adjacent to a
@@ -79,44 +84,110 @@ for i, u in Players[id]:GetUnits():Members() do
                     local d = Map.GetPlotDistance(x, y, tx, ty)
                     if d >= 1 and d <= rng then
                         local plotUnits = Map.GetUnitsAt(tx, ty)
-                        if plotUnits then
+                        do
                             -- Classify the tile's hostile units. Occupancy
                             -- rules allow one military defender plus one
-                            -- civilian (and religious units) per tile; combat
-                            -- always targets the military defender.
+                            -- civilian, one support unit (and religious
+                            -- units) per tile; combat always targets the
+                            -- military defender. A support unit is a target
+                            -- only when it stands alone (attacking it kills
+                            -- it) - same rules as attack_unit.lua.
                             local def, defHP = nil, 0
                             local civ, civHP = nil, 0
+                            local sup, supHP = nil, 0
                             local rel, relHP = nil, 0
-                            for other in plotUnits:Units() do
-                                local otherOwner = other:GetOwner()
-                                if otherOwner ~= id then
-                                    local oInfo = GameInfo.Units[other:GetType()]
-                                    local oClass = occupancyClass(oInfo)
-                                    -- Theological combat needs no war (and no
-                                    -- barbarian); military interactions keep the
-                                    -- war/barbarian gate.
-                                    local isHostile = otherOwner >= 62
-                                        or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)
-                                        or (aIsReligious and oClass == "RELIGIOUS")
-                                    if isHostile then
-                                        local oName = oInfo and oInfo.UnitType or "UNKNOWN"
-                                        local oHP = other:GetMaxDamage() - other:GetDamage()
-                                        if oClass == "RELIGIOUS" then
-                                            if rel == nil then rel, relHP = oName, oHP end
-                                        elseif oClass == "FORMATION_CLASS_CIVILIAN" then
-                                            if civ == nil then civ, civHP = oName, oHP end
-                                        elseif def == nil then
-                                            def, defHP = oName, oHP
+                            -- Map.GetUnitsAt returns nil for a tile with no
+                            -- units; a district can still be there (below).
+                            if plotUnits then
+                                for other in plotUnits:Units() do
+                                    local otherOwner = other:GetOwner()
+                                    if otherOwner ~= id then
+                                        local oInfo = GameInfo.Units[other:GetType()]
+                                        local oClass = occupancyClass(oInfo)
+                                        -- Theological combat needs no war (and
+                                        -- no barbarian); military interactions
+                                        -- keep the war/barbarian gate.
+                                        local isHostile = otherOwner >= 62
+                                            or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)
+                                            or (aIsReligious and oClass == "RELIGIOUS")
+                                        if isHostile then
+                                            local oName = oInfo and oInfo.UnitType or "UNKNOWN"
+                                            local oHP = other:GetMaxDamage() - other:GetDamage()
+                                            if oClass == "RELIGIOUS" then
+                                                if rel == nil then rel, relHP = oName, oHP end
+                                            elseif oClass == "FORMATION_CLASS_CIVILIAN" then
+                                                if civ == nil then civ, civHP = oName, oHP end
+                                            elseif oClass == "FORMATION_CLASS_SUPPORT" then
+                                                if sup == nil then sup, supHP = oName, oHP end
+                                            elseif def == nil then
+                                                def, defHP = oName, oHP
+                                            end
                                         end
                                     end
                                 end
                             end
+                            -- Hostile defensible district on the tile (city
+                            -- center, encampment, ... - GameInfo HitPoints > 0)?
+                            -- Combat targets the DISTRICT, not the units
+                            -- garrisoned in it, so it is listed as the target
+                            -- whether or not anything stands on the tile. HP is
+                            -- the defense layer that takes damage (walls first,
+                            -- else district HP) - the same layer attack_unit.lua
+                            -- reports as pre_hp. Only revealed tiles: a city in
+                            -- unexplored fog is not a known target. Religious
+                            -- attackers never engage a district.
+                            local dist, distHP, distMax, distCity = nil, 0, 0, ""
+                            if not aIsReligious then
+                                pcall(function()
+                                    local dPlot = Map.GetPlot(tx, ty)
+                                    if dPlot == nil then return end
+                                    local dIdx = dPlot:GetDistrictType()
+                                    if dIdx == nil or dIdx < 0 then return end
+                                    local dInfo = GameInfo.Districts[dIdx]
+                                    if dInfo == nil or (dInfo.HitPoints or 0) <= 0 then return end
+                                    local dOwner = dPlot:GetOwner()
+                                    if dOwner == nil or dOwner < 0 or dOwner == id then return end
+                                    if not (dOwner >= 62 or Players[id]:GetDiplomacy():IsAtWarWith(dOwner)) then return end
+                                    if not PlayersVisibility[id]:IsRevealed(tx, ty) then return end
+                                    local dObj = CityManager.GetDistrictAt(tx, ty)
+                                    if dObj == nil then return end
+                                    local wMax = dObj:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
+                                    local wHP = wMax - (dObj:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
+                                    local gMax = dObj:GetMaxDamage(DefenseTypes.DISTRICT_GARRISON) or 0
+                                    local gHP = gMax - (dObj:GetDamage(DefenseTypes.DISTRICT_GARRISON) or 0)
+                                    if wMax > 0 then
+                                        distHP, distMax = wHP, wMax
+                                    else
+                                        distHP, distMax = gHP, gMax
+                                    end
+                                    dist = dInfo.DistrictType
+                                    -- Owning city's name, for the listing
+                                    -- (nil-guarded: Locale.Lookup raises on nil).
+                                    pcall(function()
+                                        local dCity = dObj:GetCity()
+                                        local cName = dCity and dCity:GetName() or nil
+                                        if cName ~= nil then
+                                            distCity = tostring(Locale.Lookup(cName)):gsub("[,;~|@:]", " ")
+                                        end
+                                    end)
+                                end)
+                            end
                             -- What does THIS attacker interact with on the tile?
+                            -- A hostile district outranks every unit on its
+                            -- tile (they are not separately targetable, so no
+                            -- civilian capture there either).
                             local simName, simHP = nil, 0
-                            if def ~= nil and not aIsReligious then
+                            local isDistrict = false
+                            if dist ~= nil then
+                                simName, simHP = dist, distHP
+                                isDistrict = true
+                                civ = nil
+                            elseif def ~= nil and not aIsReligious then
                                 simName, simHP = def, defHP
                             elseif rel ~= nil and aIsReligious then
                                 simName, simHP = rel, relHP
+                            elseif sup ~= nil and not aIsReligious then
+                                simName, simHP = sup, supHP
                             end
                             -- Engine validity gate - the same operation the
                             -- UI's own move chain (Civ6Common.RequestMoveOperation)
@@ -224,7 +295,14 @@ for i, u in Players[id]:GetUnits():Members() do
                                         end
                                         local modStr = ""
                                         if eMods and #eMods > 0 then modStr = "~m:" .. table.concat(eMods, ",") end
-                                        table.insert(tgtList, simName .. "@" .. tx .. "," .. ty .. "~hp:" .. simHP .. "~dd:" .. eDD .. "~da:" .. eDA .. "~r:" .. (eR and "1" or "0") .. kindStr .. capStr .. modStr)
+                                        -- District targets carry the defense
+                                        -- layer's max HP and the city's name.
+                                        local distStr = ""
+                                        if isDistrict then
+                                            distStr = "~kind:district~max:" .. distMax
+                                            if distCity ~= "" then distStr = distStr .. "~city:" .. distCity end
+                                        end
+                                        table.insert(tgtList, simName .. "@" .. tx .. "," .. ty .. "~hp:" .. simHP .. "~dd:" .. eDD .. "~da:" .. eDA .. "~r:" .. (eR and "1" or "0") .. kindStr .. distStr .. capStr .. modStr)
                                     end
                                 elseif civ ~= nil and cs > 0 and d == 1 then
                                     -- Unescorted civilian adjacent to a melee-capable

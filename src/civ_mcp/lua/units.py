@@ -718,8 +718,11 @@ def _parse_attack_target(token: str) -> AttackTarget:
              (from CombatManager.SimulateAttackInto), carried verbatim.
              kind: attack (default) | capture (unescorted civilian — move
              onto the tile; no damage fields) | theological (religious
-             combat; dd/da are theological damage). captures names a
-             civilian escorted by the defender (melee kill captures it).
+             combat; dd/da are theological damage) | district (hostile
+             defensible district: eName is the DISTRICT_* type, with
+             ``~max:N`` the defense layer's max HP and ``~city:NAME`` the
+             owning city). captures names a civilian escorted by the
+             defender (melee kill captures it).
       old:   ``eName@tx,ty(EHP hp)``
       legacy:``tx,ty``  (bare — tests only; no estimate)
     """
@@ -758,6 +761,8 @@ def _parse_attack_target(token: str) -> AttackTarget:
             modifiers=mods,
             kind=fields.get("kind", "attack") or "attack",
             captures=fields.get("captures", "") or "",
+            hp_max=int(fields.get("max", "0") or "0"),
+            city=(fields.get("city", "") or "").strip(),
         )
     # Old format: eName@tx,ty(EHP hp)
     if "@" in token:

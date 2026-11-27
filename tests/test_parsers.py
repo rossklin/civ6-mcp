@@ -235,6 +235,39 @@ class TestParseUnits:
         assert t2.kind == "attack"  # default when kind absent
         assert t2.captures == "UNIT_SETTLER"
 
+    def test_target_district(self):
+        # Hostile defensible district: the DISTRICT_* type is the target,
+        # with the defense layer's HP/max and the owning city's name.
+        from civ_mcp.narrate import _format_attack_target
+
+        tgt = (
+            "DISTRICT_CITY_CENTER@13,14~hp:150~dd:46~da:23~r:0"
+            "~kind:district~max:200~city:Maskotew"
+        )
+        line = f"2|Warrior|UNIT_WARRIOR|12,13|2.0/2.0|100/100|20|0|0|{tgt}|0|0|||"
+        t = parse_units_response([line])[0].targets[0]
+        assert t.kind == "district"
+        assert t.unit_type == "DISTRICT_CITY_CENTER"
+        assert (t.x, t.y) == (13, 14)
+        assert t.hp == 150 and t.hp_max == 200
+        assert t.city == "Maskotew"
+        text = _format_attack_target(t)
+        assert "CAN ATTACK: DISTRICT_CITY_CENTER of Maskotew at (13,14)" in text
+        assert "HP:150/200" in text
+        assert "est ~46 dmg, take ~23" in text
+
+    def test_target_district_never_tagged_kill(self):
+        # Enough damage to empty the defense layer is not a "kill" for a
+        # district (melee takes the city, ranged cannot).
+        from civ_mcp.narrate import _format_attack_target
+
+        tgt = "DISTRICT_CITY_CENTER@13,14~hp:20~dd:46~da:0~r:1~kind:district~max:200"
+        line = f"2|Archer|UNIT_ARCHER|12,12|2.0/2.0|100/100|15|25|0|{tgt}|0|0|||"
+        t = parse_units_response([line])[0].targets[0]
+        text = _format_attack_target(t)
+        assert "[KILL]" not in text
+        assert "DISTRICT_CITY_CENTER at (13,14) HP:20/200" in text
+
 
 # ---------------------------------------------------------------------------
 # parse_attack_outcome

@@ -129,12 +129,22 @@ def _format_attack_target(t: lq.AttackTarget) -> str:
         parts.append(" (move onto the tile)")
         return "".join(parts)
     label = "THEOLOGICAL" if t.kind == "theological" else "CAN ATTACK"
-    parts = [f"    >> {label}: {t.unit_type} at ({t.x},{t.y})"]
-    if t.hp > 0:
+    is_district = t.kind == "district"
+    name = t.unit_type
+    if is_district and t.city:
+        # e.g. "DISTRICT_CITY_CENTER of Maskotew"
+        name = f"{t.unit_type} of {t.city}"
+    parts = [f"    >> {label}: {name} at ({t.x},{t.y})"]
+    if is_district and t.hp_max > 0:
+        # Defense layer that takes the damage (walls first, else district HP)
+        parts.append(f" HP:{t.hp}/{t.hp_max}")
+    elif t.hp > 0:
         parts.append(f" HP:{t.hp}")
     if t.est_damage_to_defender > 0:
         parts.append(f" — est ~{t.est_damage_to_defender} dmg")
-        if t.is_kill:
+        if t.is_kill and not is_district:
+            # A district is not "killed": at 0 HP a melee attack takes the
+            # city, a ranged one cannot — so no kill tag for districts.
             parts.append(" [KILL]")
         if t.is_ranged:
             parts.append(" (ranged)")

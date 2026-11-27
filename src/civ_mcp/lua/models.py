@@ -209,10 +209,13 @@ class AttackTarget:
 
     ``kind`` classifies the interaction: ``attack`` (default — military
     target with a damage estimate), ``capture`` (unescorted civilian; moving
-    onto the tile captures it, no damage fields), or ``theological``
-    (religious combat; dd/da are theological damage). ``captures`` names a
-    civilian stacked with the defender — a melee kill of the escort
-    captures it.
+    onto the tile captures it, no damage fields), ``theological``
+    (religious combat; dd/da are theological damage), or ``district`` (a
+    hostile defensible district — city center, encampment; ``unit_type`` is
+    the DISTRICT_* type, ``hp``/``hp_max`` the defense layer that takes
+    damage (walls first, else district HP) and ``city`` the owning city's
+    name). ``captures`` names a civilian stacked with the defender — a melee
+    kill of the escort captures it.
     """
 
     unit_type: str
@@ -226,6 +229,8 @@ class AttackTarget:
     modifiers: list[str] = field(default_factory=list)
     kind: str = "attack"
     captures: str = ""
+    hp_max: int = 0  # district targets only
+    city: str = ""  # district targets only: owning city's name
 
 
 @dataclass
