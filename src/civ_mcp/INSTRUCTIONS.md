@@ -192,7 +192,7 @@ You can't settle what you can't see, and you can't counter threats you don't kno
 Diplomatic and trade actions are issued through `execute_commands`; see the Diplomacy reference section for the full action list. In shared (handoff) games, proposals to managed civs are routed through a mailbox so the built-in AI does not auto-answer them. You can also use the send_message command to strategize, cooperate with or manipulate your opponents.
 
 ### Favor resource
-Diplomacy generates yield: each alliance +1 favor/turn per alliance level, each suzerainty +1 favor/turn. Government tier also gives favor. This compounds. Friendships don't give favor directly but enable alliances (which do). Delegations (25g) are cheap on first meeting. Friendships open up when a civ is Friendly. Alliances require friendship (30+ turns) and Diplomatic Service civic. Embassies are available once Writing is researched.
+Diplomacy generates yield: each alliance +1 favor/turn per alliance level, each suzerainty +1 favor/turn. Government tier also gives favor. This compounds. Friendships don't give favor directly but enable alliances (which do). Delegations (25g) are cheap on first meeting. Friendships open up when a civ is Friendly. Alliances require friendship (30+ turns) and Diplomatic Service civic. Embassies are also available once Diplomatic Service is researched.
 
 If favor is accumulating above 100 with no World Congress imminent, it's worth thinking about whether it could be better deployed in trade or alliance building.
 
