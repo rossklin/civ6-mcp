@@ -8,6 +8,7 @@
 ## For Developers
 
 - [Architecture](architecture-diagrams.md) — Full stack from tool call to game engine, wire protocol, Lua contexts
+- [Engine and Project Notes](engine-and-project-notes.md) — Live-verified engine behavior: Lua context staleness, diplomacy session recipe, end-turn gating, nil-returning APIs
 - [Observability](observability.md) — Diary, tool logging, and spatial attention tracking
 - [Save File Format](save-file-format.md) — Reverse-engineered .Civ6Save structure
 - [Bypassing the Aspyr Launcher](research/bypassing_aspyr_launcher.md) — macOS launch automation
